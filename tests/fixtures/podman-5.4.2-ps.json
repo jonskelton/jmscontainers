@@ -1,0 +1,86 @@
+[
+  {
+    "AutoRemove": false,
+    "CIDFile": "",
+    "Command": [
+      "sleep",
+      "300"
+    ],
+    "Created": 1785367518,
+    "CreatedAt": "9 seconds ago",
+    "ExitCode": 0,
+    "Exited": false,
+    "ExitedAt": -62135596800,
+    "ExposedPorts": null,
+    "Id": "52e1a30f5b07e953d2fe9bff36a7af7170c01c6e7e5b202520f7d39caa58d489",
+    "Image": "registry.fedoraproject.org/fedora:latest",
+    "ImageID": "daffde64b0d6130d6a1d7b72ec26d172dc60d34cb6cf2d173711f040654a18bf",
+    "IsInfra": false,
+    "Labels": {
+      "io.buildah.version": "1.43.2",
+      "jms.project": "testpid",
+      "org.opencontainers.image.licenses": "MIT",
+      "org.opencontainers.image.title": "fedora",
+      "org.opencontainers.image.url": "https://fedoraproject.org/",
+      "org.opencontainers.image.vendor": "Fedora Project",
+      "org.opencontainers.image.version": "44"
+    },
+    "Mounts": [
+      "/work"
+    ],
+    "Names": [
+      "mirtest-running"
+    ],
+    "Namespaces": {},
+    "Networks": [],
+    "Pid": 64155,
+    "Pod": "",
+    "PodName": "",
+    "Ports": null,
+    "Restarts": 0,
+    "Size": null,
+    "StartedAt": 1785367522,
+    "State": "running",
+    "Status": "Up 5 seconds"
+  },
+  {
+    "AutoRemove": false,
+    "CIDFile": "",
+    "Command": [
+      "true"
+    ],
+    "Created": 1785367522,
+    "CreatedAt": "5 seconds ago",
+    "ExitCode": 0,
+    "Exited": true,
+    "ExitedAt": 1785367527,
+    "ExposedPorts": null,
+    "Id": "0722d1f3e12c2fd651acb1f64a0235922d51ff4f21a20cca14f4e151af38cb0d",
+    "Image": "registry.fedoraproject.org/fedora:latest",
+    "ImageID": "daffde64b0d6130d6a1d7b72ec26d172dc60d34cb6cf2d173711f040654a18bf",
+    "IsInfra": false,
+    "Labels": {
+      "io.buildah.version": "1.43.2",
+      "org.opencontainers.image.licenses": "MIT",
+      "org.opencontainers.image.title": "fedora",
+      "org.opencontainers.image.url": "https://fedoraproject.org/",
+      "org.opencontainers.image.vendor": "Fedora Project",
+      "org.opencontainers.image.version": "44"
+    },
+    "Mounts": [],
+    "Names": [
+      "mirtest-stopped"
+    ],
+    "Namespaces": {},
+    "Networks": [],
+    "Pid": 0,
+    "Pod": "",
+    "PodName": "",
+    "Ports": null,
+    "Restarts": 0,
+    "Size": null,
+    "StartedAt": 1785367527,
+    "State": "stopped",
+    "Status": "Exited (0) Less than a second ago"
+  }
+]

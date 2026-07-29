@@ -1,0 +1,32 @@
+[
+  {
+    "Containers": 0,
+    "Created": 1785307646,
+    "CreatedAt": "2026-07-29T06:47:26Z",
+    "Digest": "sha256:cffa25ae42f013b76653abd96137c05c776cd6e6bc1ac4a79290296ff42cbc7b",
+    "History": [
+      "registry.fedoraproject.org/fedora:latest"
+    ],
+    "Id": "daffde64b0d6130d6a1d7b72ec26d172dc60d34cb6cf2d173711f040654a18bf",
+    "Labels": {
+      "io.buildah.version": "1.43.2",
+      "org.opencontainers.image.licenses": "MIT",
+      "org.opencontainers.image.title": "fedora",
+      "org.opencontainers.image.url": "https://fedoraproject.org/",
+      "org.opencontainers.image.vendor": "Fedora Project",
+      "org.opencontainers.image.version": "44"
+    },
+    "Names": [
+      "registry.fedoraproject.org/fedora:latest"
+    ],
+    "ParentId": "",
+    "RepoDigests": [
+      "registry.fedoraproject.org/fedora@sha256:76cefb492960b4f49b644f9cb3b80fe035175fade06e191a48d2fad0def62970",
+      "registry.fedoraproject.org/fedora@sha256:cffa25ae42f013b76653abd96137c05c776cd6e6bc1ac4a79290296ff42cbc7b"
+    ],
+    "RepoTags": null,
+    "SharedSize": 0,
+    "Size": 379410734,
+    "VirtualSize": 379410734
+  }
+]
