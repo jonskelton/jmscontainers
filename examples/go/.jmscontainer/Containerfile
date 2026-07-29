@@ -1,0 +1,6 @@
+# The Go toolchain layered on the standard jmscontainers base.
+FROM jmscontainers-base:latest
+
+USER root
+RUN dnf -y install golang golang-x-tools-gopls delve && dnf clean all
+USER isolation

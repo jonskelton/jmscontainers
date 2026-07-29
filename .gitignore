@@ -1,0 +1,10 @@
+# Claude Code's project-settings directory (settings.local.json); it must stay
+# untracked because the checkout is the base image's build context.
+/.claude/
+
+# macOS noise
+.DS_Store
+
+# Python test/import caches
+__pycache__/
+*.py[cod]

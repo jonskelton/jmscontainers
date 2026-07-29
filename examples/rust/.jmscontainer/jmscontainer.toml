@@ -1,0 +1,7 @@
+schema = 1
+name = "rust"
+
+[[mounts]]
+source = "~/.cargo/registry"
+target = "/home/isolation/.cargo/registry"
+readonly = false

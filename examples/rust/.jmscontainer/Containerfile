@@ -1,0 +1,6 @@
+# The Rust toolchain layered on the standard jmscontainers base.
+FROM jmscontainers-base:latest
+
+USER root
+RUN dnf -y install rust cargo rustfmt clippy rust-analyzer && dnf clean all
+USER isolation

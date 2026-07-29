@@ -1,0 +1,14 @@
+# Odin and reverse-engineering tools on the standard jmscontainers base.
+FROM jmscontainers-base:latest
+
+USER root
+RUN dnf -y install binutils gdb ltrace radare2 strace unzip wget && dnf clean all
+# The artifact is pinned by SHA-256: verify before anything is unpacked.
+RUN arch="$(uname -m)"; case "$arch" in \
+        aarch64) odin_arch=arm64 odin_sha=48e93e5534ac4bea52e9cb986830d414bfe8b0ce3ff08416d6131ba0b18d0435 ;; \
+        x86_64)  odin_arch=amd64 odin_sha=cd7ec2cd1ab2840a0b7ebc18e5cb41c671bce87b12f056fddbef3f080b4dde7d ;; \
+        *) exit 1 ;; esac; \
+    wget -O /tmp/odin.tar.gz "https://github.com/odin-lang/Odin/releases/download/dev-2026-05/odin-linux-${odin_arch}-dev-2026-05.tar.gz" && \
+    echo "${odin_sha}  /tmp/odin.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/odin.tar.gz -C /opt && ln -s /opt/odin/odin /usr/local/bin/odin && rm /tmp/odin.tar.gz
+USER isolation

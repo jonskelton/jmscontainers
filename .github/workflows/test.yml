@@ -1,0 +1,43 @@
+name: test
+
+# The workflow only checks out and tests; the default writable token is
+# excess authority.
+permissions:
+  contents: read
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+      - name: Run the test suite
+        run: make test
+
+  test-macos:
+    # The only supported platform: BSD userland, /bin/realpath, system python3.
+    name: Test (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test tools
+        run: brew install shellcheck
+      - name: Run the test suite
+        run: make test

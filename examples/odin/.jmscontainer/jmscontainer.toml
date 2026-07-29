@@ -1,0 +1,10 @@
+schema = 1
+name = "odin"
+
+[env]
+ODIN_ROOT = "/opt/odin"
+
+[[mounts]]
+source = "~/.cache/odin"
+target = "/home/isolation/.cache/odin"
+readonly = false

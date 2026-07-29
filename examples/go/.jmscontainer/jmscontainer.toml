@@ -1,0 +1,16 @@
+schema = 1
+name = "go"
+
+[env]
+# Build with the dnf toolchain instead of letting go download a newer one.
+GOTOOLCHAIN = "local"
+
+[[mounts]]
+source = "~/.cache/go-build"
+target = "/home/isolation/.cache/go-build"
+readonly = false
+
+[[mounts]]
+source = "~/go/pkg/mod"
+target = "/home/isolation/go/pkg/mod"
+readonly = false

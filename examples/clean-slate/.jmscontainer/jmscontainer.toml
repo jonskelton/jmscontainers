@@ -1,0 +1,6 @@
+schema = 1
+name = "clean-slate"
+
+[run]
+entry = ["/bin/bash", "-l"]
+mount_auth = false

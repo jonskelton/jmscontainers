@@ -1,0 +1,7 @@
+# A compact data-science layer on the standard jmscontainers base.
+FROM jmscontainers-base:latest
+
+USER root
+RUN dnf -y install python3-pip && dnf clean all
+RUN python3 -m pip install --no-cache-dir pandas duckdb pyarrow jupyterlab
+USER isolation

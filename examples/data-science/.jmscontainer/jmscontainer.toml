@@ -1,0 +1,10 @@
+schema = 1
+name = "data-science"
+
+[env]
+PYTHONUNBUFFERED = "1"
+
+[[mounts]]
+source = "~/.cache/pip"
+target = "/home/isolation/.cache/pip"
+readonly = false

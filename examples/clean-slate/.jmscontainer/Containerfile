@@ -1,0 +1,7 @@
+# A standalone definition: projects need not inherit jmscontainers-base:latest.
+FROM fedora:latest
+
+RUN dnf -y install bash sudo && dnf clean all && \
+    useradd --create-home --shell /bin/bash isolation && \
+    printf 'isolation ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/isolation && chmod 0440 /etc/sudoers.d/isolation
+USER isolation

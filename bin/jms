@@ -1,0 +1,1386 @@
+#!/usr/bin/env python3
+"""jmscontainers command line interface.
+
+The contents of a project's `.jmscontainer/` directory are untrusted input.
+They never build, run, or receive credential mounts without explicit consent
+bound to their exact fingerprint. Everything else running as the invoking
+user on the host is trusted.
+"""
+from __future__ import annotations
+
+import argparse
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import time
+if sys.version_info < (3, 11):
+    raise SystemExit("jms requires Python 3.11+")
+import tomllib
+import unicodedata
+from contextlib import contextmanager
+from pathlib import Path
+
+__version__ = "1.0.0"
+RUNTIME_MIN = (1, 1, 0)
+RUNTIME_MAX = (1, 1, 0)
+BASE_REPOSITORY = "jmscontainers-base"
+BASE = BASE_REPOSITORY + ":latest"
+UTC_SECONDS = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
+KEEP_IMAGES = 2
+CONTEXT_NOTE = ("note: the build context is .jmscontainer/ only; "
+                "COPY/ADD sources must live inside it (see README)")
+
+
+class JMSException(Exception):
+    exit_code = 1
+
+
+class UsageError(JMSException):
+    exit_code = 2
+
+
+class TrustError(JMSException):
+    exit_code = 3
+
+
+def quote(value: bytes | str) -> str:
+    """Return ASCII-only, terminal-safe rendering of a path or input value."""
+    raw = value.encode("utf-8", "surrogateescape") if isinstance(value, str) else value
+    out = ['"']
+    for byte in raw:
+        if byte == 34:
+            out.append(r'\"')
+        elif byte == 92:
+            out.append(r"\\")
+        elif 32 <= byte <= 126:
+            out.append(chr(byte))
+        else:
+            out.append("\\x%02x" % byte)
+    return "".join(out + ['"'])
+
+
+def terminal_safe_text(value: bytes | str) -> str:
+    """Escape non-printable bytes while leaving fixed diagnostic prose legible."""
+    raw = value.encode("utf-8", "surrogateescape") if isinstance(value, str) else value
+    return "".join(chr(byte) if 32 <= byte <= 126 else "\\x%02x" % byte for byte in raw)
+
+
+def fail(message: str, code: int = 1) -> None:
+    exc = UsageError(message) if code == 2 else TrustError(message) if code == 3 else JMSException(message)
+    raise exc
+
+
+def runtime_run(argv, *, capture=True, check=True, stdin=None, stdout=None, stderr=None, replace=False):
+    """The sole process boundary for invoking the container executable."""
+    if not argv or argv[0] != "container":
+        raise AssertionError("runtime argv must begin with container")
+    # The runtime's Swift process boundary is string typed; keep the
+    # UTF-8/NUL check at the one production seam.
+    argv = [runtime_argument(value, usage=False) for value in argv]
+    if stdout is None:
+        stdout = subprocess.PIPE if capture else None
+    if stderr is None:
+        stderr = subprocess.PIPE if capture else None
+    try:
+        if replace:
+            os.execvp(argv[0], argv)
+            raise AssertionError("runtime exec unexpectedly returned")
+        return subprocess.run(argv, stdin=stdin, stdout=stdout, stderr=stderr, check=check)
+    except FileNotFoundError:
+        fail("container CLI not found; install it with: brew install container")
+    except subprocess.CalledProcessError as exc:
+        detail = quote(exc.stderr or exc.stdout or b"")
+        fail("command failed: " + quote(" ".join(map(str, argv))) + " -- " + detail)
+
+
+def runtime_json(argv) -> object:
+    proc = runtime_run(argv)
+    try:
+        return json.loads(proc.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        fail(" ".join(argv) + " returned invalid JSON: " + quote(proc.stdout))
+
+
+def canon(path: str | bytes) -> bytes:
+    raw = os.fsencode(path)
+    if not raw.startswith(b"/"):
+        fail("path must be absolute: " + quote(raw))
+    proc = subprocess.run([b"/bin/realpath", raw], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode or not proc.stdout or not proc.stdout.endswith(b"\n"):
+        fail("cannot canonicalize " + quote(raw) + ": " + quote(proc.stderr))
+    result = proc.stdout[:-1]
+    if not result or not result.startswith(b"/"):
+        fail("realpath returned an invalid path for " + quote(raw))
+    return result
+
+
+def components(path: bytes) -> tuple[bytes, ...]:
+    return tuple(p for p in path.split(b"/") if p)
+
+
+def ancestor(parent: bytes, child: bytes) -> bool:
+    a, b = components(parent), components(child)
+    return len(a) <= len(b) and a == b[:len(a)]
+
+
+def home_path() -> bytes:
+    home = os.environ.get("HOME")
+    if not home or not home.startswith("/"):
+        fail("HOME must be set to an absolute path")
+    return canon(home)
+
+
+def runtime_path(path: str | bytes) -> str:
+    """Validate and decode a host mount path before it crosses the runtime boundary."""
+    raw = os.fsencode(path)
+    if b"\0" in raw:
+        fail("path must not contain NUL before it can be passed to the container runtime: " + quote(raw))
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        fail("path must be valid UTF-8 before it can be passed to the container runtime: " + quote(raw))
+    if b"," in raw or b"=" in raw:
+        fail("rename the directory -- the runtime's mount grammar cannot carry ',' or '=' in a path: " + quote(raw))
+    return text
+
+
+def runtime_argument(value: str | bytes, *, usage: bool = True) -> str:
+    """Validate a non-path argv element for the runtime's UTF-8 string boundary."""
+    raw = os.fsencode(value)
+    if b"\0" in raw:
+        fail("runtime argument must not contain NUL: " + quote(raw), 2 if usage else 1)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        fail("runtime argument must be valid UTF-8: " + quote(raw), 2 if usage else 1)
+
+
+def expand_home_prefix(raw: bytes) -> bytes:
+    """Expand a leading ~ so a configured root needs no shell to be usable."""
+    if raw == b"~":
+        return home_path()
+    if raw.startswith(b"~/"):
+        return home_path() + raw[1:]
+    return raw
+
+
+def project_roots() -> list[bytes]:
+    """Opt-in search path for bare-name shorthand, from JMS_PROJECT_ROOTS.
+
+    Unset by default: jms imposes no directory layout of its own.  Someone who
+    does keep every checkout under one directory sets this once and can then
+    type `jms launch myproject` from anywhere.
+    """
+    raw = os.environb.get(b"JMS_PROJECT_ROOTS")
+    if not raw:
+        return []
+    roots = []
+    for entry in raw.split(b":"):
+        if not entry:
+            continue
+        entry = expand_home_prefix(entry)
+        if not entry.startswith(b"/"):
+            fail("JMS_PROJECT_ROOTS entries must be absolute paths: " + quote(entry), 2)
+        roots.append(entry)
+    return roots
+
+
+def search_project_roots(name: bytes) -> bytes | None:
+    for root in project_roots():
+        candidate = root + b"/" + name
+        try:
+            if stat.S_ISDIR(os.stat(candidate).st_mode):
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def resolve_operand(value: str | None) -> tuple[bytes, bool]:
+    """Shared workdir grammar. Return canonical path plus whether explicitly set.
+
+    Operands behave the way they do in every other command-line tool: no
+    operand means the current directory, and absolute and relative operands
+    alike resolve against it.  A bare name is just a relative path -- only
+    when it names nothing in the current directory does the opt-in
+    JMS_PROJECT_ROOTS search path get a turn, and jms says so when it does.
+    A shorthand that silently resolves somewhere other than where the name
+    points would pick the wrong directory to mount read-write.
+    """
+    explicit = value is not None
+    if value is None:
+        value = os.getcwd()
+    elif not value:
+        fail("workdir must be a non-empty path", 2)
+    raw = os.fsencode(value)
+    if raw.startswith(b"/"):
+        target = raw
+    else:
+        target = os.fsencode(os.getcwd()) + b"/" + raw
+        bare = b"/" not in raw and raw not in (b".", b"..")
+        if bare and not os.path.lexists(target):
+            found = search_project_roots(raw)
+            if found is not None:
+                print("notice: " + quote(raw) + " resolved to " + quote(found)
+                      + " via JMS_PROJECT_ROOTS", file=sys.stderr)
+                target = found
+    # Relative operands are now the common form, so a typo'd path is a usage
+    # error rather than a generic canonicalization failure.  Report the
+    # operand as typed; the joined form only adds noise ("/cwd/./nope").
+    if not os.path.lexists(target):
+        fail("workdir does not exist: " + quote(raw), 2)
+    try:
+        os.stat(target)
+    except OSError as exc:
+        # lexists() deliberately keeps a local symlink from falling through to
+        # JMS_PROJECT_ROOTS.  A link that cannot resolve is still a bad operand;
+        # permission and other host I/O errors retain their operational class.
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+            fail("workdir does not exist: " + quote(raw), 2)
+        raise
+    resolved = canon(target)
+    if not stat.S_ISDIR(os.stat(resolved).st_mode):
+        fail("workdir is not a directory: " + quote(resolved), 2)
+    return resolved, explicit
+
+
+def parent(path: bytes) -> bytes:
+    return b"/" if path == b"/" else path.rsplit(b"/", 1)[0] or b"/"
+
+
+def mount_point(path: bytes) -> bytes:
+    """Highest directory reachable from path without crossing a filesystem."""
+    try:
+        device = os.stat(path).st_dev
+    except OSError:
+        return b"/"
+    current = path
+    while current != b"/":
+        above = parent(current)
+        try:
+            if os.stat(above).st_dev != device:
+                return current
+        except OSError:
+            return current
+        current = above
+    return b"/"
+
+
+def containment_limit(workdir: bytes) -> bytes:
+    """Exclusive bound on how far any upward walk from workdir may climb.
+
+    $HOME for anything inside it, the filesystem boundary otherwise.  Being
+    exclusive, it also keeps a git-managed $HOME from counting as a checkout
+    root -- one dotfiles repository must not swallow every project under it.
+    """
+    home = home_path()
+    return home if ancestor(home, workdir) else mount_point(workdir)
+
+
+VCS_MARKERS = (b".git", b".hg", b".jj", b".svn")
+
+
+def vcs_root(workdir: bytes) -> bytes | None:
+    """Nearest enclosing checkout root, or None when workdir is not in one."""
+    limit = containment_limit(workdir)
+    current = workdir
+    while current != limit and current != b"/":
+        # .git is a regular file in worktrees and submodules, so test for the
+        # marker's presence rather than for a directory.
+        if any(os.path.lexists(current + b"/" + marker) for marker in VCS_MARKERS):
+            return current
+        current = parent(current)
+    return None
+
+
+def ceiling_for(workdir: bytes) -> bytes:
+    """Exclusive upper bound for `.jmscontainer` discovery.
+
+    A project is a checkout, so discovery spans exactly the enclosing checkout
+    and stops at its root.  Outside a checkout there is no defensible project
+    boundary above the workdir, so only the workdir itself is considered.  One
+    rule holds wherever code lives: the ceiling used to be tight for ~/git and
+    loose ($HOME, or / outside it) for every other layout, which handed the
+    weakest bound to whoever had not adopted the convention.
+    """
+    root = vcs_root(workdir)
+    return parent(root) if root is not None else parent(workdir)
+
+
+def implicit_workdir_refusal(workdir: bytes) -> str | None:
+    """Why an implicit CWD is unusable as a project, or None when it is fine.
+
+    With no definition to discover, jms mounts the workdir itself read-write,
+    so a bare `jms launch` must not act on whatever directory the user happens
+    to be standing in.  A checkout is the evidence that a directory is a
+    project.  $HOME is covered without a special case: containment_limit() is
+    exclusive, so vcs_root($HOME) is None even for a dotfiles repository.
+    """
+    if vcs_root(workdir) is None:
+        return "the current directory is not inside a checkout"
+    return None
+
+
+def discover(workdir: bytes, *, consume_spec: bool = True):
+    """Return (root, spec_dir), or (None, None) when no marker is found."""
+    ceiling = ceiling_for(workdir)
+    current = workdir
+    while current != ceiling:
+        marker = current + b"/.jmscontainer"
+        try:
+            os.lstat(marker)
+        except FileNotFoundError:
+            current = parent(current)
+            continue
+        if not consume_spec:
+            return current, marker
+        if not stat.S_ISDIR(os.lstat(marker).st_mode):
+            fail(".jmscontainer must be a directory: " + quote(marker))
+        containerfile = marker + b"/Containerfile"
+        try:
+            mode = os.lstat(containerfile).st_mode
+        except FileNotFoundError:
+            fail("project spec requires a regular Containerfile: " + quote(containerfile))
+        if not stat.S_ISREG(mode):
+            fail("Containerfile must be a regular file: " + quote(containerfile))
+        return current, marker
+    return None, None
+
+
+def framed(domain: bytes, fields: list[bytes]) -> str:
+    wire = b"jms-hash/2\0" + domain + b"\0"
+    for item in fields:
+        wire += len(item).to_bytes(8, "big") + item
+    return hashlib.sha256(wire).hexdigest()
+
+
+def count(n: int) -> bytes:
+    return n.to_bytes(8, "big")
+
+
+def spec_entries(spec: bytes) -> list[tuple[bytes, bytes, bytes, bytes]]:
+    """Canonical (type, relpath, exec, content) entries for a definition."""
+    def raise_error(error): raise error
+    entries = []
+    for directory, dirnames, filenames in os.walk(spec, onerror=raise_error):
+        for name in dirnames + filenames:
+            path = os.path.join(directory, name)
+            rel = os.path.relpath(path, spec)
+            mode = os.lstat(path).st_mode
+            if stat.S_ISDIR(mode): entries.append((b"d", rel, b"-", b""))
+            elif stat.S_ISLNK(mode): entries.append((b"l", rel, b"-", os.readlink(path)))
+            elif stat.S_ISREG(mode):
+                with open(path, "rb") as handle:
+                    entries.append((b"f", rel, b"x" if mode & 0o111 else b"-", handle.read()))
+            else:
+                fail("unsupported file type in project definition: " + quote(path))
+    entries.sort(key=lambda entry: entry[1])
+    return entries
+
+
+def trust_fingerprint(entries) -> str:
+    fields = [count(len(entries))]
+    for entry in entries:
+        fields += list(entry)
+    return framed(b"tf", fields)
+
+
+def slug(name: bytes) -> str:
+    text = unicodedata.normalize("NFKD", name.decode("utf-8", "ignore")).encode("ascii", "ignore").decode("ascii").lower()
+    # Truncation can expose a separator that was internal before the cap.
+    # Strip once more so the result remains a valid OCI repository component.
+    text = re.sub("[^a-z0-9]+", "-", text).strip("-")[:32].rstrip("-")
+    return text or "project"
+
+
+def store_directory() -> Path:
+    return Path(os.fsdecode(home_path())) / ".config" / "jmscontainers"
+
+
+def valid_store(data) -> bool:
+    if type(data) is not dict or set(data) != {"schema", "projects"} or data["schema"] != 2 or not isinstance(data["projects"], dict):
+        return False
+    for pid, record in data["projects"].items():
+        if (not isinstance(pid, str) or not re.fullmatch(r"[0-9a-f]{64}", pid) or not isinstance(record, dict)
+                or set(record) != {"root", "tf", "grants", "granted_at", "jms_version"}
+                or not isinstance(record["root"], str) or not isinstance(record["tf"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", record["tf"])
+                or hashlib.sha256(record["root"].encode()).hexdigest() != pid
+                or not isinstance(record["grants"], dict) or set(record["grants"]) != {"build_run", "auth"}
+                or record["grants"].get("build_run") is not True or not isinstance(record["grants"].get("auth"), bool)
+                or not isinstance(record["granted_at"], str) or not re.fullmatch(UTC_SECONDS, record["granted_at"])
+                or not isinstance(record["jms_version"], str)):
+            return False
+    return True
+
+
+def read_store() -> dict:
+    path = store_directory() / "store.json"
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return {"schema": 2, "projects": {}}
+    reset_hint = ("; move or delete " + quote(str(path)) +
+                  " to reset all approvals (every project will ask for consent again)")
+    try:
+        data = json.loads(raw)
+    except (UnicodeDecodeError, ValueError):
+        fail("cannot read trust store " + quote(str(path)) + ": invalid JSON" + reset_hint)
+    if type(data) is dict and type(data.get("schema")) is int and data["schema"] > 2:
+        fail("trust store was written by a newer jms; upgrade jms")
+    if not valid_store(data):
+        fail("cannot read trust store " + quote(str(path)) + ": wrong schema" + reset_hint)
+    return data
+
+
+@contextmanager
+def store_lock():
+    directory = store_directory()
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(directory / "store.json.lock", os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def update_store(change) -> dict:
+    """Run one read/mutate/rename transaction while holding the store lock."""
+    directory = store_directory()
+    with store_lock():
+        store = read_store()
+        if change(store):
+            tmp = directory / ("store.json.tmp-" + os.urandom(4).hex())
+            try:
+                with os.fdopen(os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w") as handle:
+                    handle.write(json.dumps(store, sort_keys=True) + "\n")
+                os.replace(tmp, directory / "store.json")
+            except Exception:
+                try: os.unlink(tmp)
+                except FileNotFoundError: pass
+                raise
+        return store
+
+
+AGENT_STATE_LEAVES = ("claude", "codex", "opencode", "opencode-config")
+
+
+def checkout_root() -> bytes:
+    return canon(os.fsencode(str(Path(__file__).resolve().parent.parent)))
+
+
+def agent_state_root() -> Path:
+    return Path(os.fsdecode(home_path())) / ".local" / "share" / "jmscontainers" / "agents"
+
+
+def ensure_agent_state_root() -> Path:
+    root = agent_state_root()
+    root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root.mkdir(mode=0o700, exist_ok=True)
+    return root
+
+
+def shell_state_root() -> Path:
+    return Path(os.fsdecode(home_path())) / ".local" / "share" / "jmscontainers" / "shell"
+
+
+def protected_sources() -> list[bytes]:
+    config = home_path() + b"/.config/jmscontainers"
+    data = home_path() + b"/.local/share/jmscontainers"
+    return [checkout_root(), config, data]
+
+
+def reserved_root(root: bytes) -> bool:
+    """A project mount must never expose jms's agent-state, code, or trust roots."""
+    return any(ancestor(root, source) or ancestor(source, root) for source in protected_sources())
+
+
+def expand_mount_source(expression: str) -> bytes:
+    raw = expression.encode("utf-8")
+    if b"\0" in raw:
+        fail("mount source contains NUL")
+    out, index = bytearray(), 0
+    if raw.startswith(b"~"):
+        if len(raw) > 1 and raw[1] != ord("/"):
+            fail("unsupported tilde form in mount source")
+        home = os.environb.get(b"HOME")
+        if not home:
+            fail("HOME is unset or empty in mount source")
+        out.extend(home); index = 1
+    while index < len(raw):
+        char = raw[index]
+        if char != ord("$"):
+            out.append(char); index += 1; continue
+        if index + 1 >= len(raw): fail("invalid variable expansion in mount source")
+        if raw[index + 1] == ord("{"):
+            end = raw.find(b"}", index + 2)
+            if end < 0: fail("invalid variable expansion in mount source")
+            name = raw[index + 2:end]; index = end + 1
+        else:
+            end = index + 1
+            while end < len(raw) and (raw[end:end+1].isalnum() or raw[end:end+1] == b"_"): end += 1
+            name = raw[index + 1:end]; index = end
+        if not re.fullmatch(br"[A-Za-z_][A-Za-z0-9_]*", name): fail("invalid variable expansion in mount source")
+        value = os.environb.get(name)
+        if not value: fail("mount source variable is unset or empty: " + quote(name))
+        out.extend(value)
+    result = bytes(out)
+    if not result.startswith(b"/"): fail("mount source must expand to an absolute path: " + quote(result))
+    return canon(result)
+
+
+def valid_target(value: str, home: str) -> bool:
+    if (not value.startswith("/") or value.startswith("//") or value.endswith("/")
+            or "\0" in value or "," in value or "=" in value):
+        return False
+    parts = value.split("/")[1:]
+    if not parts or any(not item or item in (".", "..") for item in parts): return False
+    allowed = (home + "/", "/opt/", "/mnt/", "/srv/")
+    return any(value.startswith(prefix) for prefix in allowed)
+
+
+def reserved_mount_targets(home: str) -> frozenset[str]:
+    return frozenset({"/work", home + "/.claude", home + "/.codex",
+                      home + "/.local/share/opencode",
+                      home + "/.config/opencode",
+                      home + "/.config/jms-shell"})
+
+
+def target_overlaps_reserved(value: str, home: str) -> bool:
+    return any(value == target or value.startswith(target + "/")
+               or target.startswith(value + "/")
+               for target in reserved_mount_targets(home))
+
+
+def default_config():
+    return {"name": None, "env": {}, "mounts": [], "entry": ["/bin/bash", "-l"], "mount_auth": True}
+
+
+def parse_manifest(raw: bytes | None) -> dict:
+    config = default_config()
+    if raw is None: return config
+    try:
+        data = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        fail("invalid jmscontainer.toml: " + quote(str(exc)))
+    errors = []
+    def err(path): errors.append(path)
+    if not isinstance(data, dict): err("manifest")
+    for key in data:
+        if key not in {"schema", "name", "env", "mounts", "run"}: err(key)
+    schema = data.get("schema", 1)
+    if type(schema) is not int or schema < 1: err("schema")
+    elif schema > 1: fail("manifest schema is newer than this jms version; upgrade jms")
+    name = data.get("name")
+    if name is not None:
+        if type(name) is not str or not re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?", name): err("name")
+        else: config["name"] = name
+    env = data.get("env", {})
+    if type(env) is not dict: err("env")
+    else:
+        for key, value in env.items():
+            if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or type(value) is not str or "\0" in value or "\n" in value: err("env." + str(key))
+            else: config["env"][key] = value
+    run = data.get("run", {})
+    if type(run) is not dict: err("run")
+    else:
+        for key in run:
+            if key not in {"entry", "mount_auth"}: err("run." + key)
+        if "entry" in run:
+            entry = run["entry"]
+            if type(entry) is not list or not entry or any(type(x) is not str or "\0" in x for x in entry) or not entry[0]: err("run.entry")
+            else: config["entry"] = entry
+        if "mount_auth" in run:
+            if type(run["mount_auth"]) is not bool: err("run.mount_auth")
+            else: config["mount_auth"] = run["mount_auth"]
+    mounts = data.get("mounts", [])
+    if type(mounts) is not list: err("mounts")
+    else:
+        home = "/home/isolation"
+        for index, mount in enumerate(mounts):
+            prefix = "mounts[%d]" % index
+            if type(mount) is not dict: err(prefix); continue
+            for key in set(mount) - {"source", "target", "readonly"}:
+                err(prefix + "." + str(key))
+            source_valid = type(mount.get("source")) is str and bool(mount.get("source"))
+            target_valid = (type(mount.get("target")) is str and bool(mount.get("target"))
+                            and valid_target(mount["target"], home)
+                            and not target_overlaps_reserved(mount["target"], home))
+            if not source_valid: err(prefix + ".source")
+            if not target_valid: err(prefix + ".target")
+            readonly = mount.get("readonly", True)
+            readonly_valid = type(readonly) is bool
+            if not readonly_valid: err(prefix + ".readonly")
+            source = None
+            if source_valid:
+                try:
+                    source = expand_mount_source(mount["source"])
+                except JMSException:
+                    err(prefix + ".source")
+            if source is not None and target_valid and readonly_valid and not (set(mount) - {"source", "target", "readonly"}):
+                config["mounts"].append({"source": source, "target": mount["target"], "readonly": readonly})
+    targets = [mount["target"] for mount in config["mounts"]]
+    if len(set(targets)) != len(targets) or any(a != b and (a.startswith(b + "/") or b.startswith(a + "/")) for a in targets for b in targets): err("mounts targets overlap")
+    if errors: fail("invalid jmscontainer.toml fields: " + ", ".join(quote(value) for value in sorted(set(errors))))
+    return config
+
+
+def print_capability_summary(root: bytes, config: dict) -> None:
+    """Describe every project-controlled runtime capability before consent."""
+    print("Project container capabilities:", file=sys.stderr)
+    print("- build and run: arbitrary commands with unrestricted network and root via passwordless sudo",
+          file=sys.stderr)
+    print("- project mount: " + quote(root) + " -> \"/work\" read-write", file=sys.stderr)
+    for mount in config["mounts"]:
+        mode = "read-only" if mount["readonly"] else "read-write"
+        print("- extra mount: " + quote(mount["source"]) + " -> " + quote(mount["target"]) + " " + mode,
+              file=sys.stderr)
+    for key, value in sorted(config["env"].items()):
+        print("- environment: " + quote(key + "=" + value), file=sys.stderr)
+    print("- entry: " + " ".join(quote(value) for value in config["entry"]), file=sys.stderr)
+    print("- agent state (credentials and configuration for claude, codex, opencode): " +
+          ("read-write mount eligible with a separate grant" if config["mount_auth"] else
+           "read-write mount suppressed by manifest"), file=sys.stderr)
+
+
+def consent_input(question: str) -> str:
+    """Keep the complete prompt on the stderr TTY used by the availability gate."""
+    print(question, end="", file=sys.stderr, flush=True)
+    try:
+        return input()
+    except EOFError:
+        # EOF is the terminal spelling of the question's default-No answer.
+        return ""
+
+
+def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = None):
+    pid = hashlib.sha256(root).hexdigest()
+    store = read_store()
+    record = store["projects"].get(pid)
+    env_pin = os.environ.get("JMS_TRUST_FINGERPRINT")
+    if getattr(args, "trust", False):
+        env_pin = None
+    if env_pin is not None and env_pin != tf:
+        fail("JMS_TRUST_FINGERPRINT does not match this project spec", 3)
+    live = record if record and record.get("tf") == tf else None
+    one_shot = getattr(args, "trust", False) or env_pin == tf or getattr(args, "fingerprint", None) == tf
+    wants_auth = getattr(args, "auth", False)
+    no_auth = getattr(args, "no_auth", False)
+    if getattr(args, "fingerprint", None) and args.fingerprint != tf:
+        fail("--fingerprint does not match this project spec", 3)
+    interactive_replacement = action == "trust" and getattr(args, "fingerprint", None) is None
+    build_ok = bool(live and live.get("grants", {}).get("build_run")) or one_shot
+    # A one-shot credential grant requires the audited exact pin; the boolean
+    # --trust flag never satisfies it (SECURITY.md forbids that bypass).
+    auth_ok = bool(live and live.get("grants", {}).get("auth")) or (wants_auth and env_pin == tf)
+    if interactive_replacement:
+        # `jms trust` always replaces the two decisions explicitly, even when
+        # the stored fingerprint already matches.
+        build_ok = False
+        auth_ok = False
+    if record and record.get("tf") != tf:
+        print("project definition changed since it was last trusted (fingerprint " +
+              record["tf"][:12] + " -> " + tf[:12] + ")", file=sys.stderr)
+    if action == "trust" or getattr(args, "trust", False) or not build_ok or (wants_auth and not auth_ok):
+        print_capability_summary(root, config or default_config())
+    def record_approval(auth):
+        new = {"root": root.decode("utf-8"), "tf": tf, "grants": {"build_run": True, "auth": auth},
+               "granted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "jms_version": __version__}
+        def replace(current):
+            current["projects"][pid] = new
+            return True
+        update_store(replace)
+    if action == "trust" and getattr(args, "fingerprint", None) == tf:
+        # This is the explicitly non-interactive, durable trust path.
+        record_approval(wants_auth and not no_auth)
+        return True, wants_auth and not no_auth
+    if not build_ok:
+        if not (sys.stdin.isatty() and sys.stderr.isatty()):
+            fail("project trust is required but prompting is unavailable", 3)
+        print(quote(root) + " defines a custom container (trust fingerprint " + tf[:12] + ").",
+              file=sys.stderr)
+        print("Approving lets it run arbitrary commands at build and run time and mount the project read-write at /work.",
+              file=sys.stderr)
+        if consent_input("Allow build & run? [y/N] ").strip().lower() not in ("y", "yes"):
+            fail("project trust declined", 3)
+        build_ok = True
+        if not no_auth:
+            if not (config or default_config())["mount_auth"]:
+                print("persistent agent state (credentials and configuration): not mounted by default (manifest mount_auth = false); --auth required",
+                      file=sys.stderr)
+            auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, and opencode -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
+        record_approval(auth_ok)
+    elif wants_auth and not auth_ok:
+        if not (sys.stdin.isatty() and sys.stderr.isatty()):
+            fail("credential access is required but prompting is unavailable", 3)
+        auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, and opencode -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
+        # --trust is one-shot for both grants: an accepted escalation applies to
+        # this invocation only and leaves any existing record untouched.
+        if auth_ok and live and not getattr(args, "trust", False):
+            record_approval(True)
+    return build_ok, auth_ok and not no_auth
+
+
+def runtime_ready():
+    version = runtime_run(["container", "--version"], check=False)
+    output = version.stdout
+    try:
+        first_line = output.decode("utf-8").split("\n", 1)[0]
+    except UnicodeDecodeError:
+        fail("container --version returned invalid UTF-8: " + quote(output))
+    match = re.fullmatch(r"container CLI version (0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?: .*)?", first_line)
+    if version.returncode or not match:
+        fail("cannot parse container runtime version: " + quote(output))
+    parsed = tuple(map(int, match.groups()))
+    if parsed < RUNTIME_MIN:
+        fail("container runtime is too old; install container %s" % ".".join(map(str, RUNTIME_MIN)))
+    if parsed > RUNTIME_MAX:
+        parsed_text = ".".join(map(str, parsed))
+        max_text = ".".join(map(str, RUNTIME_MAX))
+        if os.environ.get("JMS_RUNTIME_ACCEPT") == parsed_text:
+            print("warning: container %s is not qualified against jms %s (newest qualified: %s); proceeding per JMS_RUNTIME_ACCEPT"
+                  % (parsed_text, __version__, max_text), file=sys.stderr)
+        else:
+            fail("container %s is newer than the newest runtime this jms release is qualified against (%s); upgrade jms, install container %s, or set JMS_RUNTIME_ACCEPT=%s to accept it for one invocation" % (parsed_text, max_text, max_text, parsed_text))
+    probe = runtime_run(["container", "system", "status"], check=False)
+    if probe.returncode:
+        print("starting container runtime...")
+        started = runtime_run(["container", "system", "start"], capture=True, check=False)
+        recheck = runtime_run(["container", "system", "status"], check=False)
+        if recheck.returncode:
+            detail = recheck.stderr or recheck.stdout or started.stderr or started.stdout or b""
+            fail("container runtime did not start: " + quote(detail))
+
+
+def image_exists(image: str) -> bool:
+    proc = runtime_run(["container", "image", "inspect", image], check=False)
+    if proc.returncode == 0:
+        return True
+    try:
+        first_line = proc.stderr.decode("utf-8").split("\n", 1)[0]
+    except UnicodeDecodeError:
+        fail("container image inspect failed with invalid output for " + quote(image) + ": " + quote(proc.stderr))
+    if first_line == "Error: image not found: " + image:
+        return False
+    fail("container image inspect failed for " + quote(image) + ": " + quote(proc.stderr))
+
+
+def image_records() -> list[dict]:
+    records = runtime_json(["container", "image", "list", "--format", "json"])
+    if not isinstance(records, list):
+        fail("container image list did not return a JSON array")
+    return records
+
+
+def image_record_facts(record) -> tuple[str, str, dict] | None:
+    """Return (ref, created, labels) or None for records missing the fields."""
+    try:
+        ref = record["configuration"]["name"]
+        created = record["configuration"].get("creationDate", "")
+        variants = record["variants"]
+        labels = (variants[0].get("config", {}).get("config", {}) or {}).get("Labels", {}) if variants else {}
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return None
+    if not isinstance(ref, str) or not isinstance(created, str) or not isinstance(labels, dict):
+        return None
+    return ref, created, labels
+
+
+def local_name(ref: str) -> str:
+    prefix = "docker.io/library/"
+    return ref[len(prefix):] if ref.startswith(prefix) else ref
+
+
+def run_build(context: bytes | str, tag: str, args, labels: dict[str, str] | None = None,
+              *, project: bool):
+    context_text = runtime_path(context)
+    cmd = ["container", "build", "--tag", tag,
+           "--file", context_text + "/Containerfile"]
+    for key, value in (labels or {}).items():
+        cmd += ["-l", key + "=" + value]
+    if getattr(args, "no_cache", False):
+        cmd.append("--no-cache")
+    if getattr(args, "pull", False):
+        cmd.append("--pull")
+    cmd.append(context_text)
+    try:
+        runtime_run(cmd, capture=False)
+    except JMSException:
+        if project:
+            print(CONTEXT_NOTE, file=sys.stderr)
+        raise
+
+
+def build_base(args):
+    print("building " + quote(BASE))
+    run_build(checkout_root(), BASE, args, project=False)
+
+
+def ensure_base(args) -> None:
+    if not image_exists(BASE):
+        build_base(args)
+
+
+def project_data(workdir: bytes):
+    root, spec = discover(workdir)
+    if root is None: return None
+    if reserved_root(root):
+        fail("project root overlaps a protected jms host directory: " + quote(root))
+    runtime_path(root)
+    manifest = None
+    manifest_path = spec + b"/jmscontainer.toml"
+    if os.path.lexists(manifest_path):
+        if not stat.S_ISREG(os.lstat(manifest_path).st_mode):
+            fail("jmscontainer.toml must be a regular file: " + quote(manifest_path))
+        with open(manifest_path, "rb") as handle:
+            manifest = handle.read()
+    config = parse_manifest(manifest)
+    protected = protected_sources()
+    for mount in config["mounts"]:
+        if any(ancestor(mount["source"], item) or ancestor(item, mount["source"]) for item in protected):
+            fail("mount source overlaps a protected jms host directory: " + quote(mount["source"]))
+        runtime_path(mount["source"])
+    tf = trust_fingerprint(spec_entries(spec))
+    pid = hashlib.sha256(root).hexdigest()
+    # Manifest `name` is cosmetic runtime configuration.  Keeping it out of
+    # the repository name makes a name-only edit leave the image tag driven
+    # only by the fingerprint.
+    return {"root": root, "spec": spec, "config": config, "tf": tf, "pid": pid,
+            "tag_prefix": tag_prefix_for(root, pid)}
+
+
+def tag_prefix_for(root: bytes, pid: str) -> str:
+    return "jmscontainers-%s-%s" % (slug(root.rsplit(b"/", 1)[-1]), pid[:8])
+
+
+def gc_project_images(pid: str, tag_prefix: str, *, keep: int):
+    """Keep the newest `keep` images for a project; best-effort delete the rest.
+
+    OCI labels are inherited from FROM images, so the ownership label alone is
+    not proof jms built the image; require the project's tag prefix as well.
+    """
+    owned = []
+    for record in image_records():
+        facts = image_record_facts(record)
+        if (facts and facts[2].get("jms.project") == pid
+                and local_name(facts[0]).startswith(tag_prefix + ":")):
+            owned.append(facts)
+    owned.sort(key=lambda facts: facts[1], reverse=True)
+    for ref, _, _ in owned[keep:]:
+        proc = runtime_run(["container", "image", "delete", ref], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if proc.returncode == 0:
+            print("removed image " + quote(ref))
+
+
+def build_project(data, args):
+    tag = data["tag_prefix"] + ":" + data["tf"][:12]
+    if image_exists(tag) and not getattr(args, "no_cache", False):
+        return tag, False
+    # The consent decision was bound to a fingerprint; re-hash the definition
+    # immediately before it reaches the runtime and fail closed on mismatch.
+    if trust_fingerprint(spec_entries(data["spec"])) != data["tf"]:
+        fail("project definition changed during consent -- re-run")
+    print("building " + quote(tag))
+    run_build(data["spec"], tag, args,
+              {"jms.project": data["pid"], "jms.fingerprint": data["tf"]}, project=True)
+    gc_project_images(data["pid"], data["tag_prefix"], keep=KEEP_IMAGES)
+    return tag, True
+
+
+def agent_state_mounts(user="isolation"):
+    root = agent_state_root()
+    home = "/root" if user == "root" else "/home/" + user
+    return [(root / "claude", home + "/.claude"),
+            (root / "codex", home + "/.codex"),
+            (root / "opencode", home + "/.local/share/opencode"),
+            (root / "opencode-config", home + "/.config/opencode")]
+
+
+def shell_state_mount(user="isolation"):
+    home = "/root" if user == "root" else "/home/" + user
+    return shell_state_root(), home + "/.config/jms-shell"
+
+
+def validate_agent_state_sources(user="isolation"):
+    """Resolve every agent-state source before trust or filesystem mutation."""
+    sources = agent_state_mounts(user)
+    for source, _ in sources:
+        runtime_path(os.fsencode(source))
+        state_directory_state(source, "agent state")
+    return sources
+
+
+def validate_shell_state_source() -> None:
+    """Resolve the shell-config source before trust or filesystem mutation."""
+    source = shell_state_root()
+    runtime_path(os.fsencode(source))
+    state_directory_state(source, "shell config")
+
+
+def state_directory_state(source: Path, label: str) -> bool:
+    """Classify a jms-owned state directory without creating or following it."""
+    try:
+        mode = source.lstat().st_mode
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISDIR(mode):
+        fail(label + " source must be a directory, not a symlink or other file: " + quote(str(source)))
+    return True
+
+
+def ensure_agent_state_directory(source: Path) -> None:
+    """Create one agent-state leaf without accepting symlinks or other file types."""
+    runtime_path(os.fsencode(source))
+    if not state_directory_state(source, "agent state"):
+        ensure_agent_state_root()
+        try:
+            source.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        state_directory_state(source, "agent state")
+
+
+def ensure_shell_state_directory() -> None:
+    """Create the shared shell-config directory without accepting symlinks."""
+    source = shell_state_root()
+    runtime_path(os.fsencode(source))
+    if not state_directory_state(source, "shell config"):
+        source.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            source.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        state_directory_state(source, "shell config")
+
+
+def mount_argument(source: bytes | str, target: str, readonly=False) -> str:
+    """Serialize the one supported runtime mount grammar without ambiguity."""
+    source_text = runtime_path(os.fsencode(source))
+    if "," in target or "=" in target:
+        fail("mount paths cannot contain ',' or '=': " + quote(target))
+    result = "source=" + source_text + ",target=" + target
+    return result + ",readonly" if readonly else result
+
+
+def validate_launch_cli_runtime_args(args) -> None:
+    """Reject pass-through argv bytes before trust prompts or auth creation."""
+    if args.container_name is not None:
+        if not args.container_name: fail("container name must be nonempty UTF-8 without NUL", 2)
+        runtime_argument(args.container_name)
+    if args.bin is not None:
+        if not args.bin: fail("binary must be nonempty UTF-8 without NUL", 2)
+        runtime_argument(args.bin)
+    for value in args.extra:
+        runtime_argument(value)
+
+
+def launch_plan(workdir: bytes, data, args, image: str, auth: bool):
+    """Build the exact container-run argv."""
+    if data:
+        mount = data["root"]
+        inner = os.path.relpath(os.fsdecode(workdir), os.fsdecode(data["root"]))
+        container_workdir = "/work" if inner == "." else "/work/" + inner
+        pid, config = data["pid"], data["config"]
+    else:
+        mount, container_workdir = workdir, "/work"
+        pid, config = hashlib.sha256(workdir).hexdigest(), default_config()
+    generated_slug = config["name"] if data and config["name"] else slug(mount.rsplit(b"/", 1)[-1])
+    name = args.container_name or "jms-%s-%s" % (generated_slug, os.urandom(4).hex())
+    entry = [args.bin] if args.bin is not None else config["entry"]
+    user = "root" if args.root else "isolation"
+    effective_home = "/root" if user == "root" else "/home/" + user
+    for extra_mount in config["mounts"]:
+        target = extra_mount["target"]
+        if not valid_target(target, effective_home) or target_overlaps_reserved(target, effective_home):
+            fail("manifest mount target is not allowed for the effective runtime user"
+                 + (" under --root" if args.root else "") + ": " + quote(target))
+    mount_auth = auth and (config["mount_auth"] or args.auth)
+    cmd = ["container", "run", "--rm", "--interactive"]
+    if sys.stdin.isatty():
+        cmd.append("--tty")
+    cmd += ["--name", name, "--user", user, "--workdir", container_workdir,
+            "--entrypoint", entry[0], "--label", "jms.project=" + pid]
+    if mount_auth:
+        cmd += ["--env", "CLAUDE_CONFIG_DIR=" + effective_home + "/.claude"]
+    cmd += ["--mount", mount_argument(mount, "/work")]
+    for key, value in sorted(config["env"].items()):
+        cmd += ["--env", key + "=" + value]
+    for extra_mount in config["mounts"]:
+        cmd += ["--mount", mount_argument(extra_mount["source"], extra_mount["target"], extra_mount["readonly"])]
+    shell_source, shell_target = shell_state_mount(user)
+    ensure_shell_state_directory()
+    cmd += ["--mount", mount_argument(str(shell_source), shell_target, readonly=True)]
+    if mount_auth:
+        for source, target in agent_state_mounts(user):
+            ensure_agent_state_directory(source)
+            cmd += ["--mount", mount_argument(str(source), target)]
+    cmd.append(image)
+    cmd += entry[1:] + args.extra
+    return cmd
+
+
+def cmd_build(args):
+    if args.pull and not args.base:
+        fail("--pull is valid only with --base: project Containerfiles reference the local-only "
+             + BASE + "; refresh the base with `jms build --base --pull --no-cache`, "
+             "then rebuild the project with --no-cache", 2)
+    if args.base and args.workdir is not None:
+        fail("--base cannot be combined with --workdir", 2)
+    workdir = None if args.base else resolve_operand(args.workdir)[0]
+    data = project_data(workdir) if workdir is not None else None
+    if not data:
+        runtime_ready()
+        build_base(args)
+        print("built base image " + BASE)
+        return
+    approve(data["root"], data["tf"], args, action="build", config=data["config"])
+    runtime_ready()
+    tag, built = build_project(data, args)
+    print(("built project image " if built else "project image up to date ") + tag)
+
+
+def cmd_launch(args):
+    if args.auth and args.no_auth: fail("--auth and --no-auth cannot be combined", 2)
+    if args.workdir is not None and args.name is not None:
+        fail("a positional project name cannot be combined with --workdir", 2)
+    validate_launch_cli_runtime_args(args)
+    operand = args.workdir if args.workdir is not None else args.name
+    workdir, explicit = resolve_operand(operand)
+    data = project_data(workdir)
+    if not data:
+        if reserved_root(workdir):
+            fail("workdir overlaps a protected jms host directory: " + quote(workdir))
+        runtime_path(workdir)
+    if not data and not explicit:
+        refusal = implicit_workdir_refusal(workdir)
+        if refusal: fail(refusal + " -- cd into a project or pass a workdir", 2)
+    validate_agent_state_sources("root" if args.root else "isolation")
+    validate_shell_state_source()
+    if data:
+        _, auth = approve(data["root"], data["tf"], args, action="launch", config=data["config"])
+        runtime_ready()
+        image, _ = build_project(data, args)
+        argv = launch_plan(workdir, data, args, image, auth)
+    else:
+        runtime_ready()
+        ensure_base(args)
+        argv = launch_plan(workdir, None, args, BASE, not args.no_auth)
+    runtime_run(argv, replace=True)
+
+
+def cmd_trust(args):
+    if args.auth and args.no_auth:
+        fail("--auth and --no-auth cannot be combined", 2)
+    action = getattr(args, "trust_action", None)
+    # The historical grammar is `trust [path]`; reserve only the three verbs,
+    # so an absolute path remains a valid first positional operand.
+    if action not in (None, "list", "revoke", "prune"):
+        if args.path: fail("trust accepts one project path", 2)
+        args.path, action = action, None
+    if action in ("list", "revoke", "prune"):
+        if getattr(args, "fingerprint", None):
+            fail("--fingerprint is valid only when approving project trust", 2)
+        if getattr(args, "auth", False) or getattr(args, "no_auth", False):
+            fail("--auth and --no-auth are valid only when approving project trust", 2)
+    if args.purge_images and action != "revoke":
+        fail("--purge-images is valid only with trust revoke", 2)
+    if action == "list":
+        if args.path: fail("trust list does not take a path", 2)
+        store = read_store()
+        for pid, record in sorted(store["projects"].items()):
+            state = "present" if os.path.isdir(record["root"]) else "missing"
+            print("%s  %s  %s  auth=%s" % (pid[:12], quote(record["root"]), state, "yes" if record["grants"]["auth"] else "no"))
+        return
+    if action == "prune":
+        if args.path: fail("trust prune does not take a path", 2)
+        removed = []
+        def prune(store):
+            for pid, record in list(store["projects"].items()):
+                if not os.path.isdir(record["root"]):
+                    removed.append((pid, record)); del store["projects"][pid]
+            return bool(removed)
+        update_store(prune)
+        for pid, record in removed: print("pruned trust record " + pid[:12] + " " + quote(record["root"]))
+        return
+    if action == "revoke":
+        if not args.path: fail("trust revoke requires a project path", 2)
+        workdir, _ = resolve_operand(args.path)
+        root, _ = discover(workdir, consume_spec=False)
+        root = root or workdir
+        pid = hashlib.sha256(root).hexdigest()
+        revoked = []
+        def revoke(store):
+            if pid not in store["projects"]:
+                if args.purge_images:
+                    return False
+                fail("no trust record for " + quote(root))
+            revoked.append(True)
+            del store["projects"][pid]
+            return True
+        update_store(revoke)
+        print(("revoked trust for " if revoked else "trust already revoked for ") + quote(root))
+        if args.purge_images:
+            try:
+                runtime_ready()
+                gc_project_images(pid, tag_prefix_for(root, pid), keep=0)
+            except JMSException as exc:
+                fail("trust was revoked, but image purge failed: " + str(exc))
+        return
+    workdir, _ = resolve_operand(args.path)
+    data = project_data(workdir)
+    if not data: fail("no project container definition found")
+    approve(data["root"], data["tf"], args, action="trust", config=data["config"])
+    print("trusted " + quote(data["root"]))
+
+
+def cmd_inspect(args):
+    if args.workdir is not None and args.name is not None:
+        fail("a positional project name cannot be combined with --workdir", 2)
+    workdir, _ = resolve_operand(args.workdir if args.workdir is not None else args.name)
+    data = project_data(workdir)
+    print("workdir: " + quote(workdir))
+    if not data:
+        print("root: " + quote(workdir)); print("spec: shared base")
+        print("project_id: " + hashlib.sha256(workdir).hexdigest())
+        print("target_image: " + BASE)
+        return
+    print("root: " + quote(data["root"])); print("spec: " + quote(data["spec"]))
+    print("project_id: " + data["pid"]); print("trust_fingerprint: " + data["tf"])
+    error = None
+    try:
+        record = read_store()["projects"].get(data["pid"])
+    except JMSException as exc:
+        record, error = None, str(exc)
+    live = record if record and record.get("tf") == data["tf"] else None
+    env_pin = os.environ.get("JMS_TRUST_FINGERPRINT")
+    if env_pin is not None and env_pin != data["tf"]: source = "JMS_TRUST_FINGERPRINT mismatch"
+    elif env_pin == data["tf"]: source = "JMS_TRUST_FINGERPRINT (one-shot)"
+    elif live: source = "trust store"
+    elif record: source = "stale trust-store record"
+    else: source = "none"
+    print("trust_store: " + ("error: " + error if error else "readable"))
+    print("trust_source: " + source)
+    print("build_run_grant: " + ("held" if live or env_pin == data["tf"] else "required"))
+    print("credential_grant: " + ("held" if live and live["grants"]["auth"] else "required"))
+    print("target_image: " + data["tag_prefix"] + ":" + data["tf"][:12])
+
+
+def cmd_init(args):
+    workdir, _ = resolve_operand(args.workdir)
+    if workdir == home_path(): fail("cannot initialize a project at $HOME")
+    if workdir == b"/": fail("cannot initialize a project at /")
+    if reserved_root(workdir): fail("cannot initialize inside a protected jms host directory")
+    target = Path(os.fsdecode(workdir)) / ".jmscontainer"
+    outer_root, _ = discover(parent(workdir), consume_spec=False)
+    if outer_root is not None:
+        print("notice: nested project will shadow outer definition at " + quote(outer_root))
+    created_files = []
+    def create_scaffold(path, contents):
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        created_files.append(path)
+        with os.fdopen(fd, "w") as file:
+            file.write(contents)
+    try:
+        target.mkdir()
+    except FileExistsError:
+        fail(".jmscontainer already exists: " + quote(str(target)))
+    try:
+        create_scaffold(target / "Containerfile", "# Project-specific jmscontainers image\nFROM " + BASE + "\n\n# USER root\n# RUN dnf -y install <packages> && dnf clean all\n# USER isolation\n")
+        if args.with_manifest:
+            create_scaffold(target / "jmscontainer.toml", "# Runtime configuration for jms\n# [env]\n# [[mounts]]\n# source = \"~/.cache/example\"\n# target = \"/home/isolation/.cache/example\"\n# readonly = true\n# [run]\n# entry = [\"/bin/bash\", \"-l\"]\n")
+    except Exception:
+        for path in reversed(created_files):
+            try: os.unlink(path)
+            except OSError: pass
+        try: os.rmdir(target)
+        except OSError: pass
+        raise
+    print("created " + quote(str(target / "Containerfile")))
+
+
+def container_records() -> list[dict]:
+    records = runtime_json(["container", "list", "--all", "--format", "json"])
+    if not isinstance(records, list):
+        fail("container list did not return a JSON array")
+    parsed = []
+    for record in records:
+        try:
+            ident = record["id"]
+            labels = record["configuration"].get("labels", {})
+        except (KeyError, TypeError):
+            fail("container list returned an invalid container record")
+        if not isinstance(ident, str) or "\0" in ident or not isinstance(labels, dict):
+            fail("container list returned an invalid container record")
+        parsed.append({"id": ident, "labels": labels})
+    return parsed
+
+
+def cmd_clean(args):
+    if args.all and args.workdir is not None:
+        fail("--all cannot be combined with --workdir", 2)
+    scope = None
+    if not args.all:
+        workdir, explicit = resolve_operand(args.workdir)
+        root, _ = discover(workdir, consume_spec=False)
+        if not root:
+            if not explicit and implicit_workdir_refusal(workdir) is not None:
+                fail("no project container definition found -- pass --workdir or --all", 2)
+            root = workdir
+        scope = hashlib.sha256(root).hexdigest()
+        scope_prefix = tag_prefix_for(root, scope)
+    runtime_ready()
+    ids = []
+    for record in container_records():
+        # The jms.project label is the sole ownership rule; a jms- name prefix
+        # is user-controlled and is not proof of provenance.
+        if args.all and "jms.project" in record["labels"]:
+            ids.append(record["id"])
+        elif scope and record["labels"].get("jms.project") == scope:
+            ids.append(record["id"])
+    image_refs = []
+    if args.images:
+        for record in image_records():
+            facts = image_record_facts(record)
+            if facts is None:
+                continue
+            ref, _, labels = facts
+            pid = labels.get("jms.project")
+            # The label alone is not proof of ownership (labels inherit from
+            # FROM images); jms-built refs always carry the jms tag prefix.
+            name = local_name(ref)
+            if args.all and ((pid is not None and name.startswith("jmscontainers-"))
+                             or name == BASE):
+                image_refs.append(ref)
+            elif scope and pid == scope and name.startswith(scope_prefix + ":"):
+                image_refs.append(ref)
+    image_refs = sorted(set(image_refs))
+    for value in [*ids, *image_refs]:
+        runtime_argument(value, usage=False)
+    if args.dry_run:
+        for ident in ids: print("would remove container " + quote(ident))
+        for ref in image_refs: print("would remove image " + quote(ref))
+        return
+    for ident in ids:
+        # Stopping an already-stopped container may error; delete --force is
+        # the authoritative step.
+        runtime_run(["container", "stop", ident], check=False)
+        runtime_run(["container", "delete", "--force", ident])
+        print("removed container " + quote(ident))
+    for ref in image_refs:
+        runtime_run(["container", "image", "delete", ref])
+        print("removed image " + quote(ref))
+
+
+class SafeArgumentParser(argparse.ArgumentParser):
+    """Keep argparse's fixed usage readable without emitting hostile bytes."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(2, "%s: error: %s\n" % (self.prog, terminal_safe_text(message)))
+
+
+def parser():
+    p = SafeArgumentParser(prog="jms",
+                           description="Build and run trust-gated development containers.")
+    p.add_argument("--version", action="version", version=__version__)
+    sub = p.add_subparsers(dest="command", required=True)
+    def flags(sp, *pairs):
+        for name, text in pairs:
+            sp.add_argument(name, action="store_true", help=text)
+    WORKDIR_HELP = "project root: absolute or relative path (default: current directory)"
+    NAME_HELP = ("project root: absolute or relative path, or a bare name when "
+                 "JMS_PROJECT_ROOTS is set (default: current directory)")
+    NO_AUTH_HELP = "do not mount agent state (credentials and configuration)"
+    NO_CACHE_HELP = "build without reusable layers"
+    b = sub.add_parser("build", help="realize an image from current local inputs",
+                       description="Realize an image from current local inputs.")
+    b.add_argument("-w", "--workdir", help=WORKDIR_HELP)
+    flags(b, ("--base", "build the shared base image instead of a project image"),
+          ("--trust", "one-shot build/run approval for this invocation; never grants credentials"),
+          ("--no-auth", NO_AUTH_HELP), ("--no-cache", NO_CACHE_HELP),
+          ("--pull", "refresh FROM references from the registry (--base only)"))
+    b.set_defaults(func=cmd_build)
+    l = sub.add_parser("launch", help="build or reuse the discovered image and run a container",
+                       description="Build (or reuse) the discovered image and run a container on it.")
+    l.add_argument("name", nargs="?", help=NAME_HELP)
+    l.add_argument("-w", "--workdir", help=WORKDIR_HELP)
+    flags(l, ("--trust", "one-shot build/run approval for this invocation; never grants credentials"),
+          ("--auth", "mount agent state (asks for the credential grant if not already given)"),
+          ("--no-auth", NO_AUTH_HELP), ("--no-cache", NO_CACHE_HELP))
+    l.add_argument("-r", "--root", action="store_true", help="run as root instead of the isolation user")
+    l.add_argument("-b", "--bin", help="entry program to run instead of the configured entry")
+    l.add_argument("-n", "--name", dest="container_name", metavar="NAME", help="container name")
+    l.set_defaults(func=cmd_launch)
+    i = sub.add_parser("inspect", help="report discovery, fingerprint, and trust status",
+                       description="Report discovery, fingerprint, and trust status.")
+    i.add_argument("name", nargs="?", help=NAME_HELP)
+    i.add_argument("-w", "--workdir", help=WORKDIR_HELP); i.set_defaults(func=cmd_inspect)
+    t = sub.add_parser("trust", help="approve a definition, or list/revoke/prune durable grants",
+                       description="Approve a project definition, or manage durable grants "
+                                   "with list, revoke, and prune.")
+    t.add_argument("trust_action", nargs="?", metavar="path|list|revoke|prune",
+                   help="project path to approve, or one of the reserved words")
+    t.add_argument("path", nargs="?", help="project path (revoke operand)")
+    t.add_argument("--fingerprint", metavar="HEX64",
+                   help="record durable trust non-interactively when the value matches the current fingerprint")
+    flags(t, ("--auth", "with --fingerprint, also record the credential grant; interactive approval asks regardless"),
+          ("--no-auth", "record the credential grant as declined without asking"),
+          ("--purge-images", "with revoke: also delete the project's images"))
+    t.set_defaults(func=cmd_trust)
+    n = sub.add_parser("init", help="scaffold .jmscontainer/Containerfile in a project",
+                       description="Scaffold .jmscontainer/Containerfile in a project.")
+    n.add_argument("-w", "--workdir", help=WORKDIR_HELP)
+    n.add_argument("--with-manifest", action="store_true", help="also scaffold jmscontainer.toml")
+    n.set_defaults(func=cmd_init)
+    c = sub.add_parser("clean", help="remove this project's jms containers",
+                       description="Remove this project's jms containers, or every jms "
+                                   "container with --all.")
+    c.add_argument("-w", "--workdir", help=WORKDIR_HELP)
+    flags(c, ("--all", "select all jms containers (and the shared base with --images)"),
+          ("--images", "also remove the selection's images"),
+          ("--dry-run", "report the selection without mutating"))
+    c.set_defaults(func=cmd_clean)
+    return p
+
+
+def parse_cli(argv=None):
+    """Parse jms arguments while preserving the launch `--` tail."""
+    values = list(sys.argv[1:] if argv is None else argv)
+    extra = []
+    if values and values[0] == "launch" and "--" in values:
+        separator = values.index("--")
+        extra = values[separator + 1:]
+        values = values[:separator]
+    args = parser().parse_args(values)
+    if args.command == "launch":
+        args.extra = extra
+    return args
+
+
+def main():
+    try:
+        args = parse_cli()
+        args.func(args)
+    except JMSException as exc:
+        print("error: " + terminal_safe_text(str(exc)), file=sys.stderr)
+        return exc.exit_code
+    except OSError as exc:
+        # Host files and directories can disappear or change between any two
+        # syscalls.  Convert that expected environmental failure at the CLI
+        # boundary; non-I/O programming exceptions intentionally still escape.
+        print("error: host I/O failure: " + quote(str(exc)), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
