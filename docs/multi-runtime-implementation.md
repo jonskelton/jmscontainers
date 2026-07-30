@@ -26,15 +26,25 @@ same Fedora image.
 > into the body. The full issue log, decision history, and qualification
 > narratives live in git history (the pre-slim revision of this file).
 > MIR-033 remains open in §11; the follow-up repository review recorded
-> MIR-034…MIR-039 in the pre-implementation register below.
+> MIR-034…MIR-039 in the pre-implementation register below, all six of
+> which are now resolved in place (decisions in the affected sections,
+> IDs and findings retained in the register).
 
 ## Scope for 1.1.0
 
 - **macOS:** Apple Silicon, apple/container CLI pinned exactly to 1.2.0
   (the only version Homebrew ships; identity fixture captured on it).
-- **Linux:** Debian 13, amd64 only, local rootless Podman ≥ 5.4 (Debian's
-  packaged version). Recent Fedora and Ubuntu, arm64, and SELinux-enforcing
-  hosts are named mid-term targets, out of scope for the first push (§12).
+- **Linux:** local rootless Podman ≥ 5.4; the qualified configuration is
+  Debian 13 on amd64 (Debian's packaged Podman). The Debian/amd64 boundary
+  is a **qualification statement, not an enforced gate** (MIR-039): jms
+  detects neither distribution nor architecture, and other local rootless
+  Linux hosts select the Podman backend and run **unqualified but
+  allowed**, with no warning — consistent with the SELinux and NFS
+  non-detection stances (§§7.2, 10). What is **refused** is exactly:
+  non-Linux/non-macOS platforms, uid 0 on Linux, and remote Podman
+  (§§2, 4). Recent Fedora and Ubuntu, arm64, and SELinux-enforcing hosts
+  are named mid-term qualification targets, out of scope for the first
+  push (§12).
 - The Podman 4.9.3 fixtures and qualification runs checked in under
   `tests/fixtures/` are retained as pre-qualification for the mid-term
   Ubuntu 24.04 target; they are not 1.1.0 acceptance material
@@ -78,7 +88,7 @@ acceptance tests.
 | MIR-036 | Blocker | ABI-probe volume side effects | Resolved (§7.4, §9) |
 | MIR-037 | High | Shell ABI observation | Resolved (§7.4) |
 | MIR-038 | High | Duplicate image identities | Resolved (§5) |
-| MIR-039 | High | Linux support-scope enforcement | Open |
+| MIR-039 | High | Linux support-scope enforcement | Resolved (Scope, §§2, 9, 10, 12) |
 
 ### MIR-034 — Cached images bypass the isolation-user ABI attestation
 
@@ -237,7 +247,7 @@ acceptance tests.
 
 ### MIR-039 — The declared Debian/amd64 support scope is not enforced or qualified
 
-- **Status:** Open — high
+- **Status:** Resolved 2026-07-29
 - **Affects:** Scope, §2 selection, §§4, 8–10, §12, and the selection tests
 - **Finding:** The support scope says Linux means Debian 13 on amd64 only,
   while `select_runtime()` accepts every `sys.platform.startswith("linux")`
@@ -247,17 +257,21 @@ acceptance tests.
   out of scope or unsupported. The document does explicitly choose
   non-detection for SELinux, but it never says whether the Debian and amd64
   boundaries are enforceable gates or qualification statements only.
-- **Required resolution:** Choose one policy and make all sections agree. If
-  this is an enforced support matrix, define side-effect-free architecture
-  and host-distribution detection, canonical accepted values, failure
-  ordering, diagnostics, and tests. If it is a qualification matrix, state
-  explicitly that other local rootless Linux configurations are allowed to
-  run unsupported, decide whether they receive a warning, and stop describing
-  platform selection as if it enforces Debian/amd64.
-- **Done when:** Selection/readiness tests cover Debian amd64, another distro,
-  arm64, and the already-decided SELinux non-gate. README, SECURITY.md, CLI
-  docs, release checklist, and §12 use the same “refused” versus
-  “unqualified but allowed” vocabulary.
+- **Resolution:** Debian 13/amd64 is a **qualification matrix, not an
+  enforced gate**. jms performs no distribution or architecture detection
+  anywhere — consistent with the existing SELinux and NFS non-detection
+  stances — and other local rootless Linux configurations select the
+  Podman backend and run unqualified, with no warning (a warning would
+  require exactly the detection being declined). What *is* refused stays
+  refused: non-Linux/non-macOS platforms, uid 0 on Linux, and remote
+  Podman. Scope, §2 selection, and §§10, 12 now use the shared “refused”
+  versus “unqualified but allowed” vocabulary. Recorded in Scope, §§2, 9,
+  10, 12; test named in §9's selection tests.
+- **Done when:** Selection/readiness tests
+  (`test_linux_scope_is_qualification_not_gate`) cover Debian amd64,
+  another distro, arm64, and the already-decided SELinux non-gate. README,
+  SECURITY.md, CLI docs, release checklist, and §12 use the same “refused”
+  versus “unqualified but allowed” vocabulary.
 
 ---
 
@@ -376,6 +390,12 @@ mutating the store, so a selection failure leaves the store untouched.
 The uid-0 refusal lives inside selection because rootless Podman is the
 only qualified Linux mode: running the whole tool as uid 0 silently removes
 the user-namespace boundary that stands in for the macOS VM.
+
+Selection deliberately accepts every Linux (MIR-039): the Debian 13/amd64
+scope is a qualification matrix, not a gate, and no distribution or
+architecture detection exists anywhere in jms. A Fedora, Ubuntu, or arm64
+host running local rootless Podman is unqualified but allowed, silently —
+the selection tests (§9) pin this.
 
 **Remote Podman is unsupported and detected, not guessed.** Podman silently
 switches to a remote service when `CONTAINER_HOST`, `CONTAINER_CONNECTION`,
@@ -1284,8 +1304,12 @@ The `FakeRuntime` class is keyed on `argv` prefixes like
    and flag ordering, the places a regression would be silent and
    security-relevant.
 4. **Selection tests:** platform defaults, unsupported platform (exit 2),
-   root-on-Linux refusal, and a Podman-info fixture with
-   `serviceIsRemote=true` failing readiness.
+   root-on-Linux refusal, a Podman-info fixture with
+   `serviceIsRemote=true` failing readiness, and
+   `test_linux_scope_is_qualification_not_gate` (MIR-039): a Debian amd64
+   host, a non-Debian distro, and an arm64 host all select
+   `PodmanBackend` identically with no warning and no distro/arch
+   detection call — alongside the already-decided SELinux non-gate.
 5. **Laziness tests:** `--version`, `inspect`, `init`, `trust list`,
    `trust revoke` without `--purge-images`, and `trust prune` succeed with
    no runtime executable, on a mocked unsupported platform, and in a
@@ -1542,9 +1566,13 @@ the unit-test plan above.
 
 - `README.md`: platform section becomes "Apple Silicon Mac
   (apple/container) **or** Debian 13 (amd64) with rootless Podman ≥ 5.4",
-  naming recent Fedora and Ubuntu — and the arm64 architecture — as
-  mid-term targets out of scope for 1.1.0, SELinux-enforcing hosts as
-  unqualified, supplementary-group/ACL-only project access as unsupported,
+  using the MIR-039 vocabulary throughout: **refused** covers exactly
+  non-Linux/non-macOS platforms, uid 0 on Linux, and remote Podman;
+  everything else outside the qualified matrix — other distributions,
+  arm64, SELinux-enforcing hosts — is **unqualified but allowed** (no
+  detection, no warning), naming recent Fedora and Ubuntu and the arm64
+  architecture as mid-term qualification targets,
+  supplementary-group/ACL-only project access as unsupported,
   and NFS/distributed home directories as unsupported (rootless Podman
   storage under `~/.local/share/containers` is known-broken on NFS; not
   detected — heuristics false-positive too easily — the failure surfaces
@@ -1638,13 +1666,16 @@ runs, evaluated post-release.
   (§§2, 4); a remote service invalidates the local-path mount semantics
   and the rootless threat model.
 - **Fedora and Ubuntu as host platforms (for 1.1.0).** Mid-term targets;
-  1.1.0 qualifies Debian 13 only. The Ubuntu 24.04 / Podman 4.9.3
-  qualification evidence already captured is retained for the promotion.
+  1.1.0 qualifies Debian 13 only. Unqualified but allowed, not refused
+  (MIR-039). The Ubuntu 24.04 / Podman 4.9.3 qualification evidence
+  already captured is retained for the promotion.
 - **SELinux-enforcing hosts (for 1.1.0).** Desired, deferred with the
-  Fedora host target. A documented limitation — not detected or refused.
+  Fedora host target. A documented limitation — unqualified but allowed,
+  not detected or refused.
 - **Linux architectures other than amd64 (for 1.1.0).** arm64 is a
-  mid-term target; the base image's npm tools and example downloads get
-  their arm64 audit at promotion time.
+  mid-term target, unqualified but allowed (MIR-039); the base image's
+  npm tools and example downloads get their arm64 audit at promotion
+  time.
 - **NFS/distributed home directories.** Unsupported and documented, not
   detected. A qualified `storage.conf` relocation is possible follow-up
   work if the limitation proves painful.
