@@ -77,7 +77,7 @@ acceptance tests.
 | MIR-035 | Blocker | Cleanup result protocol | Resolved (§§2, 5) |
 | MIR-036 | Blocker | ABI-probe volume side effects | Resolved (§7.4, §9) |
 | MIR-037 | High | Shell ABI observation | Resolved (§7.4) |
-| MIR-038 | High | Duplicate image identities | Open |
+| MIR-038 | High | Duplicate image identities | Resolved (§5) |
 | MIR-039 | High | Linux support-scope enforcement | Open |
 
 ### MIR-034 — Cached images bypass the isolation-user ABI attestation
@@ -207,7 +207,7 @@ acceptance tests.
 
 ### MIR-038 — “One fact per image identity” lacks a duplicate-record rule
 
-- **Status:** Open — high
+- **Status:** Resolved 2026-07-29
 - **Affects:** §2 normalized types, §5, §9, R5.2–R5.4
 - **Finding:** `ImageFact` promises exactly one fact per image ID and
   retention relies on that uniqueness. The apple/container text says to
@@ -219,15 +219,20 @@ acceptance tests.
   An implementation can therefore duplicate retention units or
   arbitrarily choose ownership data while still appearing to follow the
   per-backend paragraphs.
-- **Required resolution:** Specify one shared identity accumulator after
-  backend record parsing. Define ID format validation, deterministic
-  ref union/deduplication, ordering, dangling-name filtering, full
-  string/NUL validation for refs and label keys/values, and fail-closed
-  handling for conflicting `created` or label data for the same ID.
-- **Done when:** Both backend normalizers are tested with reordered
-  duplicates, repeated refs, conflicting timestamps, conflicting labels,
-  malformed label keys/values, and mixed dangling/named records. Every
-  accepted permutation yields the same single `ImageFact`; every ambiguous
+- **Resolution:** §5 now specifies one shared identity accumulator that
+  both backend normalizers feed with per-record observations: IDs are
+  validated as 64-character lowercase hex; refs and label keys/values are
+  validated as NUL-free valid UTF-8 (keys non-empty); dangling records are
+  dropped before accumulation; refs are unioned per ID, deduplicated, and
+  sorted lexicographically so output is independent of record order; and
+  any disagreement between records for one ID on `created` or on a label
+  value aborts the whole operation as malformed engine output. Facts are
+  emitted sorted by `id`. Recorded in §5; tests in R5.10.
+- **Done when:** Both backend normalizers are tested
+  (`test_image_fact_accumulator`, R5.10) with reordered duplicates,
+  repeated refs, conflicting timestamps, conflicting labels, malformed
+  label keys/values, and mixed dangling/named records. Every accepted
+  permutation yields the same single `ImageFact`; every ambiguous
   ownership case aborts.
 
 ### MIR-039 — The declared Debian/amd64 support scope is not enforced or qualified
@@ -826,6 +831,24 @@ first.
   `Labels` map. `refs` from `Names`; records with null/empty `Names`
   (dangling) are skipped — dangling layers are never jms-owned; `<none>`
   names are treated as absent; digests and `RepoTags` are ignored.
+
+**One shared identity accumulator (MIR-038).** The per-backend paragraphs
+above define only how records are *read*; how identities *merge* is one
+shared accumulator that both normalizers feed with per-record
+observations and that produces the final `ImageFact` list:
+
+- Every `id` must be a 64-character lowercase-hex string; every ref and
+  every label key and value must be NUL-free valid UTF-8, with label keys
+  non-empty. A violation aborts the whole operation.
+- Records with no refs (dangling, after `<none>` filtering) are dropped
+  before accumulation, so a fact's `refs` is always non-empty; a dangling
+  record for an ID that also has named records contributes nothing.
+- Refs are unioned per ID with exact duplicates deduplicated, then sorted
+  lexicographically, and facts are emitted sorted by `id` — output is a
+  pure function of the record *set*, independent of record order.
+- Two records for one ID that disagree on `created` or on any label
+  key's value abort the operation as malformed engine output — ownership
+  data is never arbitrarily chosen. Identical repeats are tolerated.
 
 `created` is one internal type — Unix epoch seconds — on both backends, so
 sorting is uniform and never compares backend-local representations.
@@ -1463,6 +1486,7 @@ only for non-enforceable wording, never for a behavioral claim).
 | R5.7 | 5 | partial cleanup/GC failures: attempt-all with aggregated diagnostics, exit 1 for `clean`/purge, warn-only GC, `absent` results tolerated as success, second run converges | conformance | `test_cleanup_partial_failure_semantics` (failures injected at every stop/remove/untag position, both backends) |
 | R5.8 | 5 | cleanup ownership requires `jms.project` **and** `jms.container=launch`, or `jms.container=abi-probe`; builds stamp the neutral value overriding any preseeded label; inherited-label, manual, and marker-absent containers never selected; dry-run and real cleanup select the same IDs | conformance + golden | `test_cleanup_provenance_predicate` (jms-launched, manual-from-jms-image, unrelated `jms-` name, malicious preseed, marker-absent, orphaned abi-probe) plus build/launch argv goldens pinning both label stamps on both backends |
 | R5.9 | 2, 5 | removal operations return normalized `RemovalResult`s: exit 0 → `removed`; qualified not-found status **and** stderr → `absent`; not-found-looking text with the wrong exit status, invalid UTF-8, or any other failure → `failed` with terminal-safe `detail`; command code never sees a `CompletedProcess`, raw stderr, or a backend branch | conformance | `test_removal_result_classification` (container and image removals, both backends) |
+| R5.10 | 5 | shared identity accumulator: reordered duplicates, repeated refs, and mixed dangling/named records for one ID yield the identical `ImageFact`; malformed IDs, refs, or label keys/values, and conflicting `created` or label data, abort | conformance | `test_image_fact_accumulator` |
 | R6.1 | 6 | per-backend build argv: label flag spelling, `--pull=always` base-with-pull, `--pull=missing` project builds | golden | `test_build_argv_golden` per backend |
 | R6.2 | 6 | v2 context-escape failure still trips `CONTEXT_NOTE` under Podman | int-B | existing escape test, parametrized |
 | R7.1 | 7.1 | explicit `--userns` on both variants: `keep-id:uid=1000,gid=1000` default, `host` under `--root` | golden | launch argv goldens (default, `--root`, manifest mounts, `--auth`) |
