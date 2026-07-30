@@ -52,6 +52,10 @@ listed here may change:
   `trust revoke --purge-images` attempt every selected removal and
   aggregate failures instead of aborting at the first, and project GC
   warns on stderr about failed deletions instead of staying silent.
+- The apple/container qualification pin: `RUNTIME_MIN`/`RUNTIME_MAX`
+  move from 1.1.0 to 1.2.0 (MIR-025 — the identity fixture is captured
+  on 1.2.0, the only version Homebrew now ships). The version-mismatch
+  diagnostics themselves are unchanged; only the accepted version moves.
 - Container-cleanup provenance (MIR-024): builds stamp
   `jms.container=image`, launches pass `jms.container=launch`, and
   cleanup on both backends selects only containers carrying the launch
@@ -117,7 +121,7 @@ target rather than first-push acceptance material.
 | MIR-022 | Blocker | Isolation-user ABI attestation | Resolved (design) |
 | MIR-023 | High | `/bin/realpath` diagnostic ordering | Resolved (design) |
 | MIR-024 | Blocker | Container cleanup provenance | Resolved (design) |
-| MIR-025 | Blocker | apple/container image identity schema | Open |
+| MIR-025 | Blocker | apple/container image identity schema | Resolved (design) |
 | MIR-026 | Blocker | macOS build-argv compatibility | Resolved (design) |
 | MIR-027 | High | Debian prerequisite diagnostics | Resolved (design) |
 | MIR-028 | High | Subordinate-ID sizing | Resolved (design) |
@@ -134,12 +138,12 @@ acceptance tests the implementation must land before release.
 The follow-up repository cross-check recorded in MIR-022–033 found that six
 of those decisions have unresolved downstream contradictions. Those original
 issues remain closed as historical decisions, but the new blocker IDs
-supersede the affected portions of the design. Per this gate, implementation
-must not begin while MIR-025 is open
-(MIR-022, MIR-026, and MIR-031 were resolved in design on 2026-07-29, as
-were MIR-023, MIR-024, MIR-027, MIR-028, MIR-029, MIR-030, and MIR-032); the
-remaining high-severity issue (MIR-033) must be assigned to an
-implementation phase and resolved before backend enablement.
+supersede the affected portions of the design. Per this gate, every blocker
+is now resolved in design: MIR-022, MIR-026, and MIR-031 on 2026-07-29, as
+were MIR-023, MIR-024, MIR-027, MIR-028, MIR-029, MIR-030, and MIR-032, and
+finally MIR-025 (also 2026-07-29, from a live macOS capture). The remaining
+high-severity issue (MIR-033) must be assigned to an implementation phase
+and resolved before backend enablement.
 
 ### MIR-001 — Runtime selection must not break runtime-free commands
 
@@ -919,10 +923,11 @@ implementation phase and resolved before backend enablement.
   ID, so it cannot destroy a user's unrelated alias of the same image.
   Ownership still requires label **and** tag prefix, now evaluated per
   ref within a fact. Dangling images are never jms-owned and are skipped
-  (MIR-006). §§2 and 5 are updated accordingly. Verifying that
-  apple/container's list output supports this identity model, plus
-  deletion ordering and partial-failure behavior for base/child images,
-  is part of the **Done when** conformance tests.
+  (MIR-006). §§2 and 5 are updated accordingly. That apple/container's
+  list output supports this identity model is now empirically confirmed
+  (MIR-025 fixture: top-level `id`, one ref per record, grouped by jms);
+  deletion ordering and partial-failure behavior for base/child images
+  remain part of the **Done when** conformance tests.
 - **Affects:** §5
 - **Finding:** Expanding one Podman image into one fact per name makes retention
   count tags rather than image identities and can schedule multiple removals
@@ -1241,14 +1246,42 @@ implementation phase and resolved before backend enablement.
 
 ### MIR-025 — The normalized image identity cannot yet be produced on macOS
 
-- **Status:** Open — blocker
-- **Progress (2026-07-29):** parked — no macOS capture machine is
-  currently available. The unblocking step is one sanitized
-  `container image list --format json` capture from the qualified
-  apple/container version on an Apple Silicon Mac; until it is checked
-  in, this issue keeps blocking the MIR-018 identity model and the §2
-  `ImageFact` protocol type. Phase-1 seam work that does not depend on
-  `ImageFact` is not blocked.
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** `ImageFact` stands as specified — apple/container exposes a
+  usable identity. The identity is the record's top-level `id`: the 64-hex
+  digest of the image's OCI index, always equal to
+  `configuration.descriptor.digest` minus its `sha256:` prefix, and the
+  strict normalizer asserts that equality and fails closed on mismatch.
+  The list models **one ref per record**: a second tag on the same image
+  produces a second record with the same `id`, so `image_facts()` on this
+  backend groups records by `id` and collects each record's
+  `configuration.name` into `refs` — the MIR-018 grouping is produced by
+  jms, and the runtime's data model supports it. Refs are stored with
+  mixed qualification and preserved verbatim: pulled and
+  `container image tag`-created names are registry-qualified
+  (`docker.io/library/…`) while `container build` names are stored
+  unqualified on 1.2.0, so ownership/tag-prefix matching keys on
+  `local_name()`-normalized refs (as `gc_project_images` already does).
+  `created` parses the ISO-8601 `configuration.creationDate`, which is
+  the image's OCI config creation time, not local build/import time — a
+  label-only build inherits its parent's timestamp, so retention
+  ordering must tolerate equal timestamps (stable sort, as today).
+  Labels stay `variants[0].config.config.Labels`, absent treated as
+  `{}`. **Qualification moves to container 1.2.0**: the capture host and
+  Homebrew now ship 1.2.0 only, so jms 1.1.0 re-pins
+  `version_min = version_max = (1, 2, 0)` (§2) — an intentional,
+  changelog-listed change consistent with the exact-pin policy (§4).
+- **Qualification evidence (2026-07-29, container CLI 1.2.0, Apple
+  Silicon (arm64), macOS 26.5):**
+  `tests/fixtures/apple-container-1.2.0-images.json` is a probe-built
+  capture — whole records filtered verbatim from live
+  `container image list --format json` output; recipe in
+  `tests/fixtures/README.md`. It covers a multi-arch pulled image
+  (`fedora:latest`, eight variants), a built base-like image, and a
+  labelled project-like image appearing as two records with the same
+  `id` under an unqualified build tag and a qualified alias tag.
+  Malformed-variant fixtures and the conformance suite remain
+  acceptance work per **Done when**.
 - **Affects:** MIR-004, MIR-018, and §§2, 5, 9, and 11
 - **Finding:** `ImageFact` requires a full image ID plus every ref grouped by
   that identity. The current apple/container parser and `image_record()` test
@@ -1678,8 +1711,8 @@ class ContainerBackend:            # apple/container (macOS)
     name = "container"
     exe = "container"
     install_hint = "install it with: brew install container"
-    version_min = (1, 1, 0)
-    version_max = (1, 1, 0)        # exact qualification, as today
+    version_min = (1, 2, 0)        # re-qualified for jms 1.1.0 (MIR-025)
+    version_max = (1, 2, 0)        # exact qualification, as today
 
 class PodmanBackend:               # podman (Linux, rootless)
     name = "podman"
@@ -1785,9 +1818,12 @@ about a backend is visible outside it.
 All data crossing the protocol boundary is normalized. Command functions
 never see raw runtime JSON, stderr bytes, or `subprocess` objects.
 
-> **Implementation blocked by MIR-025:** the required apple/container image
-> identity has not been established from a real fixture. (The final-image
-> ABI query is now defined: `verify_image_abi`, per MIR-022 and §7.4.)
+> **MIR-025 resolved:** the apple/container image identity is the
+> top-level `id` of each `container image list --format json` record (the
+> OCI index digest); the list is one-ref-per-record, grouped into
+> `ImageFact` by jms. Fixture:
+> `tests/fixtures/apple-container-1.2.0-images.json`. (The final-image
+> ABI query is `verify_image_abi`, per MIR-022 and §7.4.)
 
 ```python
 Version = tuple[int, int, int]
@@ -2134,8 +2170,16 @@ tuples — **one fact per image identity**, carrying all of its names
 shape proven by the checked-in fixtures is accepted, anything else fails
 closed, and malformed ownership-relevant fields abort rather than skip.
 
-- apple/container: the current extraction, regrouped by image identity;
-  `created` parsed from the ISO-8601 `creationDate` string.
+- apple/container: the current extraction, regrouped by the record's
+  top-level `id` (the OCI index digest, equal to
+  `configuration.descriptor.digest` minus `sha256:` — asserted, fail
+  closed); the list is one-ref-per-record, so a multi-tagged image
+  contributes several records to one fact. Refs keep the runtime's mixed
+  qualification verbatim (pulled/tagged names registry-qualified, built
+  names unqualified) — prefix matching keys on `local_name()`-normalized
+  refs. `created` parsed from the ISO-8601 `creationDate` string, which
+  is OCI config creation time (equal timestamps possible; stable sort).
+  See the MIR-025 fixture.
 - Podman: `refs` from `Names`; skip records with null/empty `Names`
   (dangling layers are never jms-owned); `created` from the integer
   `Created`.
