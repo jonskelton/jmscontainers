@@ -74,7 +74,7 @@ acceptance tests.
 | --- | --- | --- | --- |
 | MIR-033 | High | Nested CI execution contract | Open (§11) |
 | MIR-034 | Blocker | Cached-image ABI attestation | Resolved (§§6, 7.4, 12) |
-| MIR-035 | Blocker | Cleanup result protocol | Open |
+| MIR-035 | Blocker | Cleanup result protocol | Resolved (§§2, 5) |
 | MIR-036 | Blocker | ABI-probe volume side effects | Open |
 | MIR-037 | High | Shell ABI observation | Open |
 | MIR-038 | High | Duplicate image identities | Open |
@@ -115,7 +115,7 @@ acceptance tests.
 
 ### MIR-035 — Cleanup cannot classify removal results through the protocol
 
-- **Status:** Open — blocker
+- **Status:** Resolved 2026-07-29
 - **Affects:** §2's backend protocol and error contract, §5, §9, R5.7, and
   implementation phase 1
 - **Finding:** Section 5 requires cleanup and GC to attempt every removal,
@@ -128,14 +128,20 @@ acceptance tests.
   success/absent/hard-failure behavior without either parsing
   backend-specific stderr itself, branching on the backend, or violating the
   protocol's result boundary.
-- **Required resolution:** Add a normalized removal operation/result to the
-  protocol (or an equally explicit shared executor plus backend classifier).
-  Define who executes stop/remove, which output is captured, how each backend
-  recognizes only its qualified not-found forms, and how a hard failure is
-  returned for later aggregation without exposing untrusted raw bytes to
-  command code. Reconcile the single-exception error contract with this
-  deliberate non-raising result channel.
-- **Done when:** Cross-backend conformance tests feed success, qualified
+- **Resolution:** The pure `stop_argv`/`remove_argv`/`remove_image_argv`
+  serializers are replaced by three Class B executing operations —
+  `stop_container()`, `remove_container()`, `remove_image()` — that own
+  their invocation through the module-level `runtime_run()` and return a
+  normalized `RemovalResult` with outcome `removed`, `absent`, or `failed`
+  plus a terminal-safe quoted `detail` for failures. `absent` requires both
+  the backend's documented not-found exit status *and* its qualified
+  not-found stderr form; anything ambiguous (not-found-looking text with
+  the wrong exit status, invalid UTF-8) classifies as `failed`, which
+  cleanup aggregates — fail toward reporting. The error contract gains one
+  deliberate exception for this non-raising result channel. Recorded in
+  §§2, 5; tests in R5.9.
+- **Done when:** Cross-backend conformance tests
+  (`test_removal_result_classification`, R5.9) feed success, qualified
   absence, ambiguous/not-found-looking text with the wrong exit status,
   invalid UTF-8, and hard failure into container and image removals. Command
   tests prove attempt-all ordering and aggregated terminal-safe diagnostics
@@ -414,6 +420,12 @@ ContainerFact = {"id": str,      # full, untruncated, NUL-free
 Mount = tuple[bytes, str, bool]  # (host source, container target, readonly)
 
 @dataclass(frozen=True)
+class RemovalResult:             # normalized removal outcome (§5, MIR-035)
+    outcome: str                 # "removed" | "absent" | "failed"
+    detail: str = ""             # terminal-safe quoted diagnostic;
+                                 #   non-empty iff outcome == "failed"
+
+@dataclass(frozen=True)
 class LaunchPlan:
     name: str                            # container name (given or generated)
     user: str                            # "isolation" | "root"
@@ -468,8 +480,6 @@ returned argv through `runtime_run()`:
 | `mount_argument` | `(source: bytes \| str, target: str, readonly: bool = False) -> str` | — (called by `run_argv()`; grammar per §7.2) |
 | `build_argv` | `(context: str, tag: str, labels: dict[str, str], *, no_cache: bool, pull: bool, project: bool) -> list[str]` | `run_build()` with `capture=False` (context already validated via `runtime_path()` by `run_build()`, as today) |
 | `run_argv` | `(plan: LaunchPlan) -> list[str]` | `cmd_launch` via `runtime_run(argv, replace=True)` |
-| `stop_argv` / `remove_argv` | `(container_id: str) -> list[str]` | `cmd_clean` (stop with `check=False`; forced remove authoritative, §5) |
-| `remove_image_argv` | `(ref: str) -> list[str]` | `cmd_clean`, `gc_project_images` |
 
 **Class B — executing queries and policy.** These own their invocation and
 normalization because their success criteria are backend-specific, but
@@ -486,6 +496,20 @@ monkeypatch intercepts every execution on both backends:
 | `image_facts` | `() -> list[ImageFact]` | per-backend strict, fixture-backed, fail-closed normalizer (§5) |
 | `ps` | `() -> list[ContainerFact]` | per-backend strict, fail-closed normalizer (§5); id/label validation (string, NUL-free, dict) shared |
 | `verify_image_abi` | `(image: str) -> None` | Podman: never-started create/cp/rm probe attesting an image's `isolation` user against the ABI, run after every build and again on every launch's resolved image (§7.4, MIR-034), fail-closed; apple/container: no-op running no process |
+| `stop_container` / `remove_container` | `(container_id: str) -> RemovalResult` | executes the backend's stop / forced-remove argv via `runtime_run(check=False)` with output captured, and classifies the outcome (§5, MIR-035) |
+| `remove_image` | `(ref: str) -> RemovalResult` | executes the backend's image untag/remove argv the same way and classifies the outcome (§5, MIR-035) |
+
+Removal classification (MIR-035), identical rule shape on both backends
+with backend-owned patterns: exit 0 is `removed`; the backend's documented
+not-found exit status **combined with** its qualified not-found stderr
+diagnostic for that resource type is `absent`; everything else — including
+not-found-looking text with the wrong exit status, invalid UTF-8 output,
+or any other nonzero exit — is `failed`, with the stderr quoted
+terminal-safe into `detail`. Ambiguity always classifies as `failed`,
+which cleanup aggregates and reports (§5) — misclassifying a race as a
+failure is noisy but safe; the reverse could hide a real failure. Command
+code consumes only `RemovalResult` values: no backend branches, no
+`CompletedProcess`, no raw stderr.
 
 #### Free-function surface and monkeypatch seams
 
@@ -516,7 +540,11 @@ authority:
   output is untrusted bytes. Methods never return error strings, raw
   stderr, or `subprocess` results to commands; `parse_version`'s `None` is
   the single sentinel, and `runtime_ready()` converts it to a failure
-  immediately.
+  immediately. One deliberate exception (MIR-035): the removal operations
+  (`stop_container`, `remove_container`, `remove_image`) return a
+  normalized `RemovalResult` instead of raising, so cleanup can attempt
+  every removal and aggregate; their `detail` field is already
+  terminal-safe and never raw stderr bytes.
 - Executing queries preserve the runtime's stderr, quoted, in the raised
   message, and where a check has a known cause they append the
   evidence-keyed hint (§4) — never a universal diagnosis.
@@ -557,8 +585,11 @@ with stderr preserved); mount serialization (plain, readonly, and rejection
 of `,`, `=`, NUL, and non-UTF-8 in sources/targets); `verify_image_abi`
 (Podman: the §7.4 fixture matrix through the faked `runtime_run`, probe
 removal on success and failure; apple/container: asserts zero process
-executions); and golden argv comparisons for build, every launch variant,
-and the probe argv triplet (fixed injected probe name). A seam test patches
+executions); removal classification (`stop_container`/`remove_container`/
+`remove_image` fed success, qualified absence, wrong-exit-status
+not-found text, invalid UTF-8, and hard failure — MIR-035, R5.9); and
+golden argv comparisons for build, every launch variant, and the probe
+argv triplet (fixed injected probe name). A seam test patches
 `runtime_run` and asserts no backend operation reaches `subprocess` any
 other way.
 
@@ -833,31 +864,36 @@ backends:
 
 ### Cleanup verbs
 
+Commands drive removals exclusively through the protocol's `RemovalResult`
+operations (§2, MIR-035); the argv each backend executes underneath:
+
 | Operation | apple/container | podman |
 | --- | --- | --- |
-| stop | `container stop ID` | `podman stop ID` |
-| remove container | `container delete --force ID` | `podman rm --force ID` |
-| remove image | `container image delete REF` | `podman image rm REF` |
+| `stop_container` | `container stop ID` | `podman stop ID` |
+| `remove_container` | `container delete --force ID` | `podman rm --force ID` |
+| `remove_image` | `container image delete REF` | `podman image rm REF` |
 
-Same "stop may fail, forced delete is authoritative" pattern on both.
+Same "stop may fail, forced delete is authoritative" pattern on both: a
+`failed` stop result never skips the forced remove.
 
 **Partial-failure semantics.** All four removal paths (project GC, project
 `clean`, `clean --all`, `revoke --purge-images`) attempt every scheduled
 operation and never abort mid-list:
 
-- **Ordering:** containers before images; per container, stop
-  (`check=False`) then forced remove; image untags in the existing
-  deterministic order (sorted refs for `clean`, newest-first retention
-  order for GC). Within a multi-ref fact, each jms-owned ref's untag is
-  attempted independently.
+- **Ordering:** containers before images; per container, `stop_container`
+  then `remove_container`; image untags in the existing deterministic
+  order (sorted refs for `clean`, newest-first retention order for GC).
+  Within a multi-ref fact, each jms-owned ref's untag is attempted
+  independently.
 - **Diagnostics and exit:** `clean` and `revoke --purge-images` print
-  successes as they happen, then report every failure (resource plus
-  quoted stderr) and exit 1 if any occurred. Project GC prints one warning
-  line per failed untag to stderr and never fails the surrounding
-  build/launch.
-- **Vanished-resource race:** a removal that fails because the resource no
-  longer exists (the runtime's "no such container/image" diagnostics)
-  counts as success, mirroring the leak-sweep tolerance (§9).
+  successes as they happen, then report every `failed` result (resource
+  plus its terminal-safe `detail`) and exit 1 if any occurred. Project GC
+  prints one warning line per failed untag to stderr and never fails the
+  surrounding build/launch.
+- **Vanished-resource race:** an `absent` result — the backend's qualified
+  not-found classification (§2, MIR-035) — counts as success, mirroring
+  the leak-sweep tolerance (§9). Commands never parse stderr to decide
+  this; the classification lives in the backend.
 - **Idempotency:** nothing is cached; a second invocation re-enumerates
   and acts only on survivors, so repeated runs converge.
 
@@ -1387,9 +1423,10 @@ only for non-enforceable wording, never for a behavioral claim).
 | R5.3 | 5 | `created` is Unix epoch seconds on both backends; ordering never compares backend-local shapes | conformance | mixed-timestamp retention-ordering cases |
 | R5.4 | 5 | retention counts distinct image IDs; deletion untags per jms-owned ref; non-jms alias survives; label **and** tag-prefix ownership per ref | conformance | multi-tag, duplicate ID, inherited labels, base-with-children, partial deletion failure |
 | R5.5 | 5 | `ps()` strict normalizer: full 64-char `Id`, top-level `Labels`; malformed record aborts | unit | `test_podman_ps_normalizer` over `ps` fixtures + malformed variants |
-| R5.6 | 5 | stop may fail, forced delete authoritative, on both backends | unit | existing `test_stop_failure_does_not_abort_deletion` under both fakes |
-| R5.7 | 5 | partial cleanup/GC failures: attempt-all with aggregated diagnostics, exit 1 for `clean`/purge, warn-only GC, vanished-resource tolerated, second run converges | conformance | `test_cleanup_partial_failure_semantics` (failures injected at every stop/remove/untag position, both backends) |
+| R5.6 | 5 | stop may fail, forced delete authoritative, on both backends: a `failed` stop result never skips `remove_container` | unit | existing `test_stop_failure_does_not_abort_deletion` under both fakes |
+| R5.7 | 5 | partial cleanup/GC failures: attempt-all with aggregated diagnostics, exit 1 for `clean`/purge, warn-only GC, `absent` results tolerated as success, second run converges | conformance | `test_cleanup_partial_failure_semantics` (failures injected at every stop/remove/untag position, both backends) |
 | R5.8 | 5 | cleanup ownership requires `jms.project` **and** `jms.container=launch`, or `jms.container=abi-probe`; builds stamp the neutral value overriding any preseeded label; inherited-label, manual, and marker-absent containers never selected; dry-run and real cleanup select the same IDs | conformance + golden | `test_cleanup_provenance_predicate` (jms-launched, manual-from-jms-image, unrelated `jms-` name, malicious preseed, marker-absent, orphaned abi-probe) plus build/launch argv goldens pinning both label stamps on both backends |
+| R5.9 | 2, 5 | removal operations return normalized `RemovalResult`s: exit 0 → `removed`; qualified not-found status **and** stderr → `absent`; not-found-looking text with the wrong exit status, invalid UTF-8, or any other failure → `failed` with terminal-safe `detail`; command code never sees a `CompletedProcess`, raw stderr, or a backend branch | conformance | `test_removal_result_classification` (container and image removals, both backends) |
 | R6.1 | 6 | per-backend build argv: label flag spelling, `--pull=always` base-with-pull, `--pull=missing` project builds | golden | `test_build_argv_golden` per backend |
 | R6.2 | 6 | v2 context-escape failure still trips `CONTEXT_NOTE` under Podman | int-B | existing escape test, parametrized |
 | R7.1 | 7.1 | explicit `--userns` on both variants: `keep-id:uid=1000,gid=1000` default, `host` under `--root` | golden | launch argv goldens (default, `--root`, manifest mounts, `--auth`) |
