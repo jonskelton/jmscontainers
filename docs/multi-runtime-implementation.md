@@ -315,6 +315,14 @@ convention.
   emits one record per identity, so a duplicate `Id` in its output
   aborts as malformed rather than being merged. Facts are emitted sorted
   by `id`. Recorded in §5; tests in R5.10.
+  **Amended 2026-07-30 (fixture capture):** the "one record per
+  identity" premise is false on real 5.4.2 — a multi-tagged image is
+  emitted as one byte-identical record per tag, each carrying the full
+  `Names` array (pinned by the recaptured
+  `tests/fixtures/podman-5.4.2-images.json`). The Podman rule is
+  therefore: exactly-identical duplicate records for one `Id` collapse
+  to one fact; records for one `Id` that disagree in any normalized
+  field abort as malformed engine output.
 - **Done when:** `test_image_fact_accumulator` (R5.10) covers the
   apple/container cases — reordered duplicates, repeated refs,
   conflicting timestamps, conflicting labels, mixed dangling/named
@@ -1585,8 +1593,12 @@ into a shared validation layer and one backend-specific merge:
   ownership data is never arbitrarily chosen or synthesized. Identical
   repeats are tolerated, and a dangling
   record for an ID that also has named records contributes nothing.
-- Podman emits one record per image identity; a duplicate `Id` in its
-  output aborts as malformed engine output rather than being merged.
+- Podman 5.4.2 emits a multi-tagged image as one byte-identical record
+  per tag, each carrying the full `Names` array (pinned by the
+  recaptured images fixture; this amends the earlier one-record-per-
+  identity premise). Exactly-identical duplicate records for one `Id`
+  collapse to one fact; records for one `Id` that disagree in any
+  normalized field abort as malformed engine output.
 - Facts are emitted sorted by `id` on both backends.
 
 `created` is one internal type — Unix epoch seconds — on both backends, so

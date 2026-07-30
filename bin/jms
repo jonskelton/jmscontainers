@@ -9,6 +9,7 @@ user on the host is trusted.
 from __future__ import annotations
 
 import argparse
+import datetime
 import errno
 import fcntl
 import hashlib
@@ -137,6 +138,54 @@ def runtime_json(argv) -> object:
         fail(" ".join(argv) + " returned invalid JSON: " + quote(proc.stdout))
 
 
+# Latest epoch second the normalizers accept for image timestamps
+# (9999-12-31T23:59:59Z, MIR-045).
+MAX_EPOCH = 253402300799
+
+
+def valid_hex64(value) -> bool:
+    return (isinstance(value, str) and len(value) == 64
+            and all(char in "0123456789abcdef" for char in value))
+
+
+def valid_runtime_text(value, *, allow_empty: bool = True) -> bool:
+    """NUL-free valid-UTF-8 str check for refs and label keys/values (MIR-045)."""
+    if not isinstance(value, str) or "\0" in value or (not value and not allow_empty):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def normalized_labels(raw, source: str) -> dict:
+    """MIR-053: absent/null label maps are normal engine output and become {}."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        fail(source + " returned a malformed label map")
+    for key, value in raw.items():
+        if not valid_runtime_text(key, allow_empty=False) or not valid_runtime_text(value):
+            fail(source + " returned a malformed label entry")
+    return dict(raw)
+
+
+def normalized_created(value, source: str) -> int:
+    """Unix epoch seconds; bool is explicitly rejected (it subclasses int)."""
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= MAX_EPOCH:
+        fail(source + " returned a malformed image timestamp")
+    return value
+
+
+def removal_detail(proc) -> str:
+    """Terminal-safe failure diagnostic: stderr, then stdout, then fixed text."""
+    data = proc.stderr or proc.stdout
+    if data:
+        return quote(data)
+    return "no diagnostic output (exit %d)" % proc.returncode
+
+
 @dataclass(frozen=True)
 class RemovalResult:
     """Normalized removal outcome -- the one non-raising backend result channel."""
@@ -263,6 +312,126 @@ class ContainerBackend:
         if first_line == "Error: image not found: " + image:
             return False
         fail("container image inspect failed for " + quote(image) + ": " + quote(proc.stderr))
+
+    def parse_creation_date(self, value, source):
+        # Strict ISO-8601 with an explicit UTC offset; naive, unparseable, or
+        # out-of-range dates abort (MIR-045).
+        if not isinstance(value, str):
+            fail(source + " returned a malformed image timestamp")
+        try:
+            parsed = datetime.datetime.fromisoformat(value)
+        except ValueError:
+            fail(source + " returned a malformed image timestamp")
+        if parsed.tzinfo is None:
+            fail(source + " returned an image timestamp without a UTC offset")
+        try:
+            epoch = int(parsed.timestamp())
+        except (OverflowError, OSError, ValueError):
+            fail(source + " returned a malformed image timestamp")
+        return normalized_created(epoch, source)
+
+    def image_facts(self):
+        source = self.exe + " image list"
+        records = runtime_json([self.exe, "image", "list", "--format", "json"])
+        if not isinstance(records, list):
+            fail(source + " did not return a JSON array")
+        # One-ref-per-record format: the only format that legitimately yields
+        # several records per image identity, so grouping happens here.
+        # Refs are unioned and sorted so output is independent of record
+        # order; any disagreement on created or labels aborts (MIR-038/045).
+        grouped = {}
+        for record in records:
+            if not isinstance(record, dict) or not isinstance(record.get("configuration"), dict):
+                fail(source + " returned a malformed image record")
+            configuration = record["configuration"]
+            ident = record.get("id")
+            descriptor = configuration.get("descriptor")
+            digest = descriptor.get("digest") if isinstance(descriptor, dict) else None
+            if not valid_hex64(ident) or digest != "sha256:" + ident:
+                fail(source + " returned an image record whose id does not match its descriptor digest")
+            created = self.parse_creation_date(configuration.get("creationDate"), source)
+            labels = normalized_labels(self.raw_labels(record, source), source)
+            ref = configuration.get("name")
+            refs = []
+            if ref is not None and ref != "":
+                if not valid_runtime_text(ref, allow_empty=False):
+                    fail(source + " returned a malformed image name")
+                refs = [ref]
+            entry = grouped.setdefault(ident, {"refs": set(), "created": created, "labels": labels})
+            if entry["created"] != created or entry["labels"] != labels:
+                fail(source + " returned conflicting records for image " + quote(ident))
+            entry["refs"].update(refs)
+        return [(ident, tuple(sorted(entry["refs"])), entry["created"], entry["labels"])
+                for ident, entry in sorted(grouped.items()) if entry["refs"]]
+
+    def raw_labels(self, record, source):
+        variants = record.get("variants")
+        if variants is None or variants == []:
+            return None
+        if not isinstance(variants, list) or not isinstance(variants[0], dict):
+            fail(source + " returned a malformed image record")
+        outer = variants[0].get("config")
+        if outer is None:
+            return None
+        if not isinstance(outer, dict):
+            fail(source + " returned a malformed image record")
+        inner = outer.get("config")
+        if inner is None:
+            return None
+        if not isinstance(inner, dict):
+            fail(source + " returned a malformed image record")
+        return inner.get("Labels")
+
+    def ps(self):
+        source = self.exe + " list"
+        records = runtime_json([self.exe, "list", "--all", "--format", "json"])
+        if not isinstance(records, list):
+            fail(source + " did not return a JSON array")
+        parsed = []
+        for record in records:
+            if not isinstance(record, dict) or not isinstance(record.get("configuration"), dict):
+                fail(source + " returned an invalid container record")
+            ident = record.get("id")
+            # This engine's container id is a name; no truncated hex form
+            # exists (MIR-045): non-empty NUL-free valid UTF-8.
+            if not valid_runtime_text(ident, allow_empty=False):
+                fail(source + " returned an invalid container record")
+            labels = normalized_labels(record["configuration"].get("labels"), source)
+            parsed.append({"id": ident, "labels": labels})
+        return parsed
+
+    def stop_container(self, container_id):
+        proc = runtime_run([self.exe, "stop", container_id], check=False)
+        if proc.returncode == 0:
+            return RemovalResult("removed")
+        return self.removal_recheck(proc, lambda: not any(
+            fact["id"] == container_id for fact in self.ps()))
+
+    def remove_container(self, container_id):
+        proc = runtime_run([self.exe, "delete", "--force", container_id], check=False)
+        if proc.returncode == 0:
+            return RemovalResult("removed")
+        return self.removal_recheck(proc, lambda: not any(
+            fact["id"] == container_id for fact in self.ps()))
+
+    def remove_image(self, ref):
+        proc = runtime_run([self.exe, "image", "delete", ref], check=False)
+        if proc.returncode == 0:
+            return RemovalResult("removed")
+        return self.removal_recheck(proc, lambda: not self.image_exists(ref))
+
+    def removal_recheck(self, proc, absent):
+        # Post-failure existence recheck: absence classifies as removed with
+        # no dependence on the CLI's error text (MIR-043).  The recheck runs
+        # inside the non-raising envelope: its own failure leaves the outcome
+        # failed with the original diagnostic plus an appended note (MIR-052).
+        detail = removal_detail(proc)
+        try:
+            if absent():
+                return RemovalResult("removed")
+        except JMSException as exc:
+            detail += "; recheck failed: " + terminal_safe_text(str(exc))
+        return RemovalResult("failed", detail)
 
 
 class PodmanBackend:
@@ -422,6 +591,80 @@ class PodmanBackend:
             return False
         fail("podman image exists failed for " + quote(image) + ": "
              + quote(proc.stderr or proc.stdout or b""))
+
+    def image_facts(self):
+        source = self.exe + " images"
+        records = runtime_json([self.exe, "images", "--format", "json"])
+        if not isinstance(records, list):
+            fail(source + " did not return a JSON array")
+        grouped = {}
+        for record in records:
+            if not isinstance(record, dict):
+                fail(source + " returned a malformed image record")
+            ident = record.get("Id")
+            if not valid_hex64(ident):
+                fail(source + " returned a malformed image id")
+            names = record.get("Names")
+            refs = []
+            if names is not None:
+                if not isinstance(names, list):
+                    fail(source + " returned a malformed image name list")
+                for name in names:
+                    if not valid_runtime_text(name, allow_empty=False):
+                        fail(source + " returned a malformed image name")
+                    if name != "<none>":       # `<none>` names are treated as absent
+                        refs.append(name)
+            created = normalized_created(record.get("Created"), source)
+            labels = normalized_labels(record.get("Labels"), source)
+            fact = (tuple(sorted(set(refs))), created, labels)
+            # Fixture-pinned 5.4.2 reality: a multi-tagged image is emitted as
+            # one byte-identical record per tag, each carrying the full Names
+            # array.  Identical repeats collapse to one fact; records for one
+            # Id that disagree abort as malformed (MIR-038, amended by the
+            # 2026-07-30 capture — see tests/fixtures/README.md).
+            existing = grouped.get(ident)
+            if existing is not None and existing != fact:
+                fail(source + " returned conflicting records for image " + quote(ident))
+            grouped[ident] = fact
+        return [(ident, refs, created, labels)
+                for ident, (refs, created, labels) in sorted(grouped.items()) if refs]
+
+    def ps(self):
+        source = self.exe + " ps"
+        records = runtime_json([self.exe, "ps", "--all", "--format", "json"])
+        if not isinstance(records, list):
+            fail(source + " did not return a JSON array")
+        parsed = []
+        for record in records:
+            if not isinstance(record, dict):
+                fail(source + " returned an invalid container record")
+            ident = record.get("Id")
+            if not valid_hex64(ident):
+                fail(source + " returned an invalid container record")
+            labels = normalized_labels(record.get("Labels"), source)
+            parsed.append({"id": ident, "labels": labels})
+        return parsed
+
+    # Removal operations: --ignore makes absence a success at the engine, so
+    # no not-found diagnostics exist to classify (MIR-035); --no-prune keeps
+    # an untag from cascading into dangling parents (MIR-042).
+
+    def stop_container(self, container_id):
+        return self.removal_outcome(
+            runtime_run([self.exe, "stop", "--ignore", container_id], check=False))
+
+    def remove_container(self, container_id):
+        return self.removal_outcome(
+            runtime_run([self.exe, "rm", "--ignore", "--force", container_id], check=False))
+
+    def remove_image(self, ref):
+        return self.removal_outcome(
+            runtime_run([self.exe, "image", "rm", "--ignore", "--no-prune", ref], check=False))
+
+    def removal_outcome(self, proc):
+        if proc.returncode == 0:
+            return RemovalResult("removed")
+        return RemovalResult("failed", removal_detail(proc))
 
 
 def canon(path: str | bytes) -> bytes:
@@ -1064,26 +1307,21 @@ def image_exists(image: str) -> bool:
     return runtime().image_exists(image)
 
 
-def image_records() -> list[dict]:
-    backend = runtime()
-    records = runtime_json([backend.exe, "image", "list", "--format", "json"])
-    if not isinstance(records, list):
-        fail(backend.exe + " image list did not return a JSON array")
-    return records
+def image_facts() -> list:
+    """Normalized (id, refs, created, labels) facts, one per image identity (§5)."""
+    return runtime().image_facts()
 
 
-def image_record_facts(record) -> tuple[str, str, dict] | None:
-    """Return (ref, created, labels) or None for records missing the fields."""
-    try:
-        ref = record["configuration"]["name"]
-        created = record["configuration"].get("creationDate", "")
-        variants = record["variants"]
-        labels = (variants[0].get("config", {}).get("config", {}) or {}).get("Labels", {}) if variants else {}
-    except (KeyError, IndexError, TypeError, AttributeError):
-        return None
-    if not isinstance(ref, str) or not isinstance(created, str) or not isinstance(labels, dict):
-        return None
-    return ref, created, labels
+def stop_container(container_id: str) -> RemovalResult:
+    return runtime().stop_container(container_id)
+
+
+def remove_container(container_id: str) -> RemovalResult:
+    return runtime().remove_container(container_id)
+
+
+def remove_image(ref: str) -> RemovalResult:
+    return runtime().remove_image(ref)
 
 
 def local_name(ref: str) -> str:
@@ -1163,25 +1401,60 @@ def tag_prefix_for(root: bytes, pid: str) -> str:
     return "jmscontainers-%s-%s" % (slug(root.rsplit(b"/", 1)[-1]), pid[:8])
 
 
-def gc_project_images(pid: str, tag_prefix: str, *, keep: int):
-    """Keep the newest `keep` images for a project; best-effort delete the rest.
+def image_removal_schedule(pid: str, tag_prefix: str, *, keep: int) -> list[str]:
+    """Enumerate and select project image refs; raises on any failure (MIR-048).
 
-    OCI labels are inherited from FROM images, so the ownership label alone is
-    not proof jms built the image; require the project's tag prefix as well.
+    Retention counts distinct image identities (a multi-tagged image is one
+    retained unit) ordered newest-first with a stable sort; deletion untags
+    per jms-owned ref, never by bare id.  OCI labels are inherited from FROM
+    images, so the ownership label alone is not proof jms built the image;
+    each ref must also carry the project's tag prefix (evaluated per ref
+    within a fact, on the local_name() normalization -- MIR-047).
     """
     owned = []
-    for record in image_records():
-        facts = image_record_facts(record)
-        if (facts and facts[2].get("jms.project") == pid
-                and local_name(facts[0]).startswith(tag_prefix + ":")):
-            owned.append(facts)
-    owned.sort(key=lambda facts: facts[1], reverse=True)
+    for ident, refs, created, labels in image_facts():
+        if labels.get("jms.project") != pid:
+            continue
+        selected = [ref for ref in refs if local_name(ref).startswith(tag_prefix + ":")]
+        if selected:
+            owned.append((created, selected))
+    owned.sort(key=lambda item: item[0], reverse=True)
+    schedule = []
+    for _, refs in owned[keep:]:
+        schedule.extend(refs)
+    return schedule
+
+
+def execute_removal_schedule(schedule, report=None):
+    """Perform the scheduled untags in order; never raises (MIR-048/052)."""
     backend = runtime()
-    for ref, _, _ in owned[keep:]:
-        proc = runtime_run([backend.exe, "image", "delete", ref], check=False,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if proc.returncode == 0:
+    results = []
+    for ref in schedule:
+        try:
+            result = backend.remove_image(ref)
+        except JMSException as exc:  # backstop: removal operations never raise
+            result = RemovalResult("failed", terminal_safe_text(str(exc)))
+        if report is not None:
+            report(ref, result)
+        results.append((ref, result))
+    return results
+
+
+def gc_project_images(pid: str, tag_prefix: str, *, keep: int):
+    """Background retention: warn-only, never fails the surrounding
+    build/launch, including on enumeration failures (MIR-048)."""
+    try:
+        schedule = image_removal_schedule(pid, tag_prefix, keep=keep)
+    except JMSException as exc:
+        print("warning: image cleanup skipped: " + terminal_safe_text(str(exc)), file=sys.stderr)
+        return
+    def report(ref, result):
+        if result.outcome == "removed":
             print("removed image " + quote(ref))
+        else:
+            print("warning: could not remove image " + quote(ref) + ": " + result.detail,
+                  file=sys.stderr)
+    execute_removal_schedule(schedule, report)
 
 
 def build_project(data, args):
@@ -1429,11 +1702,22 @@ def cmd_trust(args):
         update_store(revoke)
         print(("revoked trust for " if revoked else "trust already revoked for ") + quote(root))
         if args.purge_images:
+            # Revocation committed above, so every purge-path failure --
+            # readiness, enumeration, or removal -- keeps the "trust was
+            # revoked, but image purge failed" split (MIR-048).
             try:
                 runtime_ready()
-                gc_project_images(pid, tag_prefix_for(root, pid), keep=0)
+                schedule = image_removal_schedule(pid, tag_prefix_for(root, pid), keep=0)
             except JMSException as exc:
                 fail("trust was revoked, but image purge failed: " + str(exc))
+            def report(ref, result):
+                if result.outcome == "removed":
+                    print("removed image " + quote(ref))
+            results = execute_removal_schedule(schedule, report)
+            failures = [(ref, result) for ref, result in results if result.outcome == "failed"]
+            if failures:
+                detail = "; ".join(quote(ref) + ": " + result.detail for ref, result in failures)
+                fail("trust was revoked, but image purge failed: " + detail)
         return
     workdir, _ = resolve_operand(args.path)
     data = project_data(workdir)
@@ -1508,21 +1792,8 @@ def cmd_init(args):
 
 
 def container_records() -> list[dict]:
-    backend = runtime()
-    records = runtime_json([backend.exe, "list", "--all", "--format", "json"])
-    if not isinstance(records, list):
-        fail(backend.exe + " list did not return a JSON array")
-    parsed = []
-    for record in records:
-        try:
-            ident = record["id"]
-            labels = record["configuration"].get("labels", {})
-        except (KeyError, TypeError):
-            fail(backend.exe + " list returned an invalid container record")
-        if not isinstance(ident, str) or "\0" in ident or not isinstance(labels, dict):
-            fail(backend.exe + " list returned an invalid container record")
-        parsed.append({"id": ident, "labels": labels})
-    return parsed
+    """Normalized [{"id", "labels"}] container facts (§5)."""
+    return runtime().ps()
 
 
 def cmd_clean(args):
@@ -1542,28 +1813,31 @@ def cmd_clean(args):
     runtime_ready()
     ids = []
     for record in container_records():
-        # The jms.project label is the sole ownership rule; a jms- name prefix
-        # is user-controlled and is not proof of provenance.
-        if args.all and "jms.project" in record["labels"]:
+        labels = record["labels"]
+        # Ownership requires launch provenance, not just the project label:
+        # image labels inherit onto containers, so jms.project alone would
+        # also match a container the user started manually from a jms image
+        # (§5).  A jms- name prefix is user-controlled and is never proof.
+        if labels.get("jms.container") != "launch":
+            continue
+        if args.all and "jms.project" in labels:
             ids.append(record["id"])
-        elif scope and record["labels"].get("jms.project") == scope:
+        elif scope and labels.get("jms.project") == scope:
             ids.append(record["id"])
     image_refs = []
     if args.images:
-        for record in image_records():
-            facts = image_record_facts(record)
-            if facts is None:
-                continue
-            ref, _, labels = facts
+        for _, refs, _, labels in image_facts():
             pid = labels.get("jms.project")
-            # The label alone is not proof of ownership (labels inherit from
-            # FROM images); jms-built refs always carry the jms tag prefix.
-            name = local_name(ref)
-            if args.all and ((pid is not None and name.startswith("jmscontainers-"))
-                             or name == BASE):
-                image_refs.append(ref)
-            elif scope and pid == scope and name.startswith(scope_prefix + ":"):
-                image_refs.append(ref)
+            for ref in refs:
+                # The label alone is not proof of ownership (labels inherit
+                # from FROM images); jms-built refs always carry the jms tag
+                # prefix, evaluated per ref within a fact (MIR-047).
+                name = local_name(ref)
+                if args.all and ((pid is not None and name.startswith("jmscontainers-"))
+                                 or name == BASE):
+                    image_refs.append(ref)
+                elif scope and pid == scope and name.startswith(scope_prefix + ":"):
+                    image_refs.append(ref)
     image_refs = sorted(set(image_refs))
     for value in [*ids, *image_refs]:
         runtime_argument(value, usage=False)
@@ -1571,16 +1845,31 @@ def cmd_clean(args):
         for ident in ids: print("would remove container " + quote(ident))
         for ref in image_refs: print("would remove image " + quote(ref))
         return
-    backend = runtime()
+    # Attempt every scheduled removal, containers before images; aggregate
+    # failures and exit 1 rather than aborting mid-list (MIR-048).
+    failures = []
     for ident in ids:
-        # Stopping an already-stopped container may error; delete --force is
-        # the authoritative step.
-        runtime_run([backend.exe, "stop", ident], check=False)
-        runtime_run([backend.exe, "delete", "--force", ident])
-        print("removed container " + quote(ident))
-    for ref in image_refs:
-        runtime_run([backend.exe, "image", "delete", ref])
-        print("removed image " + quote(ref))
+        # Stopping an already-stopped container may fail; the forced delete is
+        # authoritative, and a failed stop superseded by a successful remove
+        # is dropped from the aggregate (MIR-043).
+        stop = stop_container(ident)
+        removed = remove_container(ident)
+        if removed.outcome == "removed":
+            print("removed container " + quote(ident))
+        else:
+            if stop.outcome == "failed":
+                failures.append(("container " + quote(ident) + " (stop)", stop.detail))
+            failures.append(("container " + quote(ident), removed.detail))
+    def report(ref, result):
+        if result.outcome == "removed":
+            print("removed image " + quote(ref))
+    for ref, result in execute_removal_schedule(image_refs, report):
+        if result.outcome == "failed":
+            failures.append(("image " + quote(ref), result.detail))
+    if failures:
+        for resource, detail in failures:
+            print("failed to remove " + resource + ": " + detail, file=sys.stderr)
+        fail("cleanup failed: %d removal(s) failed" % len(failures))
 
 
 class SafeArgumentParser(argparse.ArgumentParser):
