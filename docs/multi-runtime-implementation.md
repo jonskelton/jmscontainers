@@ -76,7 +76,7 @@ acceptance tests.
 | MIR-034 | Blocker | Cached-image ABI attestation | Resolved (§§6, 7.4, 12) |
 | MIR-035 | Blocker | Cleanup result protocol | Resolved (§§2, 5) |
 | MIR-036 | Blocker | ABI-probe volume side effects | Resolved (§7.4, §9) |
-| MIR-037 | High | Shell ABI observation | Open |
+| MIR-037 | High | Shell ABI observation | Resolved (§7.4) |
 | MIR-038 | High | Duplicate image identities | Open |
 | MIR-039 | High | Linux support-scope enforcement | Open |
 
@@ -177,7 +177,7 @@ acceptance tests.
 
 ### MIR-037 — The shell probe is both “strictly parsed” and discarded
 
-- **Status:** Open — high
+- **Status:** Resolved 2026-07-29
 - **Affects:** §§3, 7.4, 9, and R3.3
 - **Finding:** Section 7.4 says every `podman cp` stream must contain exactly
   one regular file of bounded size, then says the `/bin/bash` stream is
@@ -186,16 +186,24 @@ acceptance tests.
   or a directory and streams either as tar, so exit 0 alone does not prove
   that `/bin/bash` is a usable shell. It also leaves executable mode and
   final-component symlink handling undefined.
-- **Required resolution:** Define the shell artifact actually required by
-  the ABI and inspect enough of its tar member metadata to prove it. At
-  minimum, decide regular-file versus permitted symlink behavior, executable
-  mode, archive/member count, and a size bound appropriate for the shipped
-  Fedora bash binary. Remove the “discarded unread” claim if the stream is
-  parsed, or narrow the ABI honestly if only path existence is intended.
-- **Done when:** Tar fixtures and the Podman integration matrix cover a
-  normal executable bash, missing path, directory at `/bin/bash`,
-  non-executable regular file, malformed/multi-member tar, oversized
-  content, and the symlink form accepted or rejected by the decision.
+- **Resolution:** The “discarded unread” claim is removed; all three `cp`
+  streams are parsed as tar. The shell ABI clause now requires that
+  `/bin/bash` resolves (through path symlinks, which `podman cp` follows —
+  including a final-component symlink) to a non-empty regular file with at
+  least one execute mode bit. The `/bin/bash` tar stream must contain
+  exactly one member; the member must be typed as a regular file (a
+  symlink-, directory-, or other-typed member fails), be at most 8 MiB
+  (the shipped Fedora bash is ~1.3 MiB), and have `mode & 0o111 != 0`; its
+  bytes are read to satisfy tar framing but not otherwise interpreted. The
+  1 MiB bound and UTF-8/field rules continue to apply to the
+  `passwd`/`group` streams only. Recorded in §7.4; tests in R3.3, with the
+  tier-B divergence matrix gaining a non-executable-shell fixture (§9).
+- **Done when:** Tar fixtures (`test_verify_image_abi_matrix`, R3.3) and
+  the Podman integration matrix cover a normal executable bash, missing
+  path, directory at `/bin/bash`, non-executable regular file,
+  malformed/multi-member tar, oversized content, and a symlink-typed
+  member (rejected; the followed-symlink path form is accepted because
+  `podman cp` resolves it before streaming).
 
 ### MIR-038 — “One fact per image identity” lacks a duplicate-record rule
 
@@ -1043,9 +1051,10 @@ requested, not what the Containerfile produced).
    `/home/isolation`, and shell `/bin/bash`.
 2. `/etc/group` contains **exactly one** entry named `isolation`, with
    GID 1000.
-3. `/bin/bash` is present in the image (resolving symlinks such as the
-   usrmerge `/bin` link inside the image, which `podman cp` does
-   natively).
+3. `/bin/bash` resolves (through path symlinks such as the usrmerge
+   `/bin` link inside the image, which `podman cp` follows natively —
+   including a final-component symlink) to a non-empty regular file with
+   at least one execute mode bit (MIR-037).
 
 All pinned values derive from the `ISOLATION_UID` constant family in
 `bin/jms` (§3) — the same source that feeds the Containerfile line and the
@@ -1062,7 +1071,7 @@ podman create --pull=never --image-volume=ignore --name jms-abi-<hex> \
   --label jms.container=abi-probe --entrypoint /bin/true <image>
 podman cp jms-abi-<hex>:/etc/passwd -     # tar stream, parsed in memory
 podman cp jms-abi-<hex>:/etc/group -      # tar stream, parsed in memory
-podman cp jms-abi-<hex>:/bin/bash -       # existence proof; bytes discarded
+podman cp jms-abi-<hex>:/bin/bash -       # tar stream, member metadata checked
 podman rm --volumes --force jms-abi-<hex> # always, in a finally
 ```
 
@@ -1082,17 +1091,24 @@ module-level `runtime_run()` (conformance-enforced, §2). The probe name
 uses the launch-name generator's random suffix, so concurrent jms
 processes never collide.
 
-**Strict parsing, fail closed.** Each `cp` stream must be a tar containing
-exactly one regular-file member of at most 1 MiB (the shell stream is
-discarded unread, only its exit status matters); the file must be NUL-free
-valid UTF-8; every non-empty `passwd`/`group` line must have exactly 7 / 4
-colon-separated fields with numeric UID/GID fields. Anything else — a
-failed subprocess, malformed tar, malformed line, zero or multiple
-`isolation` entries, a divergent field — fails the build via `fail()` with
-a terminal-safe message naming the isolation-user ABI contract, the
-divergent observation, and the hint: images that alter the `isolation`
-user are unsupported. A failure is never downgraded to a skip or a
-warning.
+**Strict parsing, fail closed.** Every `cp` stream is parsed as a tar
+archive containing exactly one member, and that member must be typed as a
+regular file — a symlink-, directory-, or other-typed member fails
+(`podman cp` resolves path symlinks before streaming, so a legitimate
+usrmerge layout still yields a regular-file member; MIR-037). For
+`/etc/passwd` and `/etc/group` the member is at most 1 MiB and must be
+NUL-free valid UTF-8, and every non-empty line must have exactly 7 / 4
+colon-separated fields with numeric UID/GID fields. For `/bin/bash` the
+member must be non-empty, at most 8 MiB (the shipped Fedora bash is
+~1.3 MiB), and have at least one execute mode bit
+(`mode & 0o111 != 0`); its bytes are read to satisfy the tar framing but
+are not otherwise interpreted. Anything else — a failed subprocess,
+malformed or multi-member tar, oversized member, wrong member type,
+missing execute bit, malformed line, zero or multiple `isolation`
+entries, a divergent field — fails via `fail()` with a terminal-safe
+message naming the isolation-user ABI contract, the divergent
+observation, and the hint: images that alter the `isolation` user are
+unsupported. A failure is never downgraded to a skip or a warning.
 
 **When it runs (MIR-034).** Twice, fail-closed both times. First,
 `build_project()` and `ensure_base()` call `verify_image_abi()`
@@ -1286,16 +1302,16 @@ not pay for the example-image builds:
 - **Tier B — expensive, example images.** The existing per-example
   build/inspect/launch/clean cycle, the context-escape test, the
   credential/agent-state mount assertions (which need `--auth` and real
-  agent state directories), and the **ABI divergence matrix**: six tiny
+  agent state directories), and the **ABI divergence matrix**: seven tiny
   project Containerfiles `FROM jmscontainers-base:latest` whose final
   filesystems have, respectively, the correct `isolation` user, a wrong
-  UID, a wrong GID, a missing user, a wrong home, and a missing shell.
-  Only the correct image builds successfully; each divergent one fails
-  its `jms build` with the §7.4 contract message. Tier B also runs the
-  **probe volume fixture** (MIR-036): a Containerfile declaring one or
-  more `VOLUME`s, asserting the exact pre-probe volume set is unchanged
-  after both a successful attestation and a forced attestation failure.
-  Both tiers also assert
+  UID, a wrong GID, a missing user, a wrong home, a missing shell, and a
+  non-executable `/bin/bash` (MIR-037). Only the correct image builds
+  successfully; each divergent one fails its `jms build` with the §7.4
+  contract message. Tier B also runs the **probe volume fixture**
+  (MIR-036): a Containerfile declaring one or more `VOLUME`s, asserting
+  the exact pre-probe volume set is unchanged after both a successful
+  attestation and a forced attestation failure. Both tiers also assert
   after their jms invocations that no `jms.container=abi-probe` container
   remains in `podman ps --all` (probe-removal check, distinct from the
   mount-based leak sweep).
@@ -1423,7 +1439,7 @@ only for non-enforceable wording, never for a behavioral claim).
 | --- | --- | --- | --- | --- |
 | R3.1 | 3 | `isolation` UID/GID pinned to 1000; `ISOLATION_UID` constant and Containerfile line agree | unit | `test_isolation_uid_constant_matches_containerfile` (reads the Containerfile) |
 | R3.2 | 3 | no ABI label on any build; `verify_image_abi` probe argv (`create --pull=never --image-volume=ignore` / cp×3 / `rm --volumes --force`) pinned on Podman; apple/container runs zero probe processes | golden + conformance | `test_abi_probe_argv_golden` (fixed injected probe name) and the no-op/no-process conformance case |
-| R3.3 | 3 | Podman builds attest the built image's `isolation` user: wrong UID, wrong GID, missing user, duplicate user, wrong home, missing shell, malformed passwd/group, and probe-subprocess failure each fail the build closed naming the contract | unit | `test_verify_image_abi_matrix` over §7.4 tar-stream fixtures |
+| R3.3 | 3 | Podman builds attest the built image's `isolation` user: wrong UID, wrong GID, missing user, duplicate user, wrong home, missing shell, directory or symlink-typed or non-executable or oversized `/bin/bash` member, malformed/multi-member tar, malformed passwd/group, and probe-subprocess failure each fail closed naming the contract | unit | `test_verify_image_abi_matrix` over §7.4 tar-stream fixtures |
 | R3.4 | 3 | rebuilt base image behaves as designed on macOS | macOS-int | rebuild-and-verify run of the full integration script |
 | R3.5 | 3 | Podman `local_name()` strips `localhost/` so tag-prefix ownership checks work unmodified | conformance | `local_name` cases in the conformance suite |
 | R3.6 | 3 | `image_exists` matches the `localhost/`-prefixed stored name | int-A | base built then `image_exists` true via a `jms build` no-op path; unit exit-code cases in R5.1 |
