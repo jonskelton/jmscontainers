@@ -105,7 +105,7 @@ target rather than first-push acceptance material.
 | MIR-023 | High | `/bin/realpath` diagnostic ordering | Resolved (design) |
 | MIR-024 | Blocker | Container cleanup provenance | Open |
 | MIR-025 | Blocker | apple/container image identity schema | Open |
-| MIR-026 | Blocker | macOS build-argv compatibility | Open |
+| MIR-026 | Blocker | macOS build-argv compatibility | Resolved (design) |
 | MIR-027 | High | Debian prerequisite diagnostics | Open |
 | MIR-028 | High | Subordinate-ID sizing | Open |
 | MIR-029 | Blocker | Project base-image pull semantics | Open |
@@ -1129,7 +1129,22 @@ and resolved before backend enablement.
 
 ### MIR-026 — Stamping ABI labels contradicts exact macOS build argv
 
-- **Status:** Open — blocker
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** ABI stamping and validation are confined to the **Podman
+  backend**, where the mapping is load-bearing; macOS build argv remains
+  exactly invariant. `build_argv()` on `PodmanBackend` appends the ABI
+  label to base and project builds; `ContainerBackend` emits today's argv
+  unchanged, and the macOS goldens assert the label's *absence*. The
+  launch-time ABI check was already Podman-only (MIR-010), so macOS
+  launches do not change either. This decision is mechanism-agnostic with
+  respect to MIR-022: however that issue redefines the attestation,
+  whatever is stamped or queried is stamped and queried only by the
+  Podman backend. Rationale: virtiofs squashing makes the isolation UID
+  non-load-bearing on macOS (per MIR-010), and images are
+  per-runtime-store (§12), so a macOS-built image never has to satisfy a
+  Podman launch. §3 and R3.2 are updated; the phase-3 claim that only the
+  Containerfile changes on macOS is now true. Golden tests per
+  **Done when** land with the implementation.
 - **Affects:** the compatibility contract, MIR-005, MIR-010, and §§3, 6, 9,
   and 11
 - **Finding:** The compatibility contract declares exact apple/container
@@ -1635,9 +1650,9 @@ patches `runtime_run` and asserts no backend operation reaches
 The existing Fedora `Containerfile` builds unchanged under Podman/Buildah.
 Two small hardening edits make it deterministic across backends:
 
-> **Implementation blocked by MIR-022 and MIR-026:** the proposed label is
-> not a final-image attestation, and stamping it on apple/container conflicts
-> with the exact macOS build-argv invariant.
+> **Implementation blocked by MIR-022:** the proposed label is not a
+> final-image attestation. (The macOS argv conflict is resolved: per MIR-026
+> the label is stamped and validated by the Podman backend only.)
 
 1. **Pin the `isolation` UID/GID.** Rootless Podman's `--userns=keep-id`
    mapping (§7) must name the container-side UID, so it cannot be left to
@@ -1652,7 +1667,8 @@ Two small hardening edits make it deterministic across backends:
    Keep `1000` in one place — a `ISOLATION_UID = 1000` constant in `bin/jms`
    and this line — and note the pairing in a comment on both sides. The
    constant also feeds the `jms.abi.isolation-uid=1000` label stamped on
-   every jms-driven build, which Podman launches validate before mounting
+   every **Podman-backend** build (base and project; macOS build argv is
+   unchanged, MIR-026), which Podman launches validate before mounting
    anything (MIR-010); a stale or divergent image fails closed with a
    rebuild hint.
 
@@ -2220,7 +2236,7 @@ for non-enforceable wording, never for a behavioral claim).
 | ID | § | Claim | Tier | Test |
 | --- | --- | --- | --- | --- |
 | R3.1 | 3 | `isolation` UID/GID pinned to 1000; `ISOLATION_UID` constant and Containerfile line agree | unit | `test_isolation_uid_constant_matches_containerfile` (reads the Containerfile) |
-| R3.2 | 3 | every jms-driven build stamps `jms.abi.isolation-uid` from the constant | golden | `test_build_argv_stamps_abi_label` (both backends) |
+| R3.2 | 3 | every Podman-backend build stamps `jms.abi.isolation-uid` from the constant; macOS build argv is unchanged | golden | `test_build_argv_stamps_abi_label` (Podman: label present; apple/container: label absent; MIR-026) |
 | R3.3 | 3 | Podman launch validates the ABI label before mounting; missing label → rebuild hint; divergent UID → rejected naming the contract | unit | `test_podman_launch_rejects_stale_or_divergent_abi_image` (MIR-010 matrix: missing label, divergent UID, cached project image) |
 | R3.4 | 3 | rebuilt base image behaves unchanged on macOS | macOS-int | phase-3 rebuild-and-verify run of the full integration script |
 | R3.5 | 3 | Podman `local_name()` strips `localhost/` so tag-prefix ownership checks work unmodified | conformance | `local_name` cases in the conformance suite |
