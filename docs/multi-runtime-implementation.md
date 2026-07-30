@@ -94,7 +94,7 @@ target rather than first-push acceptance material.
 | MIR-012 | Blocker | Security claims | Resolved (design) |
 | MIR-013 | High | SELinux policy | Resolved (design) |
 | MIR-014 | High | Version/support policy | Resolved (design) |
-| MIR-015 | High | Linux prerequisites | Open (partially addressed) |
+| MIR-015 | High | Linux prerequisites | Resolved (design) |
 | MIR-016 | High | Host filesystem permissions | Resolved (design) |
 | MIR-017 | High | Nested sandbox behavior | Resolved (design) |
 | MIR-018 | High | Image identity and garbage collection | Resolved (design) |
@@ -693,7 +693,49 @@ acceptance tests the implementation must land before release.
 
 ### MIR-015 — Linux host prerequisites and diagnostics are incomplete
 
-- **Status:** Open (partially addressed 2026-07-29)
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision (2026-07-29):** the remaining substance — package contract,
+  diagnostics scope, NFS homes, and install-doc acceptance — is settled as
+  follows:
+  - **Qualified package contract (explicit list).** The install docs name
+    the exact qualified package set for Debian 13 and give one command:
+    `sudo apt install podman uidmap passt dbus-user-session fuse-overlayfs
+    coreutils`. This is load-bearing, not belt-and-braces: on Debian 13,
+    `uidmap` (newuidmap/newgidmap), `passt` (pasta networking), and
+    `dbus-user-session` (systemd cgroup manager for rootless) are only
+    *Recommends* of `podman`, so a Recommends-disabled minimal install
+    silently lacks them. Naming them explicitly makes the command correct
+    on minimal installs too. A host with less installed is outside the
+    support contract; its failures surface through the §4 probe or
+    first-launch stderr, not bespoke detection. The docs also note that
+    Debian's `adduser` provisions `/etc/subuid`/`/etc/subgid` for new
+    users automatically (verified by the clean-image test below).
+  - **Diagnostics: the §4 probe is sufficient**, with one addition. The
+    contract is: a distinct podman-not-found error ("CLI missing"); the
+    four keyed `podman info` hints (remote configured, rootful
+    invocation, missing/undersized subuid/subgid ranges, storage
+    misconfiguration); first-launch stderr for the residual classes (OCI
+    runtime, network helper); plus a new preflight existence check for
+    `/bin/realpath` with its own coreutils hint (§4), since `canon()`
+    hard-depends on it and a missing binary would otherwise fail
+    obscurely. No binary-existence sweep for pasta/crun and no separate
+    doctor command — helper names vary across versions and the probe
+    already localizes the common failures.
+  - **NFS/distributed home directories are a documented limitation.**
+    Rootless Podman's storage under `~/.local/share/containers` is
+    known-broken on NFS; README/SECURITY.md state that NFS or otherwise
+    distributed home directories are unsupported in 1.1.0. No filesystem
+    detection is added (same rationale as MIR-016: heuristics
+    false-positive too easily); the failure surfaces via the §4
+    `graphDriverName` check with Podman's own stderr. A qualified
+    `storage.conf` relocation becomes entry criteria for a follow-up if
+    the limitation proves painful.
+  - **Install-doc acceptance is a manual clean-VM run per release**: a
+    fresh Debian 13 VM plus a newly created user, following the README
+    verbatim, recorded in `docs/release-checklist.md` (date, Podman
+    version, outcome). No automated CI substitute — nested-container
+    fidelity to a real workstation is limited, and the walkthrough is
+    cheap at release cadence (§10).
 - **Scope decision (2026-07-29):** the first push targets **Debian 13
   only** (rootless Podman 5.4.x, the packaged version). Recent Fedora and
   Ubuntu releases are declared **mid-term targets**: intended and named as
@@ -709,9 +751,9 @@ acceptance tests the implementation must land before release.
     is revisited (lower to 4.9, or require a newer Podman source there).
   - Fedora as a host is additionally gated on the SELinux follow-up
     (MIR-013).
-  - The still-open substance of this issue — qualified package lists,
+  - The remaining substance of this issue — qualified package lists,
     installation documentation, and preflight diagnostics — need only
-    cover Debian 13 for 1.1.0.
+    cover Debian 13 for 1.1.0; the decision block above settles each.
 - **Affects:** §§1, 2, 4, and 10
 - **Finding:** `podman` alone is not the complete host dependency. Depending on
   distribution and storage/network setup, rootless operation needs subordinate
@@ -1369,7 +1411,11 @@ and the CLI surface jms uses (`run`, `build`, `image exists`,
 apple/container keeps the `system status` / `system start` dance. Podman is
 daemonless, so `ensure_started()` instead runs one cheap probe that catches
 the real-world rootless failure modes (missing `newuidmap`, unconfigured
-`/etc/subuid`, broken storage config):
+`/etc/subuid`, broken storage config). Before the probe, the Podman
+backend's preflight also checks that `/bin/realpath` exists — `canon()`
+hard-depends on it (§1) and a coreutils-less minimal install would
+otherwise fail obscurely — with its own hint naming the `coreutils`
+package (MIR-015). The probe itself:
 
 ```sh
 podman info --format json
@@ -1862,6 +1908,7 @@ for non-enforceable wording, never for a behavioral claim).
 | R4.3 | 4 | Podman floor (5, 4, 0); silent within major 5; one-line warning on major ≥ 6; `JMS_RUNTIME_ACCEPT` ignored on Podman | unit | `test_podman_version_floor_and_untested_major_warning` |
 | R4.4 | 4 | `ensure_started()` validates `podman info` JSON: remote, rootful, missing/undersized ID maps, absent graph driver, invalid JSON each fail with their own hint and verbatim stderr; healthy engine passes | unit + int-A | `test_podman_readiness_matrix` over MIR-008 fixtures; tier-A preflight on the fresh CI user |
 | R4.5 | 4 | `approve()` runs before `runtime_ready()` on both backends; grant-then-preflight-failure leaves a valid grant | unit | `test_consent_precedes_runtime_readiness` (MIR-003 matrix: accepted, declined, non-interactive failure, missing runtime, unusable rootless Podman) |
+| R4.6 | 4 | Podman preflight checks `/bin/realpath` exists before the `podman info` probe; missing binary fails with the coreutils hint | unit | `test_podman_preflight_requires_realpath` (MIR-015) |
 | R5.1 | 5 | `image_exists` tri-state: 0 true, 1 false, other exit hard failure with stderr | conformance | existing `test_image_exists_distinguishes_absence_from_failure`, parametrized |
 | R5.2 | 5 | `image_facts()` strict fixture-backed normalizer; dangling skipped by rule; malformed ownership-relevant field aborts | unit | `test_podman_image_facts_normalizer` over 4.9.3/5.4.2 fixtures + malformed variants (MIR-006) |
 | R5.3 | 5 | `created` is Unix epoch seconds on both backends; ordering never compares backend-local shapes | conformance | mixed-timestamp retention-ordering cases (MIR-018) |
@@ -1920,8 +1967,14 @@ listed under those issues and the unit-test plan above.
   **or** Debian 13 with rootless Podman ≥ 5.4", naming recent Fedora and
   Ubuntu as mid-term targets that are out of scope for 1.1.0 (MIR-015),
   SELinux-enforcing hosts as unqualified (MIR-013), and
-  supplementary-group/ACL-only project access as unsupported (MIR-016);
-  install instructions per platform; stack line gains a Linux variant
+  supplementary-group/ACL-only project access as unsupported (MIR-016),
+  and NFS/distributed home directories as unsupported (MIR-015);
+  install instructions per platform — the Linux instructions name the
+  explicit qualified package set with one command,
+  `sudo apt install podman uidmap passt dbus-user-session fuse-overlayfs
+  coreutils` (correct even with Recommends disabled; MIR-015), and note
+  that Debian's `adduser` provisions subuid/subgid ranges automatically;
+  stack line gains a Linux variant
   (`Linux → rootless podman (user namespace) → Fedora → …`); isolation
   wording per §8.
 - `docs/cli.md`: new "Runtimes" section (selection rules, per-backend
@@ -1931,10 +1984,14 @@ listed under those issues and the unit-test plan above.
 - `SECURITY.md`: per-platform boundary statement (§8); `label=disable`
   rationale and the SELinux-enforcing-host limitation (§7.2, MIR-013);
   rootless-only statement; the owner-based host-permission contract
-  (MIR-016); the nested-bwrap limitation with no unmask recommendation
+  (MIR-016); the NFS/distributed-home limitation (MIR-015); the
+  nested-bwrap limitation with no unmask recommendation
   (§7.3, MIR-017).
-- `docs/release-checklist.md`: add "tested Podman version" recording and a
-  Linux integration run.
+- `docs/release-checklist.md`: add "tested Podman version" recording, a
+  Linux integration run, and the clean-host install walkthrough (MIR-015):
+  a fresh Debian 13 VM plus a newly created user follows the README
+  install instructions verbatim each release, recording date, Podman
+  version, and outcome.
 - `completions/jms.bash`: no runtime references — unchanged.
 - `Makefile`: unchanged (`make install` already works on Linux;
   `~/.local/bin` is on PATH by default on most distros — soften the
@@ -1997,6 +2054,10 @@ clear "Linux support is not yet released" error.
 - **SELinux-enforcing hosts (for 1.1.0).** Desired, deferred with the
   Fedora host target given the small enforcing-mode workstation population
   (MIR-013). A documented limitation — not detected or refused.
+- **NFS/distributed home directories.** Rootless Podman storage under
+  `~/.local/share/containers` is known-broken on NFS; unsupported and
+  documented, not detected (MIR-015). A qualified `storage.conf`
+  relocation is possible follow-up work if the limitation proves painful.
 - **Cross-runtime image sharing.** Images are per-runtime-store; a user on
   both platforms builds the base twice. Fingerprint-derived tags make this
   transparent.
