@@ -98,7 +98,7 @@ target rather than first-push acceptance material.
 | MIR-016 | High | Host filesystem permissions | Resolved (design) |
 | MIR-017 | High | Nested sandbox behavior | Resolved (design) |
 | MIR-018 | High | Image identity and garbage collection | Resolved (design) |
-| MIR-019 | High | Integration coverage | Open |
+| MIR-019 | High | Integration coverage | Resolved (design) |
 | MIR-020 | High | CI definition | Resolved (design) |
 | MIR-021 | High | Rollout and documentation atomicity | Resolved (design) |
 
@@ -850,7 +850,29 @@ acceptance tests the implementation must land before release.
 
 ### MIR-019 — The integration plan misses several load-bearing contracts
 
-- **Status:** Open
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** §9 now carries a normative **requirements-to-tests table**
+  mapping every claim in §§3–8 to a named unit, conformance, golden-argv,
+  or integration test; rows the table cannot map to a test are limited to
+  non-enforceable documentation wording, which is release-blocking doc
+  review under MIR-012, never a blocker-level behavioral claim. The
+  integration plan is extended to cover every gap in the finding:
+  `--root` ownership and in-container UID, passwordless sudo under
+  `keep-id`, credential/agent-state and read-only shell-state mounts,
+  environment and entrypoint parity, `--hostname` behavior, exit-status
+  and signal propagation through `execvp`, a deliberate failed-run
+  cleanup check, ambient `PODMAN_USERNS`/`containers.conf` conflicts
+  (MIR-009), and `label=disable` acceptance. The short-name check is the
+  deterministic `--pull=never --network=none` form (MIR-011), not
+  "offline-ish". The integration script is split into a fast tier A
+  (base image only — preflight, launch-contract, and leak-sweep
+  assertions) and an expensive tier B (example projects and agent-image
+  coverage), and cleanup plus the leak sweep run from the EXIT trap so
+  they execute even after partial failures, with sweep failure distinct
+  from leak per the leak-sweep contract (MIR-007). The table is
+  maintained with the code: a change to §§3–8 that adds or alters a
+  claim must update the table row in the same change. Tests named in the
+  table land with their phases per **Done when**.
 - **Affects:** §9
 - **Finding:** The proposed additions do not test `--root` ownership,
   passwordless sudo under `keep-id`, credential/shell-state mounts, environment
@@ -1683,15 +1705,61 @@ Parametrize on the selected runtime instead of hard-requiring `container`:
   sources via `podman inspect`, because on both 4.9.3 and 5.4.2 the `ps`
   JSON `Mounts` field is only a list of target paths with no sources
   (MIR-007), so `ps` alone cannot identify jms mounts.
-- Add one Linux-only assertion after the first project launch: create a file
-  in `/work` from inside the container (`--bin /bin/sh -- -c 'touch …'`) and
-  verify host ownership equals the invoking user — this is the `keep-id`
-  contract and the single most likely thing to break.
 - Add a `FROM jmscontainers-base:latest` resolution check (§3): build one
   example with `--pull=never --network=none` and assert success with the
   base present and a fast, non-interactive `image not known` failure
   (exit 125) with it absent — the deterministic form of the earlier
   "offline-ish" check, qualified locally per MIR-011.
+
+The script is split into two tiers (MIR-019), so the launch-contract
+assertions do not pay for the example-image builds:
+
+- **Tier A — fast, base image only.** Runs the readiness preflight, builds
+  the base, and asserts the launch contracts against `--bin` shell
+  launches of the base image: `/work` ownership (default and `--root`),
+  in-container UID per variant, passwordless sudo, hostname, environment
+  and entrypoint parity, exit-status propagation, the read-only
+  shell-state mount, the ambient-config conflict runs (MIR-009), the
+  bwrap probes (MIR-017), and the deliberate-failure cleanup check.
+- **Tier B — expensive, example images.** The existing per-example
+  build/inspect/launch/clean cycle, the context-escape test, and the
+  credential/agent-state mount assertions (which need `--auth` and real
+  agent state directories).
+
+Both tiers end in the leak sweep, and cleanup plus the sweep run from the
+EXIT trap, so a failure in any step still sweeps and reports — a partial
+failure can never skip leak detection (MIR-019); sweep failure stays
+distinct from leak per the leak-sweep contract below.
+
+The Linux-only tier-A launch-contract assertions, each keyed to a table
+row below:
+
+- **Ownership (default):** create a file in `/work` from inside the
+  container (`--bin /bin/sh -- -c 'touch …'`) and verify host ownership
+  equals the invoking user — the `keep-id` contract and the single most
+  likely thing to break. Also assert `id -u` inside is 1000
+  (`isolation`).
+- **Ownership (`--root`):** the same write under `--root`, asserting
+  `id -u` inside is 0 and host ownership is still the invoking user —
+  the `--userns=host` contract, and the enforceable form of §8's
+  "container root is an unprivileged mapped UID" claim.
+- **Sudo:** `sudo -n true` succeeds as `isolation` under `keep-id`
+  (§7.1's SECURITY.md claim).
+- **Hostname:** `$HOSTNAME` inside the container is `container` (§7.3).
+- **Env/entrypoint parity:** a manifest env var and `CLAUDE_CONFIG_DIR`
+  (auth path, tier B) are visible inside with the documented ordering,
+  and the entrypoint runs as `entry[0]` with `entry[1:]` + extra argv.
+- **Exit propagation:** `--bin /bin/sh -- -c 'exit 7'` makes `jms launch`
+  exit 7 (the `execvp` contract); a launch killed by SIGTERM leaves no
+  container behind (verified by the sweep).
+- **Read-only shell state:** writing to the shell-state target from
+  inside the container fails.
+- **Failed-run cleanup:** force one launch to fail mid-run (an
+  entrypoint that exits nonzero after touching `/work`) and assert the
+  trap-driven cleanup and sweep still run and report clean.
+- **Security options:** every tier-A run passes
+  `--security-opt label=disable` and succeeds — the 1.1.0 non-SELinux
+  acceptance check from MIR-013.
 
 ### Leak-sweep contract (resolves MIR-007)
 
@@ -1766,6 +1834,66 @@ malformed variants (non-array top level, truncated `Id`, missing `Mounts`,
 non-string `Source`), asserting each of the three outcomes and the
 tolerated-race path; the integration run then exercises the clean path for
 real on both backends.
+
+### Requirements-to-tests table (resolves MIR-019)
+
+This table is normative: every behavioral claim in §§3–8 maps to at least
+one named test, and a change to §§3–8 that adds or alters a claim must
+update its row in the same change. Test names are the planned identities;
+they land with their phases (§11) and existing names are reused where the
+test already exists. Tiers: **unit** (fake-runtime/fixture tests in
+`tests/test_jms.py`), **conformance** (the MIR-004 both-backend
+parametrized suite), **golden** (golden argv unit tests), **int-A/int-B**
+(integration tiers above), **macOS-int** (manual macOS integration run),
+**doc** (release-blocking documentation review per MIR-012 — used only
+for non-enforceable wording, never for a behavioral claim).
+
+| ID | § | Claim | Tier | Test |
+| --- | --- | --- | --- | --- |
+| R3.1 | 3 | `isolation` UID/GID pinned to 1000; `ISOLATION_UID` constant and Containerfile line agree | unit | `test_isolation_uid_constant_matches_containerfile` (reads the Containerfile) |
+| R3.2 | 3 | every jms-driven build stamps `jms.abi.isolation-uid` from the constant | golden | `test_build_argv_stamps_abi_label` (both backends) |
+| R3.3 | 3 | Podman launch validates the ABI label before mounting; missing label → rebuild hint; divergent UID → rejected naming the contract | unit | `test_podman_launch_rejects_stale_or_divergent_abi_image` (MIR-010 matrix: missing label, divergent UID, cached project image) |
+| R3.4 | 3 | rebuilt base image behaves unchanged on macOS | macOS-int | phase-3 rebuild-and-verify run of the full integration script |
+| R3.5 | 3 | Podman `local_name()` strips `localhost/` so tag-prefix ownership checks work unmodified | conformance | `local_name` cases in the conformance suite |
+| R3.6 | 3 | `image_exists` matches the `localhost/`-prefixed stored name | int-A | base built then `image_exists` true via a `jms build` no-op path; unit exit-code cases in R5.1 |
+| R3.7 | 3 | `FROM jmscontainers-base:latest` resolves locally under `--pull=never`; base absent fails fast, non-interactive, exit 125 | int-A | FROM-resolution check (`--network=none`, base present/absent; MIR-011) |
+| R4.1 | 4 | version first-line parsing: both formats, distro suffix truncation, malformed/non-numeric rejected, invalid UTF-8 fails closed | conformance | version-line fixtures (MIR-014) |
+| R4.2 | 4 | apple/container exact `min == max` pin and `JMS_RUNTIME_ACCEPT` unchanged | unit | existing `test_version_gate`, `test_runtime_accept_pin_admits_one_exact_newer_version` |
+| R4.3 | 4 | Podman floor (5, 4, 0); silent within major 5; one-line warning on major ≥ 6; `JMS_RUNTIME_ACCEPT` ignored on Podman | unit | `test_podman_version_floor_and_untested_major_warning` |
+| R4.4 | 4 | `ensure_started()` validates `podman info` JSON: remote, rootful, missing/undersized ID maps, absent graph driver, invalid JSON each fail with their own hint and verbatim stderr; healthy engine passes | unit + int-A | `test_podman_readiness_matrix` over MIR-008 fixtures; tier-A preflight on the fresh CI user |
+| R4.5 | 4 | `approve()` runs before `runtime_ready()` on both backends; grant-then-preflight-failure leaves a valid grant | unit | `test_consent_precedes_runtime_readiness` (MIR-003 matrix: accepted, declined, non-interactive failure, missing runtime, unusable rootless Podman) |
+| R5.1 | 5 | `image_exists` tri-state: 0 true, 1 false, other exit hard failure with stderr | conformance | existing `test_image_exists_distinguishes_absence_from_failure`, parametrized |
+| R5.2 | 5 | `image_facts()` strict fixture-backed normalizer; dangling skipped by rule; malformed ownership-relevant field aborts | unit | `test_podman_image_facts_normalizer` over 4.9.3/5.4.2 fixtures + malformed variants (MIR-006) |
+| R5.3 | 5 | `created` is Unix epoch seconds on both backends; ordering never compares backend-local shapes | conformance | mixed-timestamp retention-ordering cases (MIR-018) |
+| R5.4 | 5 | retention counts distinct image IDs; deletion untags per jms-owned ref; non-jms alias survives; label **and** tag-prefix ownership per ref | conformance | MIR-018 suite: multi-tag, duplicate ID, inherited labels, base-with-children, partial deletion failure |
+| R5.5 | 5 | `ps()` strict normalizer: full 64-char `Id`, top-level `Labels`; malformed record aborts | unit | `test_podman_ps_normalizer` over `ps` fixtures + malformed variants (MIR-007) |
+| R5.6 | 5 | stop may fail, forced delete authoritative, on both backends | unit | existing `test_stop_failure_does_not_abort_deletion` under both fakes |
+| R6.1 | 6 | per-backend build argv: label flag spelling, `--pull=always` base-with-pull, `--pull=never` project builds | golden | `test_build_argv_golden` per backend |
+| R6.2 | 6 | v2 context-escape failure still trips `CONTEXT_NOTE` under Podman | int-B | existing escape test, parametrized |
+| R7.1 | 7.1 | explicit `--userns` on both variants: `keep-id:uid=1000,gid=1000` default, `host` under `--root` | golden | launch argv goldens (default, `--root`, manifest mounts, `--auth`) |
+| R7.2 | 7.1 | default launch: `/work` writes host-owned by the invoking user; in-container UID 1000 | int-A | ownership (default) assertion |
+| R7.3 | 7.1 | `--root`: in-container UID 0; `/work` writes still host-owned by the invoking user | int-A | ownership (`--root`) assertion |
+| R7.4 | 7.1 | conflicting `PODMAN_USERNS` and `containers.conf` lose to the explicit flag for both variants | int-A | ambient-config conflict runs (MIR-009 **Done when**) |
+| R7.5 | 7.1 | passwordless sudo works for `isolation` under `keep-id` | int-A | `sudo -n true` assertion |
+| R7.6 | 7.2 | per-backend mount grammar (`type=bind` on Podman), readonly suffix; `,`/`=`/NUL/invalid-UTF-8 sources rejected with identical errors | conformance | existing `test_mount_argument_serialization`, parametrized + rejection cases |
+| R7.7 | 7.2 | `--security-opt label=disable` always passed on Podman and accepted on the minimum version | golden + int-A | launch argv goldens; every tier-A run (MIR-013 1.1.0 **Done when**) |
+| R7.8 | 7.3 | `--hostname container` passed; `$HOSTNAME` inside agrees | golden + int-A | launch argv goldens; hostname assertion |
+| R7.9 | 7 | env ordering (`CLAUDE_CONFIG_DIR` first, manifest env sorted) and entrypoint/command shape preserved verbatim | golden + int-A/B | launch argv goldens; env/entrypoint parity assertions (auth path in tier B) |
+| R7.10 | 7 | `launch` exits with the container's status via `execvp`; an interrupted launch leaves no container | int-A | exit-propagation (`exit 7`) and SIGTERM assertions |
+| R7.11 | 7 | shell-state mount is read-only inside the container | int-A | read-only shell-state write-failure assertion |
+| R7.12 | 7 | credential/agent-state mounts (`--auth`) are present, writable, and host-owned by the invoking user | int-B | auth-mount assertions |
+| R7.13 | 7 | cleanup and leak sweep run after partial failures; sweep failure distinct from leak | unit + int-A | sweep-snippet unit tests over fixtures (MIR-007 **Done when**); deliberate failed-run cleanup check |
+| R7.14 | 7.3 | nested bwrap: `--unshare-user` works, full sandbox fails on masked `/proc`; jms never passes `unmask` | int-A + golden | bwrap probes recording agent/sandbox versions (MIR-017); goldens prove no `unmask` in any argv |
+| R8.1 | 8 | container "root" is an unprivileged mapped UID of the invoking user | int-A | covered by R7.3 (UID 0 inside, invoking-user ownership outside) |
+| R8.2 | 8 | sudo-inside-container claim as stated in SECURITY.md | int-A | covered by R7.5 |
+| R8.3 | 8 | read-only shell mount behaves as documented | int-A | covered by R7.11 |
+| R8.4 | 8 | threat-model wording: kernel/OCI-runtime trust, escape consequences, weaker-than-VM statement, mounted-data exposure, SELinux/supplementary-group limitations | doc | release-blocking SECURITY.md/README review (MIR-012/013/016 **Done when**); non-enforceable by construction — no behavioral claim rides on it |
+
+Every blocker-level claim (rows tracing to MIR-001–012) maps to a unit,
+conformance, golden, or integration test; the only **doc** row is R8.4,
+which contains no enforceable behavior. Selection, laziness, and remote
+rejection (§2) are already covered by the MIR-001/002 acceptance tests
+listed under those issues and the unit-test plan above.
 
 ### CI (`.github/workflows/test.yml`)
 
