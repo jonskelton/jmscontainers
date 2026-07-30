@@ -71,6 +71,11 @@ manuals. In particular, these upstream references are load-bearing:
 - [current `podman images`](https://docs.podman.io/en/stable/markdown/podman-images.1.html)
 - [GitHub-hosted Ubuntu 24.04 image inventory](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md)
 
+Scope note (2026-07-29): the first push targets Debian 13 with Podman ≥ 5.4
+only (MIR-015), so the 4.9.3 references and the "matrix-minimum" evidence
+captured under them now serve as pre-qualification for the mid-term Ubuntu
+target rather than first-push acceptance material.
+
 ### Issue summary
 
 | ID | Severity | Area | Status |
@@ -87,9 +92,9 @@ manuals. In particular, these upstream references are load-bearing:
 | MIR-010 | Blocker | Isolation-user ABI | Open |
 | MIR-011 | Blocker | Base-image resolution | Resolved (design) |
 | MIR-012 | Blocker | Security claims | Resolved (design) |
-| MIR-013 | High | SELinux policy | Open (partially addressed) |
-| MIR-014 | High | Version/support policy | Open |
-| MIR-015 | High | Linux prerequisites | Open |
+| MIR-013 | High | SELinux policy | Resolved (design) |
+| MIR-014 | High | Version/support policy | Open (partially addressed) |
+| MIR-015 | High | Linux prerequisites | Open (partially addressed) |
 | MIR-016 | High | Host filesystem permissions | Open |
 | MIR-017 | High | Nested sandbox behavior | Open (partially addressed) |
 | MIR-018 | High | Image identity and garbage collection | Open |
@@ -396,8 +401,10 @@ acceptance tests the implementation must land before release.
     control) passed identically on Podman 4.9.3 rootless under Ubuntu
     24.04 — as a nested container capture, not bare metal (see
     `tests/fixtures/podman-4.9.3-qualification-results.txt`).
-  - Not yet covered (acceptance work): the same runs on a real (non-nested)
-    Ubuntu 24.04 host as CI integration tests.
+  - Not yet covered (acceptance work): the same runs as real (non-nested)
+    CI integration tests on the first-push substrate (Debian 13 / Podman
+    ≥ 5.4; mechanism per MIR-020). The Ubuntu 24.04 runs are retained as
+    mid-term pre-qualification (MIR-015).
 - **Affects:** §7.1
 - **Finding:** Podman documents that the default user namespace can be changed
   by `PODMAN_USERNS` or `containers.conf`; only in the absence of those
@@ -461,9 +468,11 @@ acceptance tests the implementation must land before release.
   present/absent, `--pull=never --network=none`, non-interactive) passed
   on Podman 4.9.3 rootless under Ubuntu 24.04 (nested capture; see
   `tests/fixtures/podman-4.9.3-qualification-results.txt`), including the
-  fast `image not known` exit-125 failure with the base absent. Remaining
-  acceptance work per **Done when**: a network-isolation proof in CI on a
-  real Ubuntu 24.04 runner rather than a scratch run.
+  fast `image not known` exit-125 failure with the base absent (retained as
+  mid-term pre-qualification per MIR-015). Remaining acceptance work per
+  **Done when**: a network-isolation proof in CI on the first-push
+  substrate (Debian 13 / Podman ≥ 5.4; mechanism per MIR-020) rather than
+  a scratch run.
 - **Affects:** §§3, 6, 9, and 10
 - **Finding:** The entire project build path depends on
   `FROM jmscontainers-base:latest` resolving to
@@ -508,17 +517,37 @@ acceptance tests the implementation must land before release.
 
 ### MIR-013 — Disabling SELinux needs a documented security decision and test
 
-- **Status:** Open (partially addressed 2026-07-29)
-- **Progress:** the non-SELinux half of **Done when** is observed locally:
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** SELinux support is desired but **out of scope for 1.1.0**.
+  The population of Linux workstations running SELinux in enforcing mode is
+  small, so qualifying enforcing-mode hosts — and Fedora as a host platform
+  generally — is deferred to a follow-up release rather than blocking the
+  first Linux push. Concretely:
+  - The first push targets Debian 13, an AppArmor host (MIR-015). The
+    Podman backend still passes `--security-opt label=disable`
+    unconditionally (§7.2), which is a qualified no-op there.
+  - SELinux-**enforcing** hosts are a **documented limitation**: README and
+    SECURITY.md state that enforcing-mode hosts are unqualified and
+    unsupported in 1.1.0. No preflight detection, warning, or refusal is
+    added — the flag will typically work there, but behavior is not tested
+    or promised.
+  - The follow-up Fedora/SELinux release inherits this issue's original
+    **Required resolution** as entry criteria: the recorded decision
+    comparing `label=disable` with relabeling and non-mutating
+    alternatives, and the SELinux-enforcing-host integration test.
+- **Progress:** the non-SELinux half of the original **Done when** is
+  observed locally:
   every qualification run on 2026-07-29 (Podman 5.4.2 rootless, Debian 13,
   an AppArmor host) passed `--security-opt label=disable` and the flag was
   accepted as a no-op. 2026-07-29 addendum: the flag is likewise accepted
   as a no-op on Podman 4.9.3 rootless under Ubuntu 24.04 (nested capture) —
-  every run in the 4.9.3 qualification pass used it, satisfying the
-  minimum-version half of **Done when** pending re-confirmation on a real
-  runner. Still open: the security decision record comparing alternatives
+  every run in the 4.9.3 qualification pass used it. With the version
+  floor now at 5.4 (MIR-015), the 5.4.2 evidence covers the first-push
+  minimum directly and the 4.9.3 evidence is retained as mid-term
+  pre-qualification. The security decision record comparing alternatives
   and the SELinux-enforcing-host integration test (needs a Fedora or
-  similar host; not reproducible on this machine).
+  similar host; not reproducible on this machine) are deferred to the
+  follow-up release per the decision above.
 - **Affects:** §§7.2, 8, and 9
 - **Finding:** The assertion that SELinux separation "adds little" is not
   established. `label=disable` avoids relabeling host trees but also removes a
@@ -528,14 +557,25 @@ acceptance tests the implementation must land before release.
 - **Required resolution:** Record an explicit threat-model decision comparing
   `label=disable`, private/shared relabeling, and any non-mutating alternatives.
   State the residual risk and whether AppArmor behavior also needs control.
-- **Done when:** An integration test on an SELinux-enforcing host proves
-  project and agent-state mounts work, host labels are unchanged before/after,
-  and the chosen option has the documented process label. A non-SELinux test
-  proves the flag remains accepted on the minimum Podman version.
+- **Done when (1.1.0):** A non-SELinux test proves `label=disable` remains
+  accepted on the minimum Podman version, and README/SECURITY.md state the
+  enforcing-host limitation in the terms of the decision above.
+- **Done when (follow-up release):** An integration test on an
+  SELinux-enforcing host proves project and agent-state mounts work, host
+  labels are unchanged before/after, and the chosen option has the
+  documented process label — alongside the recorded alternatives decision.
 
 ### MIR-014 — A minimum Podman version is not a support matrix
 
-- **Status:** Open
+- **Status:** Open (partially addressed 2026-07-29)
+- **Progress (2026-07-29):** the MIR-015 scope decision narrows the matrix
+  materially: the first push is Debian 13 with its packaged rootless Podman
+  5.4.x only, `version_min = (5, 4, 0)`, no maximum; recent Fedora and
+  Ubuntu are declared mid-term targets. Still open: the forward-version
+  policy for untested future majors, accepted version-string forms (distro
+  suffixes), client-versus-service version handling, and recording the
+  remaining matrix dimensions (kernel, cgroup manager, OCI runtime, storage
+  driver, network backend) for the Debian 13 target.
 - **Affects:** §§4, 9, 10, and 11
 - **Finding:** "Podman >= 4.9 on Linux" leaves distro, architecture, kernel,
   cgroup version/manager, OCI runtime, storage driver, network backend, and
@@ -553,7 +593,25 @@ acceptance tests the implementation must land before release.
 
 ### MIR-015 — Linux host prerequisites and diagnostics are incomplete
 
-- **Status:** Open
+- **Status:** Open (partially addressed 2026-07-29)
+- **Scope decision (2026-07-29):** the first push targets **Debian 13
+  only** (rootless Podman 5.4.x, the packaged version). Recent Fedora and
+  Ubuntu releases are declared **mid-term targets**: intended and named as
+  such in the docs, but explicitly out of scope for the first push.
+  Consequences:
+  - The Podman version floor is raised to `version_min = (5, 4, 0)` (§§2,
+    4); the 4.9.0 floor derived from Ubuntu 24.04 no longer applies to the
+    first push.
+  - The Podman 4.9.3 fixtures and qualification evidence recorded under
+    MIR-006/007/008/009/011/013/017 are **retained as pre-qualification**
+    for the mid-term Ubuntu target; they are no longer first-push
+    acceptance material. When Ubuntu 24.04 is promoted, the floor decision
+    is revisited (lower to 4.9, or require a newer Podman source there).
+  - Fedora as a host is additionally gated on the SELinux follow-up
+    (MIR-013).
+  - The still-open substance of this issue — qualified package lists,
+    installation documentation, and preflight diagnostics — need only
+    cover Debian 13 for 1.1.0.
 - **Affects:** §§1, 2, 4, and 10
 - **Finding:** `podman` alone is not the complete host dependency. Depending on
   distribution and storage/network setup, rootless operation needs subordinate
@@ -562,13 +620,14 @@ acceptance tests the implementation must land before release.
   guaranteed merely by merged-usr layout. The sample install hint is not a
   valid command as written for unprivileged users and cannot name equivalent
   package sets across distributions.
-- **Required resolution:** List qualified host packages/configuration per
-  supported distribution and separate "CLI missing" from rootless setup,
-  storage, filesystem, cgroup, and networking diagnostics. Decide support for
-  NFS/distributed home directories and minimal distributions.
-- **Done when:** Installation documentation is tested from clean supported
-  distro images/users and each preflight failure has an actionable,
-  terminal-safe diagnostic.
+- **Required resolution:** List qualified host packages/configuration for
+  Debian 13 (first push; mid-term targets get theirs at promotion time) and
+  separate "CLI missing" from rootless setup, storage, filesystem, cgroup,
+  and networking diagnostics. Decide support for NFS/distributed home
+  directories and minimal installs.
+- **Done when:** Installation documentation is tested from a clean Debian 13
+  image/user and each preflight failure has an actionable, terminal-safe
+  diagnostic.
 
 ### MIR-016 — Host group/ACL access and ownership parity are not covered
 
@@ -782,8 +841,8 @@ class ContainerBackend:            # apple/container (macOS)
 class PodmanBackend:               # podman (Linux, rootless)
     name = "podman"
     exe = "podman"
-    install_hint = "install it with your distribution's package manager (e.g. dnf/apt install podman)"
-    version_min = (4, 9, 0)
+    install_hint = "install it with your distribution's package manager (e.g. apt install podman)"
+    version_min = (5, 4, 0)        # Debian 13's packaged Podman; see §4 and MIR-015
     version_max = None             # min-only; see §4
 ```
 
@@ -933,13 +992,17 @@ Keep the exact `RUNTIME_MIN == RUNTIME_MAX` pin for apple/container: it is a
 single-channel Homebrew install and the pin has already proven its worth.
 
 For Podman, an exact pin is wrong: versions are chosen by the distribution,
-span 4.9 → 5.x across supported distros, and the CLI surface jms uses
-(`run`, `build`, `image exists`, `ps --format json`, `--userns=keep-id:uid=`)
-has been stable across that whole range. Policy:
+and the CLI surface jms uses (`run`, `build`, `image exists`,
+`ps --format json`, `--userns=keep-id:uid=`) has been stable across
+4.9 → 5.x. Policy:
 
-- `version_min = (4, 9, 0)` — the oldest version in a supported distro
-  (Ubuntu 24.04 LTS); `--userns=keep-id:uid=` needs ≥ 4.3, `image exists`
-  is ancient, so 4.9 has margin.
+- `version_min = (5, 4, 0)` — Debian 13's packaged Podman, the only
+  first-push host target (MIR-015). Every feature jms uses predates 5.4 by
+  years (`--userns=keep-id:uid=` needs ≥ 4.3, `image exists` is ancient),
+  so the floor is set by the support scope, not by feature availability.
+  When the mid-term Ubuntu 24.04 target is promoted, the floor is
+  revisited: its packaged Podman is 4.9.x, already pre-qualified by the
+  fixture evidence in §0.
 - No maximum. Record the newest *tested* version in the release checklist
   instead. `JMS_RUNTIME_ACCEPT` remains meaningful only for the
   apple/container backend; document that.
@@ -1128,6 +1191,13 @@ namespace; SELinux container separation adds little here, and relabeling
 host project files is an unacceptable side effect. On non-SELinux hosts the
 flag is a no-op.
 
+SELinux-**enforcing** hosts are out of scope for 1.1.0 (MIR-013): support
+is desired and planned alongside Fedora host support, but deferred given
+the small population of Linux workstations that run SELinux in enforcing
+mode. jms does not detect or refuse enforcing hosts — the flag will
+typically work there, but the configuration is unqualified, and README and
+SECURITY.md record it as unsupported for now.
+
 The existing `,`/`=` path rejections in `runtime_path()` keep the Podman
 mount string unambiguous too. NUL/UTF-8 rules are shared.
 
@@ -1210,6 +1280,9 @@ statement:
     of boundary type.
   - This is a meaningfully weaker boundary than the macOS VM against kernel
     exploits, and the docs must say so in those words.
+  - SELinux-enforcing hosts are unqualified and unsupported in 1.1.0
+    (MIR-013, §7.2); enforcing-mode support is planned alongside the
+    Fedora host target.
 
 Unchanged on both platforms, and worth restating: the credential-mount
 warning ("never claim the VM meaningfully limits exfiltration of mounted
@@ -1278,18 +1351,23 @@ Parametrize on the selected runtime instead of hard-requiring `container`:
 - Add an **opt-in or nightly** job `integration-linux` on `ubuntu-latest`
   running `scripts/integration.sh` with rootless Podman — GitHub's Ubuntu
   runners ship Podman preinstalled and subuid-configured, so this is the
-  first time real-runtime coverage can run in CI at all. Keep it out of
-  required PR checks initially (network + registry flakiness), promote once
-  it proves stable. macOS integration remains manual (no nested
-  virtualization on GH macOS runners).
+  first time real-runtime coverage can run in CI at all. Note the runner's
+  preinstalled Podman is 4.9.x, below the first-push floor of 5.4 (§4,
+  MIR-015); the job must either provision Podman ≥ 5.4 on the runner or run
+  the integration inside a Debian 13 environment — choosing that mechanism
+  is part of MIR-020. Keep it out of required PR checks initially (network
+  + registry flakiness), promote once it proves stable. macOS integration
+  remains manual (no nested virtualization on GH macOS runners).
 
 ---
 
 ## 10. Documentation and packaging checklist
 
 - `README.md`: platform section becomes "Apple Silicon Mac (apple/container)
-  **or** Linux with rootless Podman ≥ 4.9"; install instructions per
-  platform; stack line gains a Linux variant
+  **or** Debian 13 with rootless Podman ≥ 5.4", naming recent Fedora and
+  Ubuntu as mid-term targets that are out of scope for 1.1.0 (MIR-015) and
+  SELinux-enforcing hosts as unqualified (MIR-013); install instructions
+  per platform; stack line gains a Linux variant
   (`Linux → rootless podman (user namespace) → Fedora → …`); isolation
   wording per §8.
 - `docs/cli.md`: new "Runtimes" section (selection rules, per-backend
@@ -1297,7 +1375,8 @@ Parametrize on the selected runtime instead of hard-requiring `container`:
   `JMS_RUNTIME_ACCEPT` marked apple/container-only; exit-code table
   unchanged.
 - `SECURITY.md`: per-platform boundary statement (§8); `label=disable`
-  rationale (§7.2); rootless-only statement.
+  rationale and the SELinux-enforcing-host limitation (§7.2, MIR-013);
+  rootless-only statement.
 - `docs/release-checklist.md`: add "tested Podman version" recording and a
   Linux integration run.
 - `completions/jms.bash`: no runtime references — unchanged.
@@ -1341,7 +1420,8 @@ clear "Linux support is not yet released" error.
    README, CLI docs, installation docs, changelog. No released state exposes
    Podman without the finalized threat model and operating documentation.
 6. **Release 1.1.0** per the release checklist, recording the tested Podman
-   versions (at minimum: Ubuntu 24.04's 4.9.x and current Fedora's 5.x).
+   versions (at minimum: Debian 13's packaged 5.4.x, the only first-push
+   host target per MIR-015).
 
 ## 12. Explicit non-goals
 
@@ -1354,6 +1434,13 @@ clear "Linux support is not yet released" error.
 - **Remote Podman.** Refused at readiness via `host.serviceIsRemote` (§§2,
   4); a remote service invalidates the local-path mount semantics and the
   rootless threat model, and nothing in this design qualifies it.
+- **Fedora and Ubuntu as host platforms (for 1.1.0).** Recent Fedora and
+  Ubuntu releases are declared mid-term targets, out of scope for the
+  first push (MIR-015): 1.1.0 qualifies Debian 13 only. The Ubuntu 24.04
+  qualification evidence already captured is retained for the promotion.
+- **SELinux-enforcing hosts (for 1.1.0).** Desired, deferred with the
+  Fedora host target given the small enforcing-mode workstation population
+  (MIR-013). A documented limitation — not detected or refused.
 - **Cross-runtime image sharing.** Images are per-runtime-store; a user on
   both platforms builds the base twice. Fingerprint-derived tags make this
   transparent.
