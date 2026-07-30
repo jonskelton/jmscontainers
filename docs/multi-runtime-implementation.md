@@ -24,9 +24,9 @@ same Fedora image.
 > preview gate, and 1.0.0-behavior-preservation machinery have been removed,
 > and the resolved review-gate issue log (MIR-001…MIR-032) has been folded
 > into the body. The full issue log, decision history, and qualification
-> narratives live in git history (the pre-slim revision of this file). The
-> one issue still open — the executable contract for the nested Linux CI
-> job, formerly MIR-033 — is carried in §11.
+> narratives live in git history (the pre-slim revision of this file).
+> MIR-033 remains open in §11; the follow-up repository review recorded
+> MIR-034…MIR-039 in the pre-implementation register below.
 
 ## Scope for 1.1.0
 
@@ -56,6 +56,182 @@ existing tests and goldens — not per-backend behavior to keep in sync:
 Golden argv tests pin each backend's build and launch argv as designed
 here; they are regression pins for the new behavior and are re-baselined
 freely when the design changes deliberately.
+
+---
+
+## 0. Pre-implementation issue register
+
+Review date: 2026-07-29
+
+This register contains findings not tracked by the folded MIR-001…MIR-032
+review. Resolve these issues in the design before implementing the affected
+area; do not let an implementation choice silently settle them. When an
+issue is resolved, retain the ID and finding, change its status, record the
+decision in the affected normative sections, and add or update the named
+acceptance tests.
+
+| ID | Severity | Area | Status |
+| --- | --- | --- | --- |
+| MIR-033 | High | Nested CI execution contract | Open (§11) |
+| MIR-034 | Blocker | Cached-image ABI attestation | Open |
+| MIR-035 | Blocker | Cleanup result protocol | Open |
+| MIR-036 | Blocker | ABI-probe volume side effects | Open |
+| MIR-037 | High | Shell ABI observation | Open |
+| MIR-038 | High | Duplicate image identities | Open |
+| MIR-039 | High | Linux support-scope enforcement | Open |
+
+### MIR-034 — Cached images bypass the isolation-user ABI attestation
+
+- **Status:** Open — blocker
+- **Affects:** §§2, 3, 6, 7.4, 9, 11, R3.3, and the launch-time
+  re-verification non-goal in §12
+- **Finding:** The current text runs `verify_image_abi()` only after a build
+  that jms actually performs. Both `build_project()` and `ensure_base()`
+  have an image-exists fast path, so a cached image is returned without any
+  attestation. More seriously, a newly built divergent image keeps the
+  predictable target tag when its post-build probe fails; a retry can take
+  the cache fast path and report success or launch the image. The claim that
+  every image jms launches “has been attested once” is therefore not
+  established by the specified call sites. This is a regression from the
+  pre-slim MIR-022 decision, which checked the resolved image on every
+  Podman launch before `launch_plan()`.
+- **Required resolution:** Restore a fail-closed check for cached and fresh
+  images uniformly. The simplest contract is: keep the immediate post-build
+  check so `jms build` reports a divergent image, and have `cmd_launch` call
+  `verify_image_abi(image)` after `build_project()`/`ensure_base()` resolves
+  the image but before `launch_plan()` creates state directories. If a
+  different verified cache is chosen, specify its unforgeable evidence,
+  invalidation and failed-build/tag cleanup semantics; deleting a failed tag
+  alone is insufficient unless a failed deletion cannot enable the next
+  cache hit.
+- **Done when:** Tests cover a divergent pre-existing project image, a
+  divergent pre-existing base image, and a fresh build whose attestation
+  fails followed by a second invocation. None may reach `run_argv()` or
+  create shell/agent-state directories. A valid cached image passes, and the
+  apple/container backend still performs zero probe processes.
+
+### MIR-035 — Cleanup cannot classify removal results through the protocol
+
+- **Status:** Open — blocker
+- **Affects:** §2's backend protocol and error contract, §5, §9, R5.7, and
+  implementation phase 1
+- **Finding:** Section 5 requires cleanup and GC to attempt every removal,
+  treat backend-specific “resource vanished” diagnostics as success, retain
+  quoted stderr for hard failures, and aggregate rather than raise
+  immediately. The protocol exposes only pure `stop_argv`, `remove_argv`,
+  and `remove_image_argv` serializers. At the same time, its error contract
+  says commands never receive raw `subprocess` results or raw stderr. A
+  command therefore cannot implement the required tri-state
+  success/absent/hard-failure behavior without either parsing
+  backend-specific stderr itself, branching on the backend, or violating the
+  protocol's result boundary.
+- **Required resolution:** Add a normalized removal operation/result to the
+  protocol (or an equally explicit shared executor plus backend classifier).
+  Define who executes stop/remove, which output is captured, how each backend
+  recognizes only its qualified not-found forms, and how a hard failure is
+  returned for later aggregation without exposing untrusted raw bytes to
+  command code. Reconcile the single-exception error contract with this
+  deliberate non-raising result channel.
+- **Done when:** Cross-backend conformance tests feed success, qualified
+  absence, ambiguous/not-found-looking text with the wrong exit status,
+  invalid UTF-8, and hard failure into container and image removals. Command
+  tests prove attempt-all ordering and aggregated terminal-safe diagnostics
+  without backend branches or direct inspection of a `CompletedProcess`.
+
+### MIR-036 — The ABI probe can create persistent image-declared volumes
+
+- **Status:** Open — blocker
+- **Affects:** §§2, 7.4, 9, R3.2, R3.3, R3.8, and the probe argv golden
+- **Finding:** `podman create` defaults `--image-volume` to `bind`; for every
+  built-in `VOLUME` in an untrusted project image, Podman creates an
+  anonymous named volume. The specified `podman rm --force` does not request
+  volume removal. Thus the statement that the never-started probe has no
+  side effects is false, and repeated builds can leak host storage even when
+  the probe container itself is removed. Podman 5.4 documents both the
+  default and `--image-volume=ignore`:
+  <https://docs.podman.io/en/v5.4.2/markdown/podman-create.1.html#image-volume-bind-tmpfs-ignore>.
+- **Required resolution:** Make the probe ignore image-declared volumes
+  explicitly (normally `podman create --image-volume=ignore`) and qualify
+  that flag on the minimum supported Podman. Decide whether
+  `podman rm --volumes --force` is also required as defense in depth, and
+  include all side-effect-suppression flags in the golden argv and
+  ambient-configuration tests.
+- **Done when:** An integration fixture whose Containerfile declares one or
+  more `VOLUME`s leaves the exact pre-probe volume set unchanged after both a
+  successful attestation and a forced attestation failure. Unit/golden tests
+  pin the create/remove argv and prove ambient `containers.conf` cannot
+  restore image-volume creation.
+
+### MIR-037 — The shell probe is both “strictly parsed” and discarded
+
+- **Status:** Open — high
+- **Affects:** §§3, 7.4, 9, and R3.3
+- **Finding:** Section 7.4 says every `podman cp` stream must contain exactly
+  one regular file of bounded size, then says the `/bin/bash` stream is
+  discarded unread and only its exit status matters. Those contracts are
+  mutually exclusive. Podman permits the copied source to be either a file
+  or a directory and streams either as tar, so exit 0 alone does not prove
+  that `/bin/bash` is a usable shell. It also leaves executable mode and
+  final-component symlink handling undefined.
+- **Required resolution:** Define the shell artifact actually required by
+  the ABI and inspect enough of its tar member metadata to prove it. At
+  minimum, decide regular-file versus permitted symlink behavior, executable
+  mode, archive/member count, and a size bound appropriate for the shipped
+  Fedora bash binary. Remove the “discarded unread” claim if the stream is
+  parsed, or narrow the ABI honestly if only path existence is intended.
+- **Done when:** Tar fixtures and the Podman integration matrix cover a
+  normal executable bash, missing path, directory at `/bin/bash`,
+  non-executable regular file, malformed/multi-member tar, oversized
+  content, and the symlink form accepted or rejected by the decision.
+
+### MIR-038 — “One fact per image identity” lacks a duplicate-record rule
+
+- **Status:** Open — high
+- **Affects:** §2 normalized types, §5, §9, R5.2–R5.4
+- **Finding:** `ImageFact` promises exactly one fact per image ID and
+  retention relies on that uniqueness. The apple/container text says to
+  group one-ref records by ID, while the Podman text describes one output
+  record at a time. Neither defines what happens when duplicate records for
+  one ID disagree on `created` or `labels`, repeat refs, mix dangling and
+  named records, or arrive in a different order. The normalized
+  `dict[str, str]` label type is also not backed by key/value validation.
+  An implementation can therefore duplicate retention units or
+  arbitrarily choose ownership data while still appearing to follow the
+  per-backend paragraphs.
+- **Required resolution:** Specify one shared identity accumulator after
+  backend record parsing. Define ID format validation, deterministic
+  ref union/deduplication, ordering, dangling-name filtering, full
+  string/NUL validation for refs and label keys/values, and fail-closed
+  handling for conflicting `created` or label data for the same ID.
+- **Done when:** Both backend normalizers are tested with reordered
+  duplicates, repeated refs, conflicting timestamps, conflicting labels,
+  malformed label keys/values, and mixed dangling/named records. Every
+  accepted permutation yields the same single `ImageFact`; every ambiguous
+  ownership case aborts.
+
+### MIR-039 — The declared Debian/amd64 support scope is not enforced or qualified
+
+- **Status:** Open — high
+- **Affects:** Scope, §2 selection, §§4, 8–10, §12, and the selection tests
+- **Finding:** The support scope says Linux means Debian 13 on amd64 only,
+  while `select_runtime()` accepts every `sys.platform.startswith("linux")`
+  host and readiness checks neither distribution nor architecture.
+  Fedora, Ubuntu, arm64, and SELinux-enforcing systems therefore select the
+  production backend with no warning even though later sections call them
+  out of scope or unsupported. The document does explicitly choose
+  non-detection for SELinux, but it never says whether the Debian and amd64
+  boundaries are enforceable gates or qualification statements only.
+- **Required resolution:** Choose one policy and make all sections agree. If
+  this is an enforced support matrix, define side-effect-free architecture
+  and host-distribution detection, canonical accepted values, failure
+  ordering, diagnostics, and tests. If it is a qualification matrix, state
+  explicitly that other local rootless Linux configurations are allowed to
+  run unsupported, decide whether they receive a warning, and stop describing
+  platform selection as if it enforces Debian/amd64.
+- **Done when:** Selection/readiness tests cover Debian amd64, another distro,
+  arm64, and the already-decided SELinux non-gate. README, SECURITY.md, CLI
+  docs, release checklist, and §12 use the same “refused” versus
+  “unqualified but allowed” vocabulary.
 
 ---
 
