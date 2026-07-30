@@ -25,7 +25,7 @@ same Fedora image.
 > and the resolved review-gate issue log (MIR-001…MIR-032) has been folded
 > into the body. The full issue log, decision history, and qualification
 > narratives live in git history (the pre-slim revision of this file).
-> MIR-033…MIR-039 are tracked in the pre-implementation register below.
+> MIR-033…MIR-051 are tracked in the pre-implementation register below.
 >
 > **Second slim, 2026-07-30.** A proportionality review removed three
 > subsystems whose cost outweighed the risk they mitigated: the image ABI
@@ -39,6 +39,15 @@ same Fedora image.
 > dropped, and MIR-038's identity merging was scoped to the one backend
 > whose output shape needs it. The register retains every ID and finding
 > with updated statuses; the deleted designs survive in git history.
+>
+> **Issue-resolution pass, 2026-07-30.** The twelve implementation-readiness
+> findings (MIR-040…MIR-051) are resolved in place, following the standing
+> direction toward proportionate machinery: ambient host configuration is
+> trusted input (MIR-040), the local nested harness is dropped as a gate
+> (MIR-049), apple/container removal absence is classified by existence
+> recheck instead of diagnostic matching (MIR-043), and `LaunchPlan` keeps a
+> single user-mode authority (MIR-046). Each resolution is recorded in the
+> register entry and the affected normative sections.
 
 ## Scope for 1.1.0
 
@@ -95,6 +104,11 @@ resolutions (MIR-033, MIR-034, MIR-036, MIR-037) and re-resolved two in
 simpler forms (MIR-035, MIR-038). Superseded entries keep their findings
 as recorded constraints on any future feature that reopens the area.
 
+An implementation-readiness review on 2026-07-30 added MIR-040…MIR-051.
+All twelve were resolved later the same day (see Provenance); each entry
+records its decision, and the affected normative sections carry the
+resolved text.
+
 | ID | Severity | Area | Status |
 | --- | --- | --- | --- |
 | MIR-033 | High | Nested CI execution contract | Superseded (§§9, 10) |
@@ -104,6 +118,18 @@ as recorded constraints on any future feature that reopens the area.
 | MIR-037 | High | Shell ABI observation | Superseded (§7.4) |
 | MIR-038 | High | Duplicate image identities | Resolved (§5) |
 | MIR-039 | High | Linux support-scope enforcement | Resolved (Scope, §§2, 9, 10, 12) |
+| MIR-040 | Blocker | Ambient Podman configuration and implicit exposure | Resolved (§8, §10) |
+| MIR-041 | Blocker | Project-build pull and missing-base contract | Resolved (§§3, 6) |
+| MIR-042 | High | Image removal can prune unselected parents | Resolved (§5) |
+| MIR-043 | High | apple/container absence classification | Resolved (§§2, 5) |
+| MIR-044 | High | Qualification fixtures do not cover the promised schemas | Resolved (§§5, 11) |
+| MIR-045 | High | Normalized-fact validation is incomplete | Resolved (§5) |
+| MIR-046 | High | `LaunchPlan` has contradictory user-mode authorities | Resolved (§2, §7.1) |
+| MIR-047 | High | Image-ref ownership and concurrent retagging | Resolved (§§3, 5) |
+| MIR-048 | High | GC and purge failure-policy boundary | Resolved (§5) |
+| MIR-049 | High | The retained local nested harness is undefined and non-gating | Resolved (§§9, 11, 12) |
+| MIR-050 | Medium | Readiness overclaims storage validation | Resolved (§§4, 10) |
+| MIR-051 | Medium | Lazy runtime accessor is inconsistently specified | Resolved (§2) |
 
 ### MIR-033 — The nested CI job lacks an executable outer-harness contract
 
@@ -129,10 +155,14 @@ as recorded constraints on any future feature that reopens the area.
   manual clean-host walkthrough on real Debian 13 (§10). A CI job can
   return, with this finding as its requirements list, when contributors
   exist; the pre-slim contract survives in git history.
-- **Done when:** No `integration-linux` job or `ci-debian-nested.sh`
-  exists; §9's CI section and §11 phase 2 reference only the local
-  harness and the §10 walkthrough; the release checklist names the
-  manual walkthrough as the Linux confirmation.
+  **Amended 2026-07-30 (MIR-049):** the "local nested harness" half of
+  this resolution is dropped too — Linux qualification is real-host
+  only: the integration tiers on a real Debian 13 amd64 host plus the
+  §10 walkthrough.
+- **Done when:** No `integration-linux` job, `ci-debian-nested.sh`, or
+  nested harness exists; §9's CI section and §11 phase 2 reference only
+  the real-host integration run and the §10 walkthrough; the release
+  checklist names them as the Linux confirmation.
 
 ### MIR-034 — Cached images bypass the isolation-user ABI attestation
 
@@ -188,6 +218,10 @@ as recorded constraints on any future feature that reopens the area.
   internally, the same stderr matching `image_exists` already performs
   today. The error contract keeps one deliberate exception for this
   non-raising result channel. Recorded in §§2, 5; tests in R5.9.
+  **Amended 2026-07-30 (MIR-043):** apple/container absence is
+  classified by post-failure existence recheck, not diagnostic
+  matching — the borrowed inspect-image string proved unproven for the
+  removal verbs.
 - **Done when:** Cross-backend conformance tests
   (`test_removal_result_classification`, R5.9) feed success, absence, and
   hard failure into container and image removals; absence classifies as
@@ -298,6 +332,423 @@ as recorded constraints on any future feature that reopens the area.
   another distro, arm64, and the already-decided SELinux non-gate. README,
   SECURITY.md, CLI docs, release checklist, and §12 use the same “refused”
   versus “unqualified but allowed” vocabulary.
+
+### MIR-040 — Ambient Podman configuration can change the isolation and mount contract
+
+- **Status:** Resolved 2026-07-30
+- **Affects:** §§2, 4, 7.1–7.2, 8–10, R7.4, R7.7, R8.1–R8.4
+- **Finding:** The proposal treats explicit `--userns` and
+  `--security-opt label=disable` as sufficient to establish the Linux
+  boundary, but Podman also consumes system/user `containers.conf`,
+  `containers.conf.d`, `mounts.conf`, and configuration-selecting
+  environment variables. Those inputs can automatically mount host
+  directories (commonly secrets), inject host environment, select an
+  unconfined seccomp profile or different capability/device defaults, and
+  install OCI hooks. Podman's own manual says `mounts.conf` entries are
+  automatically mounted by `podman run`:
+  <https://docs.podman.io/en/v5.4.2/markdown/podman.1.html#configuration-files>.
+  The design overrides the ambient user-namespace default only. It neither
+  neutralizes nor validates the other inputs, yet §8 promises Podman's
+  default seccomp/capability boundary and says deliberately mounted data is
+  the exposure surface. `LaunchPlan.mounts` and the argv goldens cannot
+  observe implicit mounts or environment added after serialization.
+- **Resolution:** The third model: the effective Podman configuration is
+  **trusted host input**, for `run` and `build` alike. jms's boundary
+  defends against the agent inside the container, not against the
+  invoking user's own host configuration; `containers.conf` and its
+  drop-ins, `mounts.conf`, `storage.conf`, `policy.json`/`registries.conf`,
+  configuration-selecting environment variables, and OCI hooks belong to
+  the invoking user and sit in the same trust class as the `podman`
+  binary and the kernel. jms neither neutralizes nor validates them —
+  consistent with the SELinux and NFS non-detection stances. The two
+  explicit overrides stay (`--userns`, `--security-opt label=disable`)
+  because they pin the mapping and labeling contract jms itself relies
+  on; they are qualified argv, not an audit of the rest. Remote detection
+  (`host.serviceIsRemote`) also stays — a remote service breaks path
+  semantics, not just configuration trust. §8's boundary claims are
+  narrowed to Podman's seccomp/capability boundary *as configured on the
+  host*, and `LaunchPlan.mounts` and the argv goldens are documented as
+  pinning jms-requested mounts only. Recorded in §8; doc wording in §10.
+- **Done when:** SECURITY.md and README name the ambient-configuration
+  trust assumption in §8's terms; no neutralization or validation code
+  exists; the R8.4 documentation review covers the statement. The
+  originally proposed acceptance matrix is not built — under the trusted
+  model there is no enforced policy to prove.
+
+### MIR-041 — `--pull=missing` is not qualified and the missing-base behavior does not exist
+
+- **Status:** Resolved 2026-07-30
+- **Affects:** §§3, 6, 9, 11, R3.7, `scripts/qualify-podman.sh`
+- **Finding:** The normative design says every Podman project build uses
+  `--pull=missing`, that a present short-name base never contacts a
+  registry, and that an absent base fails quickly and non-interactively
+  with an existing jms-specific hint. The checked-in qualification script
+  proves a different command: all three registries.conf cases use
+  `--pull=never`. Current `run_build()` has only the generic context-rule
+  note and no missing-base classifier or hint. With `--pull=missing`, an
+  absent `jmscontainers-base:latest` is eligible for short-name expansion,
+  registry access, and (depending on registries.conf and TTY state) a
+  prompt. The claimed clean-store external-base example is also
+  `FROM fedora:latest`, not a fully qualified reference as §3 calls it.
+  Thus neither side of R3.7 is established by the recorded evidence.
+- **Resolution:** Project builds keep `--pull=missing`; the design gains
+  a non-interactivity rule and an evidence-keyed hint, and the false
+  qualification claim is removed. (a) Every build runs with stdin
+  redirected from `/dev/null`, so no engine prompt — short-name or
+  otherwise — can hang a build; beyond that, short-name resolution
+  follows the host's `registries.conf`, which is trusted host input
+  (MIR-040). (b) jms never parses Containerfile syntax to find the base.
+  The missing-base classifier is post-hoc: when a project build fails,
+  jms calls `image_exists("jmscontainers-base:latest")`; only when the
+  base is observed absent is the existing "run `jms build` for the base
+  image first" hint appended after `CONTEXT_NOTE`. The hint is advisory
+  and keyed to observed evidence (the failed build plus the observed
+  absence). (c) External bases are unrestricted: docs recommend fully
+  qualified `FROM` references and `examples/clean-slate` moves to one
+  (`registry.fedoraproject.org/fedora:latest`), but nothing is enforced.
+  (d) The "qualified across three registries.conf variants" statement is
+  removed; qualification with the production argv happens in §9's
+  FROM-resolution check, and `scripts/qualify-podman.sh`'s `--pull=never`
+  runs do not count (the script is deleted — MIR-049). Recorded in
+  §§3, 6.
+- **Done when:** The integration FROM-resolution check executes the exact
+  production argv with `--pull=missing`: base present under network
+  denial succeeds with no registry contact; base absent fails fast and
+  non-interactively with the missing-base hint; a clean-store standalone
+  project fetches its fully qualified external base. The example and
+  README follow the fully-qualified recommendation, and builds provably
+  run with stdin from `/dev/null`.
+
+### MIR-042 — Podman image removal can delete unselected dangling parents
+
+- **Status:** Resolved 2026-07-30
+- **Affects:** §§2, 5, 9, R5.4, R5.7, R5.9
+- **Finding:** The document says cleanup “untags per jms-owned ref” and
+  never deletes anything else by identity. The specified
+  `podman image rm --ignore REF` does more: Podman removes dangling parent
+  images by default. Its 5.4.2 manual explicitly provides `--no-prune` to
+  suppress that behavior:
+  <https://docs.podman.io/en/v5.4.2/markdown/podman-rmi.1.html#no-prune>.
+  Extra parent removal is outside the enumerated schedule, is not reported
+  through one `RemovalResult` per selected ref, and may delete an
+  unlabelled image that jms never classified as owned.
+- **Resolution:** `--no-prune`. Podman's `remove_image` argv becomes
+  `podman image rm --ignore --no-prune REF`; the ownership model is not
+  expanded — dangling parents are outside it (skipped at enumeration by
+  rule, §5) and are never removed as a side effect of an untag.
+  apple/container's delete-by-ref cascade behavior is undocumented; the
+  R5.4 survivor-set acceptance run on macOS determines it, and a
+  discovered cascade is a qualification failure to resolve before
+  release, not a silently accepted behavior. Recorded in §5.
+- **Done when:** Real-runtime tests build a graph containing selected and
+  unselected parents plus jms and non-jms aliases, remove one scheduled
+  ref, and assert the exact survivor set on Podman and apple/container.
+  Golden removal argv pins `--no-prune`; R5.4/R5.9 pin the behavior.
+
+### MIR-043 — apple/container does not have one proven absence diagnostic for all removals
+
+- **Status:** Resolved 2026-07-30
+- **Affects:** MIR-035, §§2, 5, 9, R5.7, R5.9
+- **Finding:** MIR-035 says apple/container maps “its one exact not-found
+  diagnostic (the same match `image_exists` already performs today)” to
+  `removed` for `stop_container`, `remove_container`, and `remove_image`.
+  The existing match is specifically `Error: image not found: <ref>` from
+  image inspection. The proposal supplies no evidence that stop/delete of
+  a container, or image deletion rather than inspection, uses that text,
+  exit code, or output stream. It also leaves a failed
+  `RemovalResult.detail` undefined when stderr is empty but stdout contains
+  the diagnostic, despite requiring `detail` to be non-empty for every
+  failure.
+- **Resolution:** The borrowed inspect-image diagnostic is dropped;
+  apple/container removal operations classify absence by **post-failure
+  existence recheck**, not output matching. On a nonzero exit,
+  `remove_image` re-checks `image_exists(ref)` and `remove_container`
+  re-checks `ps()` for the ID; if the resource is absent, the outcome is
+  `removed` — the goal state holds, however the CLI spelled its
+  complaint. A `failed` `stop_container` is superseded by a subsequent
+  successful `remove_container` for the same ID and dropped from the
+  aggregate (the forced delete is authoritative, §5). A genuine
+  failure's `detail` quotes stderr, falling back to stdout, falling back
+  to the fixed text `no diagnostic output (exit N)` — non-empty in every
+  failure, terminal-safe throughout (invalid UTF-8 is handled by the
+  existing quoting). Podman is unchanged (`--ignore` at the engine). No
+  stability assumption about apple/container's error text remains
+  anywhere. Recorded in §§2, 5; MIR-035's mechanism is amended
+  accordingly.
+- **Done when:** R5.9 covers, per operation and backend: success,
+  vanished-before, failed-then-recheck-absent, failed-with-resource-
+  present (stays `failed`), stdout-only, and empty-output cases; the
+  stop-superseded-by-remove rule has a named case; a manual macOS race
+  test proves idempotent cleanup.
+
+### MIR-044 — The checked-in fixtures do not cover the schemas the normalizers promise
+
+- **Status:** Resolved 2026-07-30
+- **Affects:** §§5, 9, tests/fixtures, R5.2, R5.5, R5.8, R7.13
+- **Finding:** `podman-5.4.2-images.json` contains one named Fedora record;
+  it contains no null/empty `Names`, `<none>` spelling, dangling image,
+  jms ownership labels, or multi-name identity. Nevertheless §5 calls
+  those accepted/skipped fixture-backed variants. The Podman `ps` fixture
+  predates `jms.container=launch`, so it cannot prove the new provenance
+  predicate, and the inspect-mount fixture required by the leak-sweep
+  contract is not checked in. The qualification script attempts to create
+  richer image output, but the committed fixture and its README do not
+  contain that result. Strict parsing against a narrow happy-path capture
+  risks rejecting normal engine output or testing invented variants.
+- **Resolution:** Fixture capture becomes a specified phase-1/2
+  deliverable with a provenance contract, and §5 stops implying the
+  current captures already contain the variants. Every fixture file gets
+  a one-command reproducible capture recipe recorded in
+  `tests/fixtures/README`, executed on the qualified engine versions,
+  preserving whole records for: Podman images — named, multi-named,
+  unlabeled, jms-labelled, dangling, and `<none>`-named; Podman `ps` —
+  inherited image labels, the `jms.container=launch` override, marker
+  absence, running and exited states; the Podman `inspect` mounts
+  fixture the leak sweep requires; and the apple/container 1.2.0
+  equivalents. Synthetic malformed cases live in test code, never in
+  fixture files. A normalizer lands only after its fixtures do — this is
+  the ordering rule in §11 phase 1/2. Recorded in §§5, 11.
+- **Done when:** Fixture provenance is reproducible from one documented
+  command; Podman images cover named, multi-named, unlabeled, and dangling
+  records; Podman and apple/container container fixtures cover inherited
+  image labels, the launch override, marker absence, running/exited
+  states, and mount metadata; the Podman inspect fixture exists. Each
+  accepted normalizer branch is reached by a captured record.
+
+### MIR-045 — The normalized fact types are stricter than their specified validators
+
+- **Status:** Resolved 2026-07-30
+- **Affects:** §§2, 5, 9, MIR-038, R5.2–R5.5, R5.10
+- **Finding:** `ContainerFact` promises `dict[str, str]`, but `ps()`
+  validates only that `labels` is a dict; non-string, empty, NUL-bearing,
+  or otherwise invalid keys/values cross the backend boundary and feed the
+  destructive ownership predicate. Its ID is documented as full and
+  untruncated, while shared validation checks only string/NUL and the
+  Podman paragraph separately claims 64 lowercase hex. `ImageFact.created`
+  has no complete validity contract: negative/boolean/out-of-range Podman
+  integers and timezone-less, non-finite, or out-of-range apple/container
+  dates are not addressed. Finally, apple/container duplicate merging says
+  conflicting values fail but does not say whether `{}` and
+  `{"jms.project": "x"}` conflict or are unioned; arbitrary union would
+  synthesize ownership data absent from one record.
+- **Resolution:** The validators are specified completely so the types
+  and prose agree; details in §5. ID forms: Podman image and container
+  IDs are 64-character lowercase hex; apple/container image IDs are
+  64-character lowercase hex (asserted equal to the descriptor digest);
+  apple/container container IDs are non-empty NUL-free valid-UTF-8
+  strings (that engine's ID is a name — no truncated hex form exists).
+  Labels, both fact types, both backends: keys non-empty NUL-free
+  valid-UTF-8 `str`, values NUL-free valid-UTF-8 `str`; any non-string
+  key or value aborts. `created`: an `int` that is not a `bool`
+  (Python's `bool` subclasses `int` and is rejected explicitly) in
+  `[0, 253402300799]` (year 9999); out-of-range aborts. apple/container
+  `creationDate` must be strict ISO-8601 with an explicit UTC offset;
+  naive, unparseable, or out-of-range dates abort, and the parsed value
+  converts into the same epoch range. Duplicate apple/container records
+  for one ID must carry **exactly equal** label maps — a key present in
+  one record and absent in another is a conflict and aborts; no union,
+  ownership data is never synthesized. Recorded in §5.
+- **Done when:** The normalized type definitions and parser prose agree.
+  Cross-backend malformed matrices cover every field and boundary,
+  including missing-vs-present duplicate labels and time limits, and no
+  command can receive a value outside the annotated normalized type.
+
+### MIR-046 — `LaunchPlan.user` and `LaunchPlan.root` can disagree
+
+- **Status:** Resolved 2026-07-30
+- **Affects:** §2 protocol, §7.1, §9, R7.1–R7.5
+- **Finding:** `LaunchPlan` stores both `user` (`"isolation" | "root"`)
+  and `root: bool`. The apple/container serializer consumes `user`, while
+  Podman derives security-sensitive `--user` and `--userns` values from
+  `root`. No invariant requires the two fields to agree, and Class A
+  serializers are public pure functions that tests will construct
+  directly. One logical plan can therefore serialize as root on one
+  backend and isolation on the other, violating the shared-plan premise.
+- **Resolution:** `LaunchPlan.root` is deleted. `user: "isolation" |
+  "root"` is the single user-mode authority, validated at construction
+  (any other value is rejected before argv creation, in `__post_init__`).
+  The apple/container serializer passes it verbatim as `--user`; the
+  Podman serializer derives both security spellings from it —
+  `"isolation"` → `--user 1000:1000` + `--userns=keep-id:uid=1000,gid=1000`,
+  `"root"` → `--user 0:0` + `--userns=host` (§7.1). Contradictory state
+  is unrepresentable. Recorded in §2 (type definition), §7.1.
+- **Done when:** Contradictory state is unrepresentable or rejected before
+  argv creation; direct serializer tests cover both modes and attempted
+  invalid construction; the launch goldens derive from the same plans for
+  both backends.
+
+### MIR-047 — Ref-prefix matching is not provenance and ref deletion has a retag race
+
+- **Status:** Resolved 2026-07-30
+- **Affects:** §§3, 5, 9, R3.5, R5.4, R5.7
+- **Finding:** The document promises that a non-jms alias of a jms-labelled
+  image survives. That is only true when the alias does not normalize to a
+  jms prefix. A user-created alias such as
+  `docker.io/library/jmscontainers-<slug>-<pid-prefix>:manual` is normalized by
+  `local_name()` and selected even though jms did not create it; stripping
+  `docker.io/library/` broadens that destructive namespace beyond Podman's
+  `localhost/` build result. Conversely, the proposed label is image-wide
+  and cannot prove which actor created an individual alias. There is also
+  a race between enumerating `(id, ref)` and deleting `ref`: another
+  process can move that mutable ref to a different image, after which jms
+  removes an image name it never evaluated. The vanished-resource rule
+  does not cover ref rebinding.
+- **Resolution:** Three decisions. **Reserved grammar:** a ref is
+  jms-reserved iff its `local_name()` normalization begins with a jms tag
+  prefix (`jmscontainers-…`). All matching aliases are reserved
+  user-visible state — jms tracks no per-ref provenance, and a user who
+  manually tags into the reserved namespace has handed that alias to
+  jms; the README documents the reserved namespace (§10).
+  **Narrowed normalization:** Podman's `local_name()` strips exactly
+  `localhost/` — the only qualification its production builds emit — and
+  nothing else; the speculative `docker.io/library/` strip is removed,
+  so a registry-qualified manual alias falls outside the reserved
+  namespace and survives. apple/container's existing strip is unchanged
+  (it matches that engine's own qualification of stored names).
+  **Concurrency:** same-store concurrent mutation during cleanup is an
+  explicit documented limitation — jms neither locks nor rechecks
+  identity between enumerating `(id, ref)` and untagging `ref`; the
+  residual retag race is accepted and named in the README. §5's survival
+  claim is narrowed to: an alias **outside the reserved namespace**
+  survives. Recorded in §§3, 5.
+- **Done when:** Tests cover matching and nonmatching manual aliases
+  under each backend's stripped qualification, multiple aliases on one
+  ID, and (as a documented-limitation test, not a safety claim) a ref
+  rebound between enumeration and removal. README documents the reserved
+  namespace and concurrency limitation; §5's survival claim is the
+  narrowed form.
+
+### MIR-048 — Background GC and explicit purge need different failure contracts
+
+- **Status:** Resolved 2026-07-30
+- **Affects:** §§2, 5, 9, 11, R5.4, R5.7
+- **Finding:** Section 5 requires project GC to warn and never fail the
+  successful build/launch, while `clean` and `revoke --purge-images` must
+  aggregate failures and exit 1. Today both retention and revoke purge call
+  `gc_project_images()` with only a `keep` value. The proposal changes
+  removal results but does not specify a return type or policy parameter
+  that lets the caller enforce the two outcomes. It discusses per-untag
+  failures only; an `image_facts()` execution/schema failure occurs before
+  a schedule exists and would still raise through background GC, contrary
+  to “never fails the surrounding build/launch.” A readiness failure after
+  revocation is specified, but enumeration and partial-purge failures are
+  not connected to the final aggregate.
+- **Resolution:** Selection and execution split, policy assigned per
+  call site. `image_removal_schedule(...)` enumerates and selects
+  (readiness, `image_facts()`, ownership/retention) and raises on any
+  failure; `execute_removal_schedule(schedule)` performs the removals,
+  never raises, and returns the ordered `(ref, RemovalResult)` list.
+  Policy: **background GC** (post-build/launch retention) wraps both
+  steps — any raise, including an enumeration failure, becomes one
+  stderr warning and the already-successful build/launch result stands;
+  **`clean` / `clean --all` / `revoke --purge-images`** let schedule
+  failures raise (exit 1) and aggregate execution failures into the
+  exit-1 report. Revocation commits before the purge begins, so every
+  purge-path failure — readiness, enumeration, or removal — keeps the
+  "trust was revoked, but image purge failed" split. Per-item success
+  lines print as they happen and remain valid when a later removal
+  fails; no overall summary claims success while the aggregate holds
+  failures. Recorded in §5; tests extend R5.7.
+- **Done when:** Tests inject readiness, enumeration/normalization, and
+  every removal-position failure into every caller. Background GC always
+  returns the already-successful build/launch result with warnings;
+  explicit cleanup/purge attempts every schedulable operation, reports one
+  aggregate, and exits 1; revocation remains durable in every purge
+  failure case.
+
+### MIR-049 — Removing nested CI did not specify the retained local nested harness
+
+- **Status:** Resolved 2026-07-30
+- **Affects:** MIR-033, §§9–11, R3.7, R4.4, R7.2–R7.14
+- **Finding:** MIR-033 was superseded by deleting the CI job, but §§9–11
+  still make a “local nested harness” a phase-2 integration dependency.
+  No outer image, invocation, privilege/device mounts, subordinate-ID
+  plumbing, cancellation behavior, or artifact location is specified.
+  The existing `scripts/qualify-podman.sh` is not the two-tier integration
+  harness described in §9, tests `--pull=never` rather than the production
+  pull policy, and ends with `exit 0` even when its `FAILCOUNT` is nonzero.
+  It therefore cannot gate implementation or release as written. This is
+  the executable-contract portion of MIR-033 resurfacing under a different
+  name.
+- **Resolution:** The local nested harness is removed as a specified
+  artifact and as a gate — the resurfaced half of MIR-033 resolves the
+  same way as the first: Linux qualification for 1.1.0 is real-host
+  only. The gates are (a) both integration tiers (§9) run green on a
+  real Debian 13 amd64 host with a fresh non-root, non-1000 user, and
+  (b) the §10 clean-host install walkthrough. Whatever environment a
+  developer uses day-to-day is their business and gates nothing.
+  `scripts/qualify-podman.sh` is deleted: its registries.conf coverage
+  is superseded by the production-argv FROM-resolution check
+  (MIR-041, §9), and its `exit 0`-despite-failures behavior made it
+  unusable as a gate anyway. §§9–11 no longer mention a nested harness.
+  Recorded in §§9, 11, 12.
+- **Done when:** No nested harness and no `scripts/qualify-podman.sh`
+  exist in the tree; §11 phase 2 and the release checklist name the
+  real-host integration run and the walkthrough as the only Linux gates.
+
+### MIR-050 — `graphDriverName` does not prove the storage stack is usable
+
+- **Status:** Resolved 2026-07-30
+- **Affects:** §§4, 9, 10, R4.4
+- **Finding:** Readiness treats a present `store.graphDriverName` as proof
+  that storage initialized, and §10 says unsupported NFS/distributed-home
+  failures surface through that check. `podman info` returning a driver
+  name proves that metadata was read, not that image extraction, layer
+  creation, bind mounting, or the configured graph root works. Podman's
+  rootless documentation explicitly calls NFS and other distributed
+  filesystems unsupported:
+  <https://docs.podman.io/en/v5.4.2/markdown/podman.1.html#note-unsupported-file-systems-in-rootless-mode>.
+  The proposal separately rejects a create/run probe, so the stronger
+  readiness and diagnostic claims have no specified evidence.
+- **Resolution:** Narrowed, no functional check added (§4's create/run
+  probe rejection stands). Readiness claims only that `podman info` and
+  its required metadata are readable — a present `store.graphDriverName`
+  proves Podman initialized and reported its storage configuration,
+  nothing more. Storage-operation failures (image extraction, layer
+  creation, bind mounting, an NFS-broken graph root) surface at the
+  first build or launch with Podman's own stderr, where the
+  evidence-keyed hint machinery applies — or at `podman info` itself
+  when storage initialization fails outright. §10's NFS wording changes
+  to match: documented, not detected, surfacing at build/launch rather
+  than "via the storage check". Recorded in §§4, 10; R4.4 reworded.
+- **Done when:** §4, the README limitation, and R4.4 state the same
+  enforceable property; tests distinguish missing/malformed driver metadata
+  from a later storage-operation failure; every hint is keyed to evidence
+  actually observed.
+
+### MIR-051 — The lazy runtime accessor and the `RUNTIME` pseudo-global are inconsistent
+
+- **Status:** Resolved 2026-07-30
+- **Affects:** §2, §9 selection/laziness tests, implementation phase 1
+- **Finding:** The only defined cache/accessor pair is `_RUNTIME` and
+  `runtime()`, but the seam pseudo-code reads `RUNTIME.exe` and
+  `RUNTIME.install_hint`, and the migration rule says literals become
+  `[RUNTIME.exe, ...]`. No `RUNTIME` binding or lifetime is defined.
+  Introducing one at import/startup would violate the central lazy-selection
+  guarantee; leaving it undefined makes the snippets unusable; repeatedly
+  resolving it inside serializers obscures which backend owns a call.
+  This is especially consequential in `runtime_run()`, which is both the
+  first selection trigger and the backend methods' process seam.
+- **Resolution:** One spelling, one ownership rule; there is no
+  `RUNTIME` global. The only cache/accessor pair is `_RUNTIME` /
+  `runtime()`. Public free functions that touch the runtime acquire
+  `backend = runtime()` once at their boundary and use that object for
+  every backend decision in the operation, so one operation observes one
+  backend instance. `runtime_run()` calls `runtime()` only for its
+  argv[0] assertion and the `FileNotFoundError` install hint — selection
+  is side-effect-free (§2), so a first selection happening there is
+  harmless and still lazy. The migration rule reads: inside a free
+  function holding `backend`, literals become `[backend.exe, ...]`. The
+  §2 seam snippets are rewritten in this spelling. Tests install and
+  reset the backend by assigning `JMS._RUNTIME`; the laziness tests
+  count accessor calls as well as subprocess calls; no module-level
+  expression selects a backend, and pure commands never call the
+  accessor. Recorded in §2.
+- **Done when:** Every pseudo-code identifier is defined; no module-level
+  expression constructs/selects a backend; one operation observes one
+  backend instance; pure commands never call the accessor; and the
+  selection/laziness tests instrument accessor-call count as well as
+  subprocess count.
 
 ---
 
@@ -437,16 +888,20 @@ semantics in this document assume a local engine only.
 `runtime_run()` changes only its assertion and hint:
 
 ```python
-if not argv or argv[0] != RUNTIME.exe:
-    raise AssertionError("runtime argv must begin with " + RUNTIME.exe)
+if not argv or argv[0] != runtime().exe:
+    raise AssertionError("runtime argv must begin with " + runtime().exe)
 ...
 except FileNotFoundError:
-    fail(RUNTIME.exe + " CLI not found; " + RUNTIME.install_hint)
+    fail(runtime().exe + " CLI not found; " + runtime().install_hint)
 ```
 
-Every current `["container", ...]` literal becomes `[RUNTIME.exe, ...]`
-where the subcommand grammar is shared, or a call to a backend method where
-it is not.
+There is no `RUNTIME` global (MIR-051): public free functions that touch
+the runtime acquire `backend = runtime()` once at their boundary and use
+that object for every backend decision in the operation, so one operation
+observes one backend instance; only `runtime_run()`'s assertion and hint
+call the accessor directly. Every current `["container", ...]` literal
+becomes `[backend.exe, ...]` where the subcommand grammar is shared, or a
+call to a backend method where it is not.
 
 `runtime_json()` keeps owning UTF-8 decoding and JSON-syntax failures, so
 both backends share one malformed-output error path; each backend's
@@ -492,12 +947,14 @@ class RemovalResult:             # normalized removal outcome (§5, MIR-035)
 @dataclass(frozen=True)
 class LaunchPlan:
     name: str                            # container name (given or generated)
-    user: str                            # "isolation" | "root" — the
-                                         #   apple/container --user value;
-                                         #   Podman derives its numeric
-                                         #   --user from `root` (§7.1)
-    root: bool                           # True iff --root; drives the Podman
-                                         #   --userns and --user variants
+    user: str                            # "isolation" | "root" — the single
+                                         #   user-mode authority (MIR-046),
+                                         #   validated at construction; any
+                                         #   other value is rejected before
+                                         #   argv creation. apple/container
+                                         #   passes it verbatim; Podman
+                                         #   derives its numeric --user and
+                                         #   its --userns variant from it
                                          #   (§7.1)
     tty: bool                            # append the runtime's --tty
     workdir: str                         # "/work" or "/work/<inner>"
@@ -563,18 +1020,23 @@ monkeypatch intercepts every execution on both backends:
 | `image_exists` | `(image: str) -> bool` | apple/container: exit 0 vs. the exact `Error: image not found: <ref>` stderr line; Podman: `image exists` exit 0/1, anything else a hard failure (§5) |
 | `image_facts` | `() -> list[ImageFact]` | per-backend strict, fixture-backed, fail-closed normalizer (§5) |
 | `ps` | `() -> list[ContainerFact]` | per-backend strict, fail-closed normalizer (§5); id/label validation (string, NUL-free, dict) shared |
-| `stop_container` / `remove_container` | `(container_id: str) -> RemovalResult` | executes the backend's stop / forced-remove argv via `runtime_run(check=False)` with output captured and classifies the outcome; Podman passes `--ignore` so absence succeeds at the engine (§5, MIR-035) |
-| `remove_image` | `(ref: str) -> RemovalResult` | executes the backend's image untag/remove argv the same way (Podman: `image rm --ignore`) and classifies the outcome (§5, MIR-035) |
+| `stop_container` / `remove_container` | `(container_id: str) -> RemovalResult` | executes the backend's stop / forced-remove argv via `runtime_run(check=False)` with output captured and classifies the outcome; Podman passes `--ignore` so absence succeeds at the engine; apple/container rechecks existence after a failure (§5, MIR-035/043) |
+| `remove_image` | `(ref: str) -> RemovalResult` | executes the backend's image untag/remove argv the same way (Podman: `image rm --ignore --no-prune` — MIR-042) and classifies the outcome (§5, MIR-035/043) |
 
-Removal classification (MIR-035), identical rule shape on both backends:
-exit 0 is `removed`; anything else is `failed`, with the stderr quoted
-terminal-safe into `detail`. Absence is folded into `removed` inside the
-backend rather than classified: Podman's removal argv passes `--ignore`,
-so a vanished resource exits 0 at the engine, and apple/container maps
-its one exact documented not-found diagnostic (the same match
-`image_exists` performs today) to `removed`. Cleanup aggregates `failed`
-results and reports (§5). Command code consumes only `RemovalResult`
-values: no backend branches, no `CompletedProcess`, no raw stderr.
+Removal classification (MIR-035, amended by MIR-043), identical rule
+shape on both backends: exit 0 is `removed`; anything else is `failed`,
+with the diagnostic quoted terminal-safe into `detail` (stderr, falling
+back to stdout, falling back to the fixed text `no diagnostic output
+(exit N)` — non-empty for every failure). Absence is folded into
+`removed` inside the backend rather than classified: Podman's removal
+argv passes `--ignore`, so a vanished resource exits 0 at the engine;
+apple/container performs a post-failure existence recheck — on a nonzero
+exit, `remove_image` re-checks `image_exists(ref)` and
+`remove_container` re-checks `ps()` for the ID, and an absent resource
+classifies as `removed` with no dependence on the CLI's error text.
+Cleanup aggregates `failed` results and reports (§5). Command code
+consumes only `RemovalResult` values: no backend branches, no
+`CompletedProcess`, no raw stderr.
 
 #### Free-function surface and monkeypatch seams
 
@@ -690,22 +1152,31 @@ qualified (no short-name ambiguity), and every package including
 against local storage first, so this finds the locally built base without
 touching a registry, and project builds pass an explicit `--pull=missing`,
 which uses the local base whenever present and never re-pulls it while
-letting standalone projects (e.g. `examples/clean-slate`'s
-`FROM fedora:latest`) fetch fully qualified external bases on a clean
-store. With the base absent, the build must fail fast and
-non-interactively; jms wraps the error with the existing "run `jms build`
-for the base image first" hint. (Qualified on Podman 5.4.2 across three
-`registries.conf` variants; the acceptance run re-proves it via §9's
-FROM-resolution check. If any qualified configuration proves interactive —
-a short-name prompt — the fallback is conditional `FROM` parsing, never an
-unconditional `--pull=never`, which breaks external-base projects on a
-clean store.)
+letting standalone projects fetch external bases on a clean store
+(`examples/clean-slate` moves to the fully qualified
+`FROM registry.fedoraproject.org/fedora:latest`, the documented
+recommendation for external bases — nothing is enforced, and short-name
+resolution beyond jms's own argv follows the host's `registries.conf`,
+trusted host input per MIR-040/§8).
+
+Non-interactivity and the missing-base diagnostic (MIR-041): every build
+runs with stdin redirected from `/dev/null`, so no engine prompt can hang
+a build. jms never parses Containerfile syntax to find the base; instead,
+when a project build fails, it checks
+`image_exists("jmscontainers-base:latest")` and appends the existing "run
+`jms build` for the base image first" hint only when the base is observed
+absent — an advisory keyed to observed evidence, after `CONTEXT_NOTE`.
+This contract is qualified by §9's FROM-resolution check running the
+exact production argv (`--pull=missing`); no substitute pull policy
+counts as qualification.
 
 Consequences handled by the backend:
 
-- `local_name()` for Podman strips `localhost/` (and `docker.io/library/`
-  for safety) so the `jmscontainers-…` tag-prefix ownership checks in
-  `gc_project_images` and `cmd_clean` keep working unmodified.
+- `local_name()` for Podman strips exactly `localhost/` — the only
+  qualification its production builds emit — and nothing else (MIR-047:
+  a broader strip would pull registry-qualified manual aliases into the
+  reserved namespace). The `jmscontainers-…` tag-prefix ownership checks
+  in `gc_project_images` and `cmd_clean` keep working unmodified.
 - `image_exists("jmscontainers-base:latest")` must match the
   `localhost/`-prefixed stored name; `podman image exists` does this
   natively (§5).
@@ -775,8 +1246,13 @@ The JSON is validated in full:
   structurally malformed entry aborts as malformed engine output (fail
   closed); well-formed but insufficient coverage selects the
   undersized-range hint.
-- `store.graphDriverName` must be present, proving the storage stack
-  initializes.
+- `store.graphDriverName` must be present. This proves only that Podman
+  initialized and reported its storage configuration — metadata is
+  readable (MIR-050). Readiness makes no claim that image extraction,
+  layer creation, or bind mounting works; storage-operation failures
+  (including an NFS-broken graph root) surface at the first build or
+  launch with Podman's own stderr, where the same evidence-keyed hint
+  machinery applies.
 
 No create/run probe is performed — it would add latency, an image
 dependency, and cache-invalidation rules, and the residual failure classes
@@ -843,6 +1319,18 @@ else. A malformed value in any ownership-relevant field (`Id`, `Names`,
 skipped. Qualifying a new runtime version requires capturing a new fixture
 first.
 
+Fixture provenance (MIR-044): every fixture file has a one-command
+reproducible capture recipe recorded in `tests/fixtures/README`, executed
+on the qualified engine versions, and must preserve whole records for
+every accepted schema variant its normalizer branches on — for Podman
+images: named, multi-named, unlabeled, jms-labelled, dangling, and
+`<none>`-named records; for Podman `ps`: inherited image labels, the
+`jms.container=launch` override, marker absence, and running/exited
+states; plus the Podman `inspect` mounts fixture the leak sweep requires
+and the apple/container 1.2.0 equivalents. Synthetic malformed cases live
+in test code, never in fixture files. A normalizer lands only after its
+fixtures do (§11).
+
 - **apple/container** (fixture:
   `tests/fixtures/apple-container-1.2.0-images.json`): the identity is the
   record's top-level `id` — the 64-hex digest of the image's OCI index,
@@ -870,18 +1358,26 @@ first.
 paragraphs above define how records are *read*; identity handling splits
 into a shared validation layer and one backend-specific merge:
 
-- Shared validation, both normalizers: every `id` must be a 64-character
-  lowercase-hex string; every ref and every label key and value must be
-  NUL-free valid UTF-8, with label keys non-empty. A violation aborts the
-  whole operation. Records with no refs (dangling, after `<none>`
-  filtering) are dropped, so a fact's `refs` is always non-empty.
+- Shared validation, both normalizers (completed by MIR-045): every image
+  `id` must be a 64-character lowercase-hex string; every ref and every
+  label key and value must be NUL-free valid-UTF-8 `str` values, label
+  keys non-empty — a non-string key or value aborts. `created` must be an
+  `int` that is not a `bool` (Python's `bool` subclasses `int` and is
+  rejected explicitly) within `[0, 253402300799]` (year 9999);
+  apple/container's `creationDate` must be strict ISO-8601 with an
+  explicit UTC offset (naive, unparseable, or out-of-range dates abort)
+  and converts into the same epoch range. A violation aborts the whole
+  operation. Records with no refs (dangling, after `<none>` filtering)
+  are dropped, so a fact's `refs` is always non-empty.
 - apple/container is the only format that can legitimately yield several
   records per image ID (one ref per record), so only its normalizer
   merges: refs are unioned per ID, deduplicated, and sorted
   lexicographically — output is independent of record order — and two
-  records for one ID that disagree on `created` or on any label key's
-  value abort as malformed engine output; ownership data is never
-  arbitrarily chosen. Identical repeats are tolerated, and a dangling
+  records for one ID that disagree on `created` or whose label maps are
+  not exactly equal (a key present in one record and absent in another
+  is a conflict — no union, MIR-045) abort as malformed engine output;
+  ownership data is never arbitrarily chosen or synthesized. Identical
+  repeats are tolerated, and a dangling
   record for an ID that also has named records contributes nothing.
 - Podman emits one record per image identity; a duplicate `Id` in its
   output aborts as malformed engine output rather than being merged.
@@ -895,8 +1391,20 @@ image is one retained unit, and duplicate-removal scheduling is impossible
 by construction); ownership still requires label **and** tag prefix,
 evaluated per ref within a fact. Deletion untags per jms-owned ref rather
 than deleting by bare ID: the image disappears when its last name goes,
-and a non-jms alias of the same image survives — jms never deletes by bare
-ID, so it cannot destroy a user's unrelated alias. The label-inheritance
+and an alias **outside the reserved namespace** survives — jms never
+deletes by bare ID, and the Podman untag passes `--no-prune` (MIR-042),
+so neither an unrelated alias nor an unselected dangling parent is ever
+removed as a side effect.
+
+Reserved namespace and concurrency (MIR-047): a ref is jms-reserved iff
+its `local_name()` normalization begins with a jms tag prefix
+(`jmscontainers-…`). All matching aliases are reserved user-visible state
+— jms tracks no per-ref provenance, and a manual tag into the reserved
+namespace is handed to jms; the README documents this (§10). Same-store
+concurrent mutation during cleanup is an explicit documented limitation:
+jms neither locks nor rechecks identity between enumerating `(id, ref)`
+and untagging `ref`, and the residual retag race is accepted and named in
+the README. The label-inheritance
 caveat (`bin/jms:869`) applies identically to Podman — OCI labels inherit
 through `FROM` there too — so the dual check stays load-bearing on both
 backends.
@@ -906,9 +1414,13 @@ backends.
 Podman: `podman ps --all --format json` → flat records with a full
 64-character `Id` and a top-level `Labels` map (fixture:
 `tests/fixtures/podman-5.4.2-ps.json`).
-Normalize to the existing `[{"id": …, "labels": {…}}]` shape; validation
-rules (string id, no NUL, dict labels) carry over unchanged, and a
-malformed ownership-relevant field aborts the operation.
+Normalize to the existing `[{"id": …, "labels": {…}}]` shape. Validation
+(MIR-045): the Podman `Id` must be a 64-character lowercase-hex string;
+the apple/container id is a non-empty NUL-free valid-UTF-8 string (that
+engine's ID is a name — no truncated hex form exists); `labels` uses the
+same key/value grammar as image labels (non-empty NUL-free UTF-8 `str`
+keys, NUL-free UTF-8 `str` values). A malformed ownership-relevant field
+aborts the operation.
 
 **Cleanup ownership requires launch provenance, not just the image
 label.** The fixtures prove image labels are inherited into container
@@ -940,13 +1452,34 @@ operations (§2, MIR-035); the argv each backend executes underneath:
 | --- | --- | --- |
 | `stop_container` | `container stop ID` | `podman stop --ignore ID` |
 | `remove_container` | `container delete --force ID` | `podman rm --ignore --force ID` |
-| `remove_image` | `container image delete REF` | `podman image rm --ignore REF` |
+| `remove_image` | `container image delete REF` | `podman image rm --ignore --no-prune REF` |
 
 Same "stop may fail, forced delete is authoritative" pattern on both: a
-`failed` stop result never skips the forced remove. The Podman `--ignore`
-flags (documented on 5.4's `stop`, `rm`, and `image rm`; qualified as
-part of acceptance) make a vanished resource exit 0 at the engine, which
-is what keeps `RemovalResult` two-state (§2, MIR-035).
+`failed` stop result never skips the forced remove, and a `failed` stop
+followed by a successful forced remove of the same container is dropped
+from the aggregate (MIR-043) — the goal state was reached. The Podman
+`--ignore` flags (documented on 5.4's `stop`, `rm`, and `image rm`;
+qualified as part of acceptance) make a vanished resource exit 0 at the
+engine, which is what keeps `RemovalResult` two-state (§2, MIR-035);
+`--no-prune` (MIR-042) keeps the untag from cascading into dangling
+parents jms never classified as owned. apple/container's delete-by-ref
+cascade behavior is determined by the R5.4 survivor-set acceptance run,
+and a discovered cascade is a qualification failure to resolve before
+release.
+
+**Scheduling versus execution (MIR-048).** Image removal splits into
+`image_removal_schedule(...)` — enumerate and select (readiness,
+`image_facts()`, ownership/retention), raising on any failure — and
+`execute_removal_schedule(schedule)`, which performs the removals, never
+raises, and returns the ordered `(ref, RemovalResult)` list. Policy is
+explicit at each call site: background GC (post-build/launch retention)
+wraps both steps, converting any raise — including an enumeration
+failure — into one stderr warning while the already-successful
+build/launch result stands; `clean`, `clean --all`, and
+`revoke --purge-images` let schedule failures raise (exit 1) and
+aggregate execution failures into the exit-1 report. Revocation commits
+before the purge begins, so every purge-path failure keeps the "trust
+was revoked, but image purge failed" split.
 
 **Partial-failure semantics.** All four removal paths (project GC, project
 `clean`, `clean --all`, `revoke --purge-images`) attempt every scheduled
@@ -958,14 +1491,16 @@ operation and never abort mid-list:
   Within a multi-ref fact, each jms-owned ref's untag is attempted
   independently.
 - **Diagnostics and exit:** `clean` and `revoke --purge-images` print
-  successes as they happen, then report every `failed` result (resource
+  successes as they happen — those lines remain valid when a later
+  removal fails, and no overall summary claims success while the
+  aggregate holds failures — then report every `failed` result (resource
   plus its terminal-safe `detail`) and exit 1 if any occurred. Project GC
-  prints one warning line per failed untag to stderr and never fails the
-  surrounding build/launch.
+  prints one warning line per failure to stderr and never fails the
+  surrounding build/launch (MIR-048).
 - **Vanished-resource race:** absence counts as success, folded into
-  `removed` inside the backend (§2, MIR-035): Podman's `--ignore` flags
-  make the engine exit 0, and apple/container maps its exact not-found
-  diagnostic. Commands never parse stderr to decide this.
+  `removed` inside the backend (§2, MIR-035/043): Podman's `--ignore`
+  flags make the engine exit 0, and apple/container rechecks existence
+  after a failed removal. Commands never parse stderr to decide this.
 - **Idempotency:** nothing is cached; a second invocation re-enumerates
   and acts only on survivors, so repeated runs converge.
 
@@ -980,6 +1515,12 @@ operation and never abort mid-list:
 | no cache | `--no-cache` | identical |
 | pull (base only) | `--pull` | `--pull=always` |
 | project builds | (no pull flag) | `--pull=missing` (explicit; a present local `jmscontainers-base:latest` always wins and is never re-pulled, external bases fetch on a clean store — §3) |
+
+Every build runs with stdin redirected from `/dev/null` (MIR-041), so no
+engine prompt — short-name or otherwise — can hang a build. When a
+project build fails, `build_project()` checks
+`image_exists("jmscontainers-base:latest")` and appends the missing-base
+hint only when the base is observed absent (§3).
 
 `build_argv()` on the backend assembles this; the surrounding logic —
 context = `.jmscontainer/`, the pre-build fingerprint re-check in
@@ -1033,8 +1574,9 @@ those conflicts.)
 
 **`--user` is numeric on Podman** — the decision that supersedes the
 attestation subsystem (MIR-034/036/037): `--user 1000:1000` by default
-and `--user 0:0` under `--root`, both derived from the `ISOLATION_UID`
-constant family (§3). Passed by name, `--user isolation` would resolve
+and `--user 0:0` under `--root`, both derived by the serializer from
+`LaunchPlan.user`, the single user-mode authority (§2, MIR-046), and the
+`ISOLATION_UID` constant family (§3). Passed by name, `--user isolation` would resolve
 through the image's own `/etc/passwd`, letting a project Containerfile
 decide which UID the process runs as — the entire surface the deleted
 ABI probe existed to defend (§7.4). Passed numerically, the runtime UID
@@ -1190,10 +1732,23 @@ per-platform statement:
 - **macOS / apple/container:** boundary is a lightweight VM per container
   (unchanged text).
 - **Linux / rootless Podman:** boundary is a user namespace plus Podman's
-  default seccomp filter and capability drops — kernel isolation, not
-  hardware-virtualized isolation. SELinux label separation for mounts is
-  deliberately disabled (§7.2), so it contributes nothing here. The
-  precise claims, stated in SECURITY.md in these terms:
+  seccomp filter and capability drops *as configured on the host* —
+  kernel isolation, not hardware-virtualized isolation. SELinux label
+  separation for mounts is deliberately disabled (§7.2), so it
+  contributes nothing here. The precise claims, stated in SECURITY.md in
+  these terms:
+  - **Ambient Podman configuration is trusted host input (MIR-040):**
+    `containers.conf` and its drop-ins, `mounts.conf`, `storage.conf`,
+    `policy.json`/`registries.conf`, configuration-selecting environment
+    variables, and OCI hooks belong to the invoking user and sit in the
+    same trust class as the `podman` binary and the kernel, for `build`
+    and `run` alike. jms neither validates nor neutralizes them; host
+    configuration that mounts additional data into containers is the
+    user's own configuration, outside jms's claims, and
+    `LaunchPlan.mounts` and the argv goldens pin jms-requested mounts
+    only. The two explicit overrides (`--userns`,
+    `--security-opt label=disable`) pin the mapping and labeling
+    contract jms itself relies on; they are not an audit of the rest.
   - **Trusted:** the host kernel and the OCI runtime. The boundary holds
     only as long as they do; a kernel or runtime exploit can cross the
     namespace boundary and potentially elevate beyond the invoking user.
@@ -1422,19 +1977,19 @@ only for non-enforceable wording, never for a behavioral claim).
 | R4.1 | 4 | version first-line parsing: both formats, distro suffix truncation, malformed/non-numeric rejected, invalid UTF-8 fails closed | conformance | version-line fixtures |
 | R4.2 | 4 | apple/container exact `min == max` pin and `JMS_RUNTIME_ACCEPT` unchanged | unit | existing `test_version_gate`, `test_runtime_accept_pin_admits_one_exact_newer_version` |
 | R4.3 | 4 | Podman floor (5, 4, 0); anything at or above the floor accepted silently, no warning machinery; `JMS_RUNTIME_ACCEPT` ignored on Podman | unit | `test_podman_version_floor` |
-| R4.4 | 4 | `ensure_started()` validates `podman info` JSON: remote, rootful, malformed/insufficient ID maps (coverage of `[0, 65536)`), absent graph driver, invalid JSON each fail with their own hint and verbatim stderr; healthy engine passes | unit + int-A | `test_podman_readiness_matrix` over info fixtures plus boundary fixtures (coverage through 65535 passes, through 65534 fails, per map independently; malformed entries fail distinctly); tier-A preflight on a fresh non-1000 user |
+| R4.4 | 4 | `ensure_started()` validates `podman info` JSON: remote, rootful, malformed/insufficient ID maps (coverage of `[0, 65536)`), absent graph driver, invalid JSON each fail with their own hint and verbatim stderr; healthy engine passes — metadata readability only, no storage-usability claim (MIR-050) | unit + int-A | `test_podman_readiness_matrix` over info fixtures plus boundary fixtures (coverage through 65535 passes, through 65534 fails, per map independently; malformed entries fail distinctly); tier-A preflight on a fresh non-1000 user |
 | R4.5 | 4 | side-effect-free `runtime()` selection precedes consent; `approve()` runs before `runtime_ready()` on both backends; grant-then-preflight-failure leaves a valid grant | unit | `test_consent_precedes_runtime_readiness` (accepted, declined, non-interactive failure, missing runtime, unusable rootless Podman) plus selection-failure rows asserting no prompt, store write, or process call |
 | R4.6 | 4 | `canon()` fails with the coreutils hint when `/bin/realpath` is missing, on both platforms, before any prompt, store write, or runtime process | unit | `test_canon_missing_realpath_diagnostic` (matrix: `build`, `launch`, `inspect`, `init`, store-only trust forms) |
 | R4.7 | 4 | Podman diagnostics name the Debian 13 contract: the CLI-missing hint is the full qualified apt command, the ID-map hint names `uidmap` and `/etc/subuid`/`/etc/subgid`, and both agree verbatim with the README | unit | `test_podman_diagnostics_match_debian_contract` |
 | R5.1 | 5 | `image_exists` tri-state: 0 true, 1 false, other exit hard failure with stderr | conformance | existing `test_image_exists_distinguishes_absence_from_failure`, parametrized |
 | R5.2 | 5 | `image_facts()` strict fixture-backed normalizer; dangling skipped by rule; malformed ownership-relevant field aborts | unit | `test_podman_image_facts_normalizer` over fixtures + malformed variants |
 | R5.3 | 5 | `created` is Unix epoch seconds on both backends; ordering never compares backend-local shapes | conformance | mixed-timestamp retention-ordering cases |
-| R5.4 | 5 | retention counts distinct image IDs; deletion untags per jms-owned ref; non-jms alias survives; label **and** tag-prefix ownership per ref | conformance | multi-tag, duplicate ID, inherited labels, base-with-children, partial deletion failure |
+| R5.4 | 5 | retention counts distinct image IDs; deletion untags per jms-owned ref with `--no-prune` on Podman (MIR-042); an alias outside the reserved namespace survives (MIR-047); label **and** tag-prefix ownership per ref | conformance + macOS-int | multi-tag, duplicate ID, inherited labels, base-with-children, partial deletion failure; survivor-set graph run on both real runtimes |
 | R5.5 | 5 | `ps()` strict normalizer: full 64-char `Id`, top-level `Labels`; malformed record aborts | unit | `test_podman_ps_normalizer` over `ps` fixtures + malformed variants |
 | R5.6 | 5 | stop may fail, forced delete authoritative, on both backends: a `failed` stop result never skips `remove_container` | unit | existing `test_stop_failure_does_not_abort_deletion` under both fakes |
-| R5.7 | 5 | partial cleanup/GC failures: attempt-all with aggregated diagnostics, exit 1 for `clean`/purge, warn-only GC, vanished resources tolerated as success (folded into `removed`), second run converges | conformance | `test_cleanup_partial_failure_semantics` (failures injected at every stop/remove/untag position, both backends) |
+| R5.7 | 5 | schedule/execute split with per-call-site policy (MIR-048): warn-only GC (including enumeration failures), exit-1 aggregation for `clean`/purge, revocation durable through every purge failure; attempt-all, vanished resources tolerated as success, second run converges | conformance | `test_cleanup_partial_failure_semantics` (readiness, enumeration, and every stop/remove/untag position injected, every caller, both backends) |
 | R5.8 | 5 | cleanup ownership requires `jms.project` **and** `jms.container=launch`; builds stamp the neutral value overriding any preseeded label; inherited-label, manual, and marker-absent containers never selected; dry-run and real cleanup select the same IDs | conformance + golden | `test_cleanup_provenance_predicate` (jms-launched, manual-from-jms-image, unrelated `jms-` name, malicious preseed, marker-absent) plus build/launch argv goldens pinning both label stamps on both backends |
-| R5.9 | 2, 5 | removal operations return normalized `RemovalResult`s: success and absence → `removed` (Podman via `--ignore` at the engine, apple/container via its exact not-found diagnostic); any other failure → `failed` with terminal-safe `detail`; command code never sees a `CompletedProcess`, raw stderr, or a backend branch | conformance | `test_removal_result_classification` (container and image removals, both backends) |
+| R5.9 | 2, 5 | removal operations return normalized `RemovalResult`s: success and absence → `removed` (Podman via `--ignore` at the engine, apple/container via post-failure existence recheck — MIR-043); a failed stop superseded by a successful remove is dropped; any other failure → `failed` with non-empty terminal-safe `detail` (stderr → stdout → fixed placeholder); command code never sees a `CompletedProcess`, raw stderr, or a backend branch | conformance | `test_removal_result_classification` (container and image removals, both backends; recheck-present stays `failed`, empty-output and stdout-only cases) |
 | R5.10 | 5 | shared id/ref/label validation aborts on violations under both backends; apple/container grouping: reordered duplicates, repeated refs, and mixed dangling/named records for one ID yield the identical `ImageFact`, conflicting `created` or label data aborts; a duplicate Podman `Id` aborts as malformed | conformance | `test_image_fact_accumulator` |
 | R6.1 | 6 | per-backend build argv: label flag spelling, `--pull=always` base-with-pull, `--pull=missing` project builds | golden | `test_build_argv_golden` per backend |
 | R6.2 | 6 | v2 context-escape failure still trips `CONTEXT_NOTE` under Podman | int-B | existing escape test, parametrized |
@@ -1455,7 +2010,7 @@ only for non-enforceable wording, never for a behavioral claim).
 | R8.1 | 8 | container "root" is an unprivileged mapped UID of the invoking user | int-A | covered by R7.3 (UID 0 inside, invoking-user ownership outside) |
 | R8.2 | 8 | sudo-inside-container claim as stated in SECURITY.md | int-A | covered by R7.5 |
 | R8.3 | 8 | read-only shell mount behaves as documented | int-A | covered by R7.11 |
-| R8.4 | 8 | threat-model wording: kernel/OCI-runtime trust, escape consequences, weaker-than-VM statement, mounted-data exposure, SELinux/supplementary-group limitations | doc | release-blocking SECURITY.md/README review; non-enforceable by construction — no behavioral claim rides on it |
+| R8.4 | 8 | threat-model wording: kernel/OCI-runtime trust, the ambient-configuration trust assumption (MIR-040), escape consequences, weaker-than-VM statement, mounted-data exposure, SELinux/supplementary-group limitations, reserved-namespace and concurrency limitation (MIR-047) | doc | release-blocking SECURITY.md/README review; non-enforceable by construction — no behavioral claim rides on it |
 
 Every behavioral claim maps to a unit, conformance, golden, or integration
 test; the only **doc** row is R8.4, which contains no enforceable
@@ -1471,13 +2026,14 @@ the unit-test plan above.
   rootful-Docker outer container, `scripts/ci-debian-nested.sh`,
   subordinate-ID plumbing, divergence records, a 4-green-run promotion
   protocol — that amounted to a second, lower-fidelity copy of the
-  qualification the release checklist performs by hand. For 1.1.0, Linux
-  integration runs via the local nested harness during development and
-  the release-blocking manual clean-host walkthrough on real Debian 13
-  (§10). macOS integration remains manual (no nested virtualization on
-  GH macOS runners). A CI job can be reintroduced, with the MIR-033
-  finding as its requirements list, if the project gains contributors
-  who need PR-time Linux signal.
+  qualification the release checklist performs by hand. For 1.1.0, the
+  Linux gates are real-host only (MIR-049): both integration tiers run
+  green on a real Debian 13 amd64 host with a fresh non-root, non-1000
+  user, plus the release-blocking manual clean-host walkthrough (§10).
+  No nested harness is specified or gating. macOS integration remains
+  manual (no nested virtualization on GH macOS runners). A CI job can be
+  reintroduced, with the MIR-033 finding as its requirements list, if
+  the project gains contributors who need PR-time Linux signal.
 
 ---
 
@@ -1495,7 +2051,8 @@ the unit-test plan above.
   and NFS/distributed home directories as unsupported (rootless Podman
   storage under `~/.local/share/containers` is known-broken on NFS; not
   detected — heuristics false-positive too easily — the failure surfaces
-  via the §4 storage check with Podman's own stderr). Install
+  at the first build or launch, or at `podman info` when storage
+  initialization fails outright, with Podman's own stderr — MIR-050). Install
   instructions per platform — the Linux instructions name the explicit
   qualified package set with one command,
   `sudo apt install podman uidmap passt dbus-user-session fuse-overlayfs
@@ -1509,11 +2066,14 @@ the unit-test plan above.
 - `docs/cli.md`: new "Runtimes" section (platform selection rules,
   per-backend qualification policy); `JMS_RUNTIME_ACCEPT` marked
   apple/container-only; exit-code table unchanged.
-- `SECURITY.md`: per-platform boundary statement (§8); `label=disable`
+- `SECURITY.md`: per-platform boundary statement (§8), including the
+  ambient-configuration trust assumption (MIR-040); `label=disable`
   rationale and the SELinux-enforcing-host limitation (§7.2);
   rootless-only statement; the owner-based host-permission contract
   (§7.1); the NFS/distributed-home limitation; the nested-bwrap
-  limitation with no unmask recommendation (§7.3).
+  limitation with no unmask recommendation (§7.3). README additionally
+  documents the reserved image-ref namespace and the same-store
+  concurrency limitation (MIR-047).
 - `docs/release-checklist.md`: record the tested Podman version,
   architecture (`uname -m`), and the remaining matrix dimensions (kernel,
   cgroup manager, OCI runtime, storage driver, network backend) per
@@ -1547,11 +2107,15 @@ enablement is needed.
    selection/laziness tests. Pin the `isolation` UID/GID in the
    Containerfile (§3) and rebuild-and-verify on macOS.
 2. **Linux integration.** Parametrize `scripts/integration.sh`; add the
-   ownership and FROM-resolution assertions; capture the 5.4.2 `ps` and
-   `inspect` sweep fixtures; run both tiers through the local nested
-   harness (no CI job — MIR-033, superseded). Fix whatever reality
-   disagrees with (most likely: short-name FROM resolution details,
-   seccomp interactions with the agent CLIs).
+   ownership and FROM-resolution assertions; capture the full fixture
+   set per the MIR-044 provenance contract (images, `ps`, `inspect`;
+   normalizers land only after their fixtures); move
+   `examples/clean-slate` to its fully qualified base (MIR-041); run
+   both tiers on a real
+   Debian 13 amd64 host (no CI job and no nested harness —
+   MIR-033/049). Fix whatever reality disagrees with (most likely:
+   short-name FROM resolution details, seccomp interactions with the
+   agent CLIs).
 3. **Docs + release.** Land §§8 and 10 in full — SECURITY.md, README, CLI
    docs, installation docs, changelog — then release 1.1.0 per the
    release checklist, recording the tested Podman version (Debian 13's
@@ -1590,6 +2154,7 @@ enablement is needed.
   (MIR-034/036/037). What an image can still misdirect is its own
   in-container environment, inside the consented boundary.
 - **Automated Linux integration in CI (for 1.1.0).** The nested
-  `integration-linux` job is dropped (MIR-033, superseded); the local
-  nested harness and the §10 clean-host walkthrough qualify the release.
-  Reintroduction awaits contributors who need PR-time signal.
+  `integration-linux` job is dropped (MIR-033, superseded), and no local
+  nested harness is specified or gating (MIR-049); the real-host
+  integration run and the §10 clean-host walkthrough qualify the
+  release. Reintroduction awaits contributors who need PR-time signal.
