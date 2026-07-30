@@ -101,10 +101,30 @@ target rather than first-push acceptance material.
 | MIR-019 | High | Integration coverage | Resolved (design) |
 | MIR-020 | High | CI definition | Resolved (design) |
 | MIR-021 | High | Rollout and documentation atomicity | Resolved (design) |
+| MIR-022 | Blocker | Isolation-user ABI attestation | Open |
+| MIR-023 | High | `/bin/realpath` diagnostic ordering | Open |
+| MIR-024 | Blocker | Container cleanup provenance | Open |
+| MIR-025 | Blocker | apple/container image identity schema | Open |
+| MIR-026 | Blocker | macOS build-argv compatibility | Open |
+| MIR-027 | High | Debian prerequisite diagnostics | Open |
+| MIR-028 | High | Subordinate-ID sizing | Open |
+| MIR-029 | Blocker | Project base-image pull semantics | Open |
+| MIR-030 | High | Linux architecture support | Open |
+| MIR-031 | Blocker | Selection-versus-consent ordering | Open |
+| MIR-032 | High | Cleanup partial-failure semantics | Open |
+| MIR-033 | High | Nested CI execution contract | Open |
 
 "Resolved (design)" means the design ambiguity is settled in this document
 with a recorded decision; the issue's **Done when** criteria remain the
 acceptance tests the implementation must land before release.
+
+The follow-up repository cross-check recorded in MIR-022–033 found that six
+of those decisions have unresolved downstream contradictions. Those original
+issues remain closed as historical decisions, but the new blocker IDs
+supersede the affected portions of the design. Per this gate, implementation
+must not begin while MIR-022, MIR-024, MIR-025, MIR-026, MIR-029, or MIR-031
+is open; the high-severity issues must be assigned to an implementation phase
+and resolved before backend enablement.
 
 ### MIR-001 — Runtime selection must not break runtime-free commands
 
@@ -995,6 +1015,273 @@ acceptance tests the implementation must land before release.
   without the finalized threat model and operating documentation, and every
   phase has explicit entry/exit criteria with a green existing matrix.
 
+### MIR-022 — The ABI label asserts the desired UID; it does not attest the image
+
+- **Status:** Open — blocker
+- **Affects:** MIR-010 and §§2, 3, 7.1, 9, and 11
+- **Finding:** The proposed build path stamps
+  `jms.abi.isolation-uid=1000` from `ISOLATION_UID` on every project image.
+  That proves what jms requested, not what the final image contains. A project
+  Containerfile can delete/recreate `isolation`, change its UID or primary
+  GID, remove its home or shell, and still receive the expected label from
+  `build_argv()`. The label covers no GID at all even though
+  `keep-id:uid=1000,gid=1000` depends on both values. Consequently the
+  MIR-010 divergent-user and missing-user tests cannot fail under the
+  specified mechanism. The supposedly complete backend protocol also has no
+  operation or call site for the per-image ABI validation, and phase 3 does
+  not say when the stamp/check implementation lands.
+- **Required resolution:** Define an attestation derived from the final image,
+  not merely from build inputs. Specify the complete ABI (at least user
+  existence, UID, primary GID, home, and required shell), how it is inspected
+  safely for base and custom images, when it is checked on cached and newly
+  built images, and which protocol method owns the query. If a label remains
+  a cache, define what trustworthy observation creates it and how stale or
+  forged values are rejected. Place the implementation explicitly in the
+  phase plan.
+- **Done when:** Tests build images whose final filesystem has: the correct
+  user, a wrong UID, a wrong GID, a missing user, a wrong home, and a missing
+  shell. Only the correct image launches. The failure occurs before
+  `launch_plan()` creates state directories or serializes any credential
+  mount, and the conformance suite proves the query crosses `runtime_run()`.
+
+### MIR-023 — The `/bin/realpath` preflight runs after commands already need it
+
+- **Status:** Open — high
+- **Affects:** MIR-015 and §§1, 4, 9, and 11
+- **Finding:** The Podman check is assigned to `ensure_started()`, but
+  runtime-using commands call `resolve_operand()`, `project_data()`,
+  `home_path()`, or `checkout_root()` first, all of which reach `canon()` and
+  execute `/bin/realpath`. On a coreutils-less host the command therefore
+  fails at the earlier subprocess call (currently as a generic host-I/O
+  failure), before the promised package-specific diagnostic. R4.6 only checks
+  ordering relative to `podman info`; it does not test ordering relative to
+  the first realpath invocation.
+- **Required resolution:** Put the actionable missing-realpath handling at
+  the actual dependency boundary (`canon()`), or introduce a bootstrap check
+  that is guaranteed to precede every call to `canon()` without making
+  runtime-free commands select a backend. Define the diagnostic on macOS as
+  well, since `canon()` is shared.
+- **Done when:** End-to-end command tests simulate a missing
+  `/bin/realpath` for `build`, `launch`, `inspect`, `init`, and store-only
+  trust forms; each receives the documented terminal-safe diagnostic, no
+  trust grant or state directory is written, and no runtime process is
+  contacted.
+
+### MIR-024 — Inherited image labels are not container provenance
+
+- **Status:** Open — blocker
+- **Affects:** MIR-007 and §§5, 7, 9, and the compatibility contract
+- **Finding:** The checked-in Podman fixtures already prove that image labels
+  are inherited into container `Labels`. Every project image carries
+  `jms.project`, so a container started manually from that image also carries
+  it. The proposed `ps()` predicate and current `cmd_clean` would treat that
+  manual container as jms-owned and stop/delete it. Checking the label
+  "exactly" does not distinguish an inherited label from the same label
+  supplied by `jms launch`. This can delete containers outside the user's
+  requested jms cleanup scope.
+- **Required resolution:** Define a container-only provenance marker and make
+  it impossible for the corresponding image label to satisfy the cleanup
+  predicate (for example, neutralize the image value during every jms build
+  and override it only at launch). Specify project-scoped and `--all`
+  predicates, behavior for pre-1.1 containers, and whether correcting the
+  existing apple/container selection semantics is an intentional macOS
+  compatibility change.
+- **Done when:** Cross-backend tests cover a jms-launched container, a manual
+  container from a jms-labelled image, an unrelated container with a
+  `jms-...` name, a malicious project image that tries to preseed the marker,
+  and a legacy container. Only the explicitly documented selections are
+  removed; dry-run and real cleanup select the same IDs.
+
+### MIR-025 — The normalized image identity cannot yet be produced on macOS
+
+- **Status:** Open — blocker
+- **Affects:** MIR-004, MIR-018, and §§2, 5, 9, and 11
+- **Finding:** `ImageFact` requires a full image ID plus every ref grouped by
+  that identity. The current apple/container parser and `image_record()` test
+  fixture expose only `configuration.name`, `creationDate`, and nested labels;
+  they contain no image ID and model one ref per record. No real
+  apple/container 1.1.0 list fixture is checked in. "Verify that
+  apple/container's list output supports this identity model" is deferred to
+  Done-when work, but the protocol and retention algorithm already depend on
+  the answer, so MIR-018 is not resolved in design.
+- **Required resolution:** Capture and sanitize real list output from the
+  qualified apple/container version, identify the stable identity and alias
+  fields, and define strict normalization and timestamp/error behavior. If
+  the runtime does not expose a usable ID or aliases, revise `ImageFact` and
+  the cross-backend GC algorithm before extraction begins.
+- **Done when:** A checked-in macOS fixture and malformed variants drive the
+  same identity/alias/retention cases as Podman, and no fake-only field is
+  required to make the conformance suite pass.
+
+### MIR-026 — Stamping ABI labels contradicts exact macOS build argv
+
+- **Status:** Open — blocker
+- **Affects:** the compatibility contract, MIR-005, MIR-010, and §§3, 6, 9,
+  and 11
+- **Finding:** The compatibility contract declares exact apple/container
+  build argv invariant. Sections 3 and R3.2 require every jms-driven build on
+  both backends to add `jms.abi.isolation-uid=1000`, which necessarily adds a
+  `-l` pair to macOS base and project build argv. The change is not listed
+  among the intentional macOS differences. The phase-3 claim that only the
+  Containerfile changes is therefore also false.
+- **Required resolution:** Either stamp/validate the ABI only in the Podman
+  store, where it is load-bearing, or explicitly relax the macOS invariant
+  and record the resulting argv/image-metadata change in the changelog and
+  release notes. Align R3.2, the golden tests, and phase 3 with the decision.
+- **Done when:** The compatibility contract, implementation phase, changelog
+  checklist, and exact build-argv goldens all specify the same behavior for
+  base and project builds on both backends.
+
+### MIR-027 — The Debian-targeted setup hint names the wrong package family
+
+- **Status:** Open — high
+- **Affects:** MIR-008, MIR-015, and §§2, 4, and 10
+- **Finding:** The qualified Debian 13 install command correctly names
+  `uidmap` for `newuidmap`/`newgidmap`, while §4's promised missing-subuid
+  diagnostic tells the same Debian user to install `shadow-utils`. The
+  `PodmanBackend.install_hint` example says only `apt install podman`, which
+  also conflicts with the explicit minimal-install package contract. These
+  are the primary recovery paths for a fresh host and currently give
+  different instructions.
+- **Required resolution:** Make errors target the actually supported Debian
+  13 package/configuration contract. Separate the missing CLI command from
+  the missing helper/range hint, and keep distro-neutral wording only where
+  the support matrix is genuinely distro-neutral.
+- **Done when:** Golden diagnostic tests cover missing Podman, missing ID-map
+  helpers, and missing/undersized ranges and agree verbatim with the README's
+  Debian 13 install command.
+
+### MIR-028 — “Non-empty subordinate range” does not define a usable mapping
+
+- **Status:** Open — high
+- **Affects:** MIR-008 and §§4, 7.1, and 9
+- **Finding:** The readiness rule accepts any subordinate mapping entry beyond
+  the invoking-user singleton, while the issue text and R4.4 promise to
+  reject an "undersized" map. A range of size one satisfies the written rule
+  but is not enough to represent the shipped image or the
+  `keep-id:uid=1000,gid=1000` layout. The design does not define a minimum
+  size, required container-ID coverage, overlap rules, or the relationship
+  between the singleton host ID and the invoking UID/GID.
+- **Required resolution:** Specify the exact uidmap/gidmap invariants needed
+  by both launch variants, including numeric coverage and malformed/overlap
+  handling, or narrow the readiness claim and deliberately defer validation
+  to a no-mount runtime probe. Diagnostics must distinguish malformed engine
+  output from valid-but-insufficient host configuration.
+- **Done when:** Boundary fixtures immediately below and at the accepted
+  minimum produce the expected result for UID and GID independently, and a
+  real launch on the minimum accepted mapping proves both default and
+  `--root` ownership contracts.
+
+### MIR-029 — `--pull=never` breaks valid standalone and external-base projects
+
+- **Status:** Open — blocker
+- **Affects:** MIR-011 and §§3, 6, 9, 10, and 12
+- **Finding:** Project definitions are not required to inherit the jms base.
+  `examples/clean-slate` explicitly says so and uses `FROM fedora:latest`;
+  users may use any fully qualified external base. Unconditionally adding
+  `--pull=never` to every Podman project build makes a clean-store build fail
+  whenever that external base is not already cached. Building the jms base
+  first can accidentally cache Fedora and mask this regression in tier B.
+  The proposed absent-base integration assertion also mentions
+  `--network=none`, but jms has no project-build network flag, so it is
+  unclear whether the test exercises the real jms argv.
+- **Required resolution:** Preserve remote base resolution for arbitrary
+  project Containerfiles while making only
+  `jmscontainers-base:latest` deterministic and local-only, or explicitly
+  change the project-definition contract and CLI with migration guidance.
+  Do not rely on parsing simple `FROM` lines without specifying multi-stage,
+  `ARG`, syntax-directive, and generated-Containerfile behavior.
+- **Done when:** Integration starts with an empty runtime store and proves:
+  a standalone project can fetch a fully qualified external base; a project
+  using the local jms base resolves it without registry access; and a missing
+  jms base fails quickly without a short-name prompt. The test must invoke
+  jms rather than a hand-written Podman command.
+
+### MIR-030 — “Debian 13” leaves the supported CPU architecture unbounded
+
+- **Status:** Open — high
+- **Affects:** MIR-014, MIR-015, and §§9, 10, and 12
+- **Finding:** The macOS support statement is explicitly Apple Silicon, but
+  the Linux statement names only the distribution. The proposed GitHub job
+  will normally qualify amd64, while the base image's npm tools and examples
+  include architecture-specific artifacts and only some paths mention
+  aarch64. The release checklist does not record architecture, so the
+  published support claim would silently cover untested Debian architectures.
+- **Required resolution:** Declare the 1.1.0 Linux architecture set (for
+  example amd64 only, or amd64 plus arm64), audit the base image and example
+  downloads for that set, and make CI/manual qualification record `uname -m`
+  and image architecture.
+- **Done when:** README, support matrix, release checklist, and CI artifacts
+  agree on the architecture set, with one full integration run per claimed
+  architecture.
+
+### MIR-031 — Runtime selection is both before and after consent
+
+- **Status:** Open — blocker
+- **Affects:** MIR-001, MIR-002, MIR-003, and §§2, 4, 9, and 11
+- **Finding:** MIR-002 requires invalid/forced platform-backend combinations
+  to fail before any trust prompt. MIR-003 preserves the current
+  `approve()` → `runtime_ready()` ordering, and §2 says only
+  runtime-touching seams call `runtime()`. In the shown command flow,
+  selection first occurs inside `runtime_ready()` after approval, so an
+  invalid `JMS_RUNTIME`, Linux uid 0, an unsupported platform, or a disabled
+  preview backend can prompt and write durable trust before returning exit 2.
+  A selector is read-only and need not contact the runtime, but the document
+  does not split selection validation from readiness or place such a call.
+- **Required resolution:** Define one call order that distinguishes
+  side-effect-free platform/override validation from process-touching runtime
+  readiness. State exactly which failures occur before consent and which may
+  occur after a durable grant, including the preview gate and
+  `trust revoke --purge-images`.
+- **Done when:** Call-order tests assert prompt, trust-store write, filesystem
+  mutation, and process-call counts for every selection failure plus missing
+  and unhealthy supported runtimes. The prose in MIR-001–003 and the command
+  pseudocode agree with those tests.
+
+### MIR-032 — Partial cleanup and GC failures have no decided semantics
+
+- **Status:** Open — high
+- **Affects:** MIR-018 and §§2, 5, 9, and the compatibility contract
+- **Finding:** MIR-018 lists partial deletion failures as acceptance coverage
+  without stating the expected result. Current project GC silently ignores a
+  failed image deletion, while `cmd_clean` aborts at the first failed forced
+  container or image removal; ordering can therefore determine which
+  resources remain. The normalized multi-ref algorithm introduces further
+  choices when one untag succeeds and the next fails. "Stop may fail, forced
+  delete is authoritative" resolves only the stop step.
+- **Required resolution:** Specify ordering, continue-versus-abort behavior,
+  diagnostic aggregation, exit status, and retry/idempotency for project GC,
+  project clean, `clean --all`, and revoke-with-purge. State whether existing
+  macOS behavior is invariant or intentionally corrected.
+- **Done when:** Cross-backend tests inject failures at every stop/remove/
+  untag position and assert the complete call sequence, surviving resources,
+  output, and final exit code; a second invocation converges safely.
+
+### MIR-033 — The nested Linux CI job still lacks an executable contract
+
+- **Status:** Open — high
+- **Affects:** MIR-020 and §§9 and 11
+- **Finding:** The decision says integration runs "inside a `debian:13`
+  container" but does not specify how. The repository's existing nested
+  qualification requires an outer `--privileged` container, `/dev/fuse`,
+  subordinate-ID setup, a fresh non-root user, and cgroup/event-log overrides.
+  A GitHub Actions job-level container cannot express that setup by implication;
+  a host `docker run`/Podman harness has different mounts, signal handling,
+  cancellation, and cleanup. MIR-020 also leaves its stability threshold as
+  an example rather than a chosen number, and never decides the requested
+  cache/network policy or artifact retention.
+- **Required resolution:** Write the exact outer invocation and privilege/
+  device/mount contract, fresh-user setup, runtime storage/cgroup/network
+  configuration, cancellation cleanup, artifact paths/retention, cache
+  policy, and a numeric promotion threshold. Explain which settings differ
+  from a real Debian workstation and keep those differences in the release
+  artifact.
+- **Done when:** The workflow runs from `workflow_dispatch` on a clean hosted
+  runner, proves the test user is non-root with valid maps, executes both
+  tiers as specified, survives a deliberate failure without leaking outer or
+  inner containers, uploads sanitized diagnostics, and meets the chosen
+  consecutive-green threshold before becoming required.
+
 ---
 
 ## 1. Where the runtime is coupled today
@@ -1082,6 +1369,10 @@ rejected with exit 2 at selection time — which, per MIR-001, happens only
 when a command actually needs the runtime, so the rejection can never block
 a pure command:
 
+> **Implementation blocked by MIR-031:** the selector below does not yet have
+> a call site before project consent, so the claimed selection-error ordering
+> is not implementable as currently sequenced.
+
 | Platform | Backend | Status |
 | --- | --- | --- |
 | macOS | apple/container | supported (default) |
@@ -1159,6 +1450,10 @@ about a backend is visible outside it.
 
 All data crossing the protocol boundary is normalized. Command functions
 never see raw runtime JSON, stderr bytes, or `subprocess` objects.
+
+> **Implementation blocked by MIR-022 and MIR-025:** the protocol is missing
+> the final-image ABI query, and the required apple/container image identity
+> has not been established from a real fixture.
 
 ```python
 Version = tuple[int, int, int]
@@ -1326,6 +1621,10 @@ patches `runtime_run` and asserts no backend operation reaches
 The existing Fedora `Containerfile` builds unchanged under Podman/Buildah.
 Two small hardening edits make it deterministic across backends:
 
+> **Implementation blocked by MIR-022 and MIR-026:** the proposed label is
+> not a final-image attestation, and stamping it on apple/container conflicts
+> with the exact macOS build-argv invariant.
+
 1. **Pin the `isolation` UID/GID.** Rootless Podman's `--userns=keep-id`
    mapping (§7) must name the container-side UID, so it cannot be left to
    `useradd`'s "first free UID" default (which *is* 1000 on a fresh Fedora
@@ -1416,6 +1715,10 @@ backend's preflight also checks that `/bin/realpath` exists — `canon()`
 hard-depends on it (§1) and a coreutils-less minimal install would
 otherwise fail obscurely — with its own hint naming the `coreutils`
 package (MIR-015). The probe itself:
+
+> **Open issues:** MIR-023 shows that this realpath check occurs after the
+> first use of realpath, and MIR-028 shows that the accepted ID-map size is
+> not defined.
 
 ```sh
 podman info --format json
@@ -1510,6 +1813,9 @@ top-level `Labels` map. Normalize to the existing
 `[{"id": …, "labels": {…}}]` shape; validation rules (string id, no NUL,
 dict labels) carry over unchanged.
 
+> **Implementation blocked by MIR-024:** `jms.project` is inherited from the
+> image and therefore cannot by itself prove that jms created the container.
+
 ### Cleanup verbs
 
 | Operation | apple/container | podman |
@@ -1523,6 +1829,10 @@ Same "stop may fail, forced delete is authoritative" pattern on both.
 ---
 
 ## 6. Build (`run_build`)
+
+> **Implementation blocked by MIR-029:** the unconditional project
+> `--pull=never` rule below breaks clean-store builds of valid standalone
+> definitions and must be replaced or declared as a compatibility change.
 
 | Aspect | apple/container | podman |
 | --- | --- | --- |
@@ -1943,6 +2253,10 @@ rejection (§2) are already covered by the MIR-001/002 acceptance tests
 listed under those issues and the unit-test plan above.
 
 ### CI (`.github/workflows/test.yml`)
+
+> **Open issue MIR-033:** the nested Debian job is not executable from this
+> description until its outer privileged harness, cleanup, cache/network
+> policy, artifacts, and promotion threshold are fixed.
 
 - Existing matrix (`make test` on Ubuntu 3.11/3.14 + macOS) unchanged; it
   now also exercises the Podman fake on the Ubuntu legs automatically.
