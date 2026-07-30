@@ -45,6 +45,10 @@ listed here may change:
   (§11 phase 3).
 - New diagnostics for runtime selection failures (invalid `JMS_RUNTIME`,
   unsupported platform, uid-0 on Linux).
+- Cleanup partial-failure semantics (MIR-032): `clean` and
+  `trust revoke --purge-images` attempt every selected removal and
+  aggregate failures instead of aborting at the first, and project GC
+  warns on stderr about failed deletions instead of staying silent.
 
 **Explicitly not invariant:** startup timing, internal code structure, and
 wording of newly introduced (Linux-only) diagnostics.
@@ -111,7 +115,7 @@ target rather than first-push acceptance material.
 | MIR-029 | Blocker | Project base-image pull semantics | Open |
 | MIR-030 | High | Linux architecture support | Resolved (design) |
 | MIR-031 | Blocker | Selection-versus-consent ordering | Resolved (design) |
-| MIR-032 | High | Cleanup partial-failure semantics | Open |
+| MIR-032 | High | Cleanup partial-failure semantics | Resolved (design) |
 | MIR-033 | High | Nested CI execution contract | Open |
 
 "Resolved (design)" means the design ambiguity is settled in this document
@@ -122,8 +126,10 @@ The follow-up repository cross-check recorded in MIR-022–033 found that six
 of those decisions have unresolved downstream contradictions. Those original
 issues remain closed as historical decisions, but the new blocker IDs
 supersede the affected portions of the design. Per this gate, implementation
-must not begin while MIR-022, MIR-024, MIR-025, MIR-026, MIR-029, or MIR-031
-is open; the high-severity issues must be assigned to an implementation phase
+must not begin while MIR-022, MIR-024, MIR-025, or MIR-029 is open
+(MIR-026 and MIR-031 were resolved in design on 2026-07-29, as were
+MIR-023, MIR-027, MIR-028, MIR-030, and MIR-032); the remaining
+high-severity issue (MIR-033) must be assigned to an implementation phase
 and resolved before backend enablement.
 
 ### MIR-001 — Runtime selection must not break runtime-free commands
@@ -1346,7 +1352,36 @@ and resolved before backend enablement.
 
 ### MIR-032 — Partial cleanup and GC failures have no decided semantics
 
-- **Status:** Open — high
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** All four removal paths (project GC, project `clean`,
+  `clean --all`, `revoke --purge-images`) become **attempt-all with
+  aggregated failures**; ordering is unchanged and the macOS behavior
+  change is intentional:
+  - **Ordering:** containers before images; per container, stop
+    (`check=False`) then forced remove; image untags in the existing
+    deterministic order (sorted refs for `clean`, newest-first retention
+    order for GC). Within a multi-ref fact, each jms-owned ref's untag
+    is attempted independently.
+  - **Continue, never abort:** a failed stop/remove/untag never
+    terminates the loop.
+  - **Diagnostics and exit:** `clean` and `revoke --purge-images` print
+    successes as they happen, then report every failure (resource plus
+    quoted stderr) and exit 1 if any occurred. Project GC prints one
+    warning line per failed untag to stderr and never fails the
+    surrounding build/launch — visible now, where 1.0.0 was silent.
+  - **Vanished-resource race:** a removal that fails because the
+    resource no longer exists (the runtime's "no such container/image"
+    diagnostics) counts as success, mirroring the leak-sweep tolerance
+    (MIR-007).
+  - **Idempotency:** nothing is cached; a second invocation
+    re-enumerates and acts only on survivors, so repeated runs converge.
+  - **Compatibility:** 1.0.0 `clean` aborts at the first failed removal
+    and 1.0.0 GC is silent about failures; both changes are intentional
+    corrections, added to the compatibility contract's
+    intentionally-changed list and the changelog.
+  §5 gains a "Partial-failure semantics" paragraph and the
+  requirements-to-tests table gains R5.7. Acceptance per **Done when**
+  lands with the implementation.
 - **Affects:** MIR-018 and §§2, 5, 9, and the compatibility contract
 - **Finding:** MIR-018 lists partial deletion failures as acceptance coverage
   without stating the expected result. Current project GC silently ignores a
@@ -1943,6 +1978,17 @@ dict labels) carry over unchanged.
 
 Same "stop may fail, forced delete is authoritative" pattern on both.
 
+**Partial-failure semantics (MIR-032).** Every removal path attempts all
+scheduled operations and never aborts mid-list: `clean` and
+`trust revoke --purge-images` print successes as they happen, then report
+each failure (resource plus quoted stderr) and exit 1 if any occurred;
+project GC prints one warning line per failed untag to stderr and never
+fails the surrounding build/launch. A removal that fails because the
+resource is already gone counts as success (the same race tolerance as
+the leak sweep). Nothing is cached, so a second invocation re-enumerates
+and converges. The 1.0.0 macOS behaviors — abort-at-first-failure `clean`,
+silent GC — change intentionally (see the compatibility contract).
+
 ---
 
 ## 6. Build (`run_build`)
@@ -2343,6 +2389,7 @@ for non-enforceable wording, never for a behavioral claim).
 | R5.4 | 5 | retention counts distinct image IDs; deletion untags per jms-owned ref; non-jms alias survives; label **and** tag-prefix ownership per ref | conformance | MIR-018 suite: multi-tag, duplicate ID, inherited labels, base-with-children, partial deletion failure |
 | R5.5 | 5 | `ps()` strict normalizer: full 64-char `Id`, top-level `Labels`; malformed record aborts | unit | `test_podman_ps_normalizer` over `ps` fixtures + malformed variants (MIR-007) |
 | R5.6 | 5 | stop may fail, forced delete authoritative, on both backends | unit | existing `test_stop_failure_does_not_abort_deletion` under both fakes |
+| R5.7 | 5 | partial cleanup/GC failures: attempt-all with aggregated diagnostics, exit 1 for `clean`/purge, warn-only GC, vanished-resource tolerated, second run converges | conformance | `test_cleanup_partial_failure_semantics` (MIR-032 matrix: failures injected at every stop/remove/untag position, both backends) |
 | R6.1 | 6 | per-backend build argv: label flag spelling, `--pull=always` base-with-pull, `--pull=never` project builds | golden | `test_build_argv_golden` per backend |
 | R6.2 | 6 | v2 context-escape failure still trips `CONTEXT_NOTE` under Podman | int-B | existing escape test, parametrized |
 | R7.1 | 7.1 | explicit `--userns` on both variants: `keep-id:uid=1000,gid=1000` default, `host` under `--root` | golden | launch argv goldens (default, `--root`, manifest mounts, `--auth`) |
