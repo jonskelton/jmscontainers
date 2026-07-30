@@ -1845,9 +1845,12 @@ not pay for the example-image builds:
   shell-state mount, the ambient-config conflict runs, the bwrap probes,
   and the deliberate-failure cleanup check.
 - **Tier B — expensive, example images.** The existing per-example
-  build/inspect/launch/clean cycle, the context-escape test, and the
+  build/inspect/launch/clean cycle, the context-escape test, the
   credential/agent-state mount assertions (which need `--auth` and real
-  agent state directories).
+  agent state directories), and the R5.4 survivor-set graph run
+  (MIR-042/047): build a graph containing selected and unselected
+  parents plus jms and non-jms aliases, remove one scheduled ref, and
+  assert the exact survivor set.
 
 Both tiers end in the leak sweep, and cleanup plus the sweep run from the
 EXIT trap, so a failure in any step still sweeps and reports — a partial
@@ -1984,12 +1987,12 @@ only for non-enforceable wording, never for a behavioral claim).
 | R5.1 | 5 | `image_exists` tri-state: 0 true, 1 false, other exit hard failure with stderr | conformance | existing `test_image_exists_distinguishes_absence_from_failure`, parametrized |
 | R5.2 | 5 | `image_facts()` strict fixture-backed normalizer; dangling skipped by rule; malformed ownership-relevant field aborts | unit | `test_podman_image_facts_normalizer` over fixtures + malformed variants |
 | R5.3 | 5 | `created` is Unix epoch seconds on both backends; ordering never compares backend-local shapes | conformance | mixed-timestamp retention-ordering cases |
-| R5.4 | 5 | retention counts distinct image IDs; deletion untags per jms-owned ref with `--no-prune` on Podman (MIR-042); an alias outside the reserved namespace survives (MIR-047); label **and** tag-prefix ownership per ref | conformance + macOS-int | multi-tag, duplicate ID, inherited labels, base-with-children, partial deletion failure; survivor-set graph run on both real runtimes |
+| R5.4 | 5 | retention counts distinct image IDs; deletion untags per jms-owned ref with `--no-prune` on Podman (MIR-042); an alias outside the reserved namespace survives (MIR-047); label **and** tag-prefix ownership per ref | conformance + int-B + macOS-int | multi-tag, duplicate ID, inherited labels, base-with-children, partial deletion failure; survivor-set graph run on both real runtimes (tier B on Podman, the macOS integration run on apple/container) |
 | R5.5 | 5 | `ps()` strict normalizer: full 64-char `Id`, top-level `Labels`; malformed record aborts | unit | `test_podman_ps_normalizer` over `ps` fixtures + malformed variants |
 | R5.6 | 5 | stop may fail, forced delete authoritative, on both backends: a `failed` stop result never skips `remove_container` | unit | existing `test_stop_failure_does_not_abort_deletion` under both fakes |
 | R5.7 | 5 | schedule/execute split with per-call-site policy (MIR-048): warn-only GC (including enumeration failures), exit-1 aggregation for `clean`/purge, revocation durable through every purge failure; attempt-all, vanished resources tolerated as success, second run converges | conformance | `test_cleanup_partial_failure_semantics` (readiness, enumeration, and every stop/remove/untag position injected, every caller, both backends) |
 | R5.8 | 5 | cleanup ownership requires `jms.project` **and** `jms.container=launch`; builds stamp the neutral value overriding any preseeded label; inherited-label, manual, and marker-absent containers never selected; dry-run and real cleanup select the same IDs | conformance + golden | `test_cleanup_provenance_predicate` (jms-launched, manual-from-jms-image, unrelated `jms-` name, malicious preseed, marker-absent) plus build/launch argv goldens pinning both label stamps on both backends |
-| R5.9 | 2, 5 | removal operations return normalized `RemovalResult`s: success and absence → `removed` (Podman via `--ignore` at the engine, apple/container via post-failure existence recheck — MIR-043); a failed stop superseded by a successful remove is dropped; any other failure → `failed` with non-empty terminal-safe `detail` (stderr → stdout → fixed placeholder); command code never sees a `CompletedProcess`, raw stderr, or a backend branch | conformance | `test_removal_result_classification` (container and image removals, both backends; recheck-present stays `failed`, empty-output and stdout-only cases) |
+| R5.9 | 2, 5 | removal operations return normalized `RemovalResult`s: success and absence → `removed` (Podman via `--ignore` at the engine, apple/container via post-failure existence recheck — MIR-043); a failed stop superseded by a successful remove is dropped; any other failure → `failed` with non-empty terminal-safe `detail` (stderr → stdout → fixed placeholder); command code never sees a `CompletedProcess`, raw stderr, or a backend branch | conformance + macOS-int | `test_removal_result_classification` (container and image removals, both backends; recheck-present stays `failed`, empty-output and stdout-only cases); manual macOS race test proving idempotent cleanup under a vanished-mid-removal resource (MIR-043) |
 | R5.10 | 5 | shared id/ref/label validation aborts on violations under both backends; apple/container grouping: reordered duplicates, repeated refs, and mixed dangling/named records for one ID yield the identical `ImageFact`, conflicting `created` or label data aborts; a duplicate Podman `Id` aborts as malformed | conformance | `test_image_fact_accumulator` |
 | R6.1 | 6 | per-backend build argv: label flag spelling, `--pull=always` base-with-pull, `--pull=missing` project builds | golden | `test_build_argv_golden` per backend |
 | R6.2 | 6 | v2 context-escape failure still trips `CONTEXT_NOTE` under Podman | int-B | existing escape test, parametrized |
@@ -2006,7 +2009,7 @@ only for non-enforceable wording, never for a behavioral claim).
 | R7.11 | 7 | shell-state mount is read-only inside the container | int-A | read-only shell-state write-failure assertion |
 | R7.12 | 7 | credential/agent-state mounts (`--auth`) are present, writable, and host-owned by the invoking user | int-B | auth-mount assertions |
 | R7.13 | 7 | cleanup and leak sweep run after partial failures; sweep failure distinct from leak | unit + int-A | sweep-snippet unit tests over fixtures; deliberate failed-run cleanup check |
-| R7.14 | 7.3 | nested bwrap: `--unshare-user` works, full sandbox fails on masked `/proc`; jms never passes `unmask` | int-A + golden | bwrap probes recording agent/sandbox versions; goldens prove no `unmask` in any argv |
+| R7.14 | 7 | nested bwrap: `--unshare-user` works, full sandbox fails on masked `/proc`; jms never passes `unmask` | int-A + golden | bwrap probes recording agent/sandbox versions; goldens prove no `unmask` in any argv |
 | R8.1 | 8 | container "root" is an unprivileged mapped UID of the invoking user | int-A | covered by R7.3 (UID 0 inside, invoking-user ownership outside) |
 | R8.2 | 8 | sudo-inside-container claim as stated in SECURITY.md | int-A | covered by R7.5 |
 | R8.3 | 8 | read-only shell mount behaves as documented | int-A | covered by R7.11 |
@@ -2071,9 +2074,9 @@ the unit-test plan above.
   rationale and the SELinux-enforcing-host limitation (§7.2);
   rootless-only statement; the owner-based host-permission contract
   (§7.1); the NFS/distributed-home limitation; the nested-bwrap
-  limitation with no unmask recommendation (§7.3). README additionally
-  documents the reserved image-ref namespace and the same-store
-  concurrency limitation (MIR-047).
+  limitation with no unmask recommendation (§7's nested-sandbox
+  caveat). README additionally documents the reserved image-ref
+  namespace and the same-store concurrency limitation (MIR-047).
 - `docs/release-checklist.md`: record the tested Podman version,
   architecture (`uname -m`), and the remaining matrix dimensions (kernel,
   cgroup manager, OCI runtime, storage driver, network backend) per
@@ -2147,7 +2150,8 @@ enablement is needed.
 - **Cross-runtime image sharing.** Images are per-runtime-store; a user
   on both platforms builds the base twice. Fingerprint-derived tags make
   this transparent.
-- **Weakening container defaults for nested bwrap** (§7.3).
+- **Weakening container defaults for nested bwrap** (§7's nested-sandbox
+  caveat).
 - **Image-content attestation.** jms never inspects an image's
   filesystem: the numeric `--user` (§7.1) makes the runtime UID
   independent of image content, superseding the earlier probe design
