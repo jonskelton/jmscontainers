@@ -107,7 +107,7 @@ target rather than first-push acceptance material.
 | MIR-025 | Blocker | apple/container image identity schema | Open |
 | MIR-026 | Blocker | macOS build-argv compatibility | Resolved (design) |
 | MIR-027 | High | Debian prerequisite diagnostics | Resolved (design) |
-| MIR-028 | High | Subordinate-ID sizing | Open |
+| MIR-028 | High | Subordinate-ID sizing | Resolved (design) |
 | MIR-029 | Blocker | Project base-image pull semantics | Open |
 | MIR-030 | High | Linux architecture support | Open |
 | MIR-031 | Blocker | Selection-versus-consent ordering | Open |
@@ -1201,7 +1201,27 @@ and resolved before backend enablement.
 
 ### MIR-028 — “Non-empty subordinate range” does not define a usable mapping
 
-- **Status:** Open — high
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** "Usable" is defined as **contiguous container-ID coverage
+  of `[0, 65536)`**, validated for uidmap and gidmap independently.
+  Precisely: every entry must be a map with integer `container_id >= 0`,
+  `host_id >= 0`, and `size >= 1`; the union of the
+  `[container_id, container_id + size)` intervals must cover every ID in
+  `[0, 65536)`. Overlaps are harmless (union semantics), and no
+  relationship between `host_id` values and the invoking UID/GID is
+  asserted — rootless Podman constructs the singleton itself. Rationale
+  for the bound: 65536 is the conventional per-user subordinate
+  allocation (what Debian's `adduser` provisions) and covers everything
+  both launch variants need — `keep-id:uid=1000,gid=1000` requires
+  container ID 1000 mapped, and the shipped Fedora image's static IDs
+  run up to `nobody` (65534). Diagnostics are two distinct failures: a
+  structurally malformed entry (wrong type, missing key, nonpositive
+  size) aborts as malformed engine output (fail closed, per the
+  MIR-006-style error contract), while well-formed but insufficient
+  coverage selects the undersized-range hint (MIR-027 wording). §4 and
+  R4.4 are updated; boundary fixtures (coverage through 65535 passes,
+  through 65534 fails, per map independently) plus the real minimum-map
+  launch are acceptance work per **Done when**.
 - **Affects:** MIR-008 and §§4, 7.1, and 9
 - **Finding:** The readiness rule accepts any subordinate mapping entry beyond
   the invoking-user singleton, while the issue text and R4.4 promise to
@@ -1767,18 +1787,17 @@ boundary, shared by both platforms — where a `FileNotFoundError` fails
 with the coreutils hint before any prompt, store write, or runtime
 process; the probe therefore carries no realpath check. The probe itself:
 
-> **Open issue:** MIR-028 shows that the accepted ID-map size is not
-> defined.
-
 ```sh
 podman info --format json
 ```
 
 The JSON is validated in full (MIR-008): `host.serviceIsRemote` must be
 false (remote Podman is unsupported, §2/MIR-002); `host.security.rootless`
-must be true; `host.idMappings.uidmap`/`gidmap` must be non-empty and
-include a subordinate-range entry beyond the invoking user's single
-mapping; and `store.graphDriverName` must be present, proving the storage
+must be true; `host.idMappings.uidmap`/`gidmap` must each be well-formed
+and their mapped container-ID intervals must cover `[0, 65536)` (the
+MIR-028 coverage rule — a structurally malformed entry aborts as malformed
+engine output, insufficient coverage selects the undersized hint); and
+`store.graphDriverName` must be present, proving the storage
 stack initializes. No create/run probe is performed — the residual failure
 classes (OCI runtime, network helper) surface with full stderr at the
 first real launch.
@@ -2269,7 +2288,7 @@ for non-enforceable wording, never for a behavioral claim).
 | R4.1 | 4 | version first-line parsing: both formats, distro suffix truncation, malformed/non-numeric rejected, invalid UTF-8 fails closed | conformance | version-line fixtures (MIR-014) |
 | R4.2 | 4 | apple/container exact `min == max` pin and `JMS_RUNTIME_ACCEPT` unchanged | unit | existing `test_version_gate`, `test_runtime_accept_pin_admits_one_exact_newer_version` |
 | R4.3 | 4 | Podman floor (5, 4, 0); silent within major 5; one-line warning on major ≥ 6; `JMS_RUNTIME_ACCEPT` ignored on Podman | unit | `test_podman_version_floor_and_untested_major_warning` |
-| R4.4 | 4 | `ensure_started()` validates `podman info` JSON: remote, rootful, missing/undersized ID maps, absent graph driver, invalid JSON each fail with their own hint and verbatim stderr; healthy engine passes | unit + int-A | `test_podman_readiness_matrix` over MIR-008 fixtures; tier-A preflight on the fresh CI user |
+| R4.4 | 4 | `ensure_started()` validates `podman info` JSON: remote, rootful, malformed/insufficient ID maps (coverage of `[0, 65536)`, MIR-028), absent graph driver, invalid JSON each fail with their own hint and verbatim stderr; healthy engine passes | unit + int-A | `test_podman_readiness_matrix` over MIR-008 fixtures plus MIR-028 boundary fixtures (coverage through 65535 passes, through 65534 fails, per map independently; malformed entries fail distinctly); tier-A preflight on the fresh CI user |
 | R4.5 | 4 | `approve()` runs before `runtime_ready()` on both backends; grant-then-preflight-failure leaves a valid grant | unit | `test_consent_precedes_runtime_readiness` (MIR-003 matrix: accepted, declined, non-interactive failure, missing runtime, unusable rootless Podman) |
 | R4.6 | 4 | `canon()` fails with the coreutils hint when `/bin/realpath` is missing, on both platforms, before any prompt, store write, or runtime process | unit | `test_canon_missing_realpath_diagnostic` (MIR-023 matrix: `build`, `launch`, `inspect`, `init`, store-only trust forms) |
 | R4.7 | 4 | Podman diagnostics name the Debian 13 contract: the CLI-missing hint is the full qualified apt command, the ID-map hint names `uidmap` and `/etc/subuid`/`/etc/subgid`, and both agree verbatim with the README | unit | `test_podman_diagnostics_match_debian_contract` (MIR-027) |
