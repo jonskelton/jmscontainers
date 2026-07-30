@@ -24,11 +24,10 @@ if sys.version_info < (3, 11):
 import tomllib
 import unicodedata
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 __version__ = "1.0.0"
-RUNTIME_MIN = (1, 1, 0)
-RUNTIME_MAX = (1, 1, 0)
 BASE_REPOSITORY = "jmscontainers-base"
 BASE = BASE_REPOSITORY + ":latest"
 UTC_SECONDS = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
@@ -76,10 +75,33 @@ def fail(message: str, code: int = 1) -> None:
     raise exc
 
 
+_RUNTIME = None
+
+
+def select_runtime():
+    """Pick the platform's backend; side-effect-free (reads platform and euid only)."""
+    if sys.platform == "darwin":
+        return ContainerBackend()
+    if sys.platform.startswith("linux"):
+        # Rootless podman is the only qualified Linux mode: uid 0 silently
+        # removes the user-namespace boundary that stands in for the macOS VM.
+        if os.geteuid() == 0:
+            fail("jms on Linux supports rootless podman only; run as a regular user", 2)
+        return PodmanBackend()
+    fail("unsupported platform for jms: " + sys.platform, 2)
+
+
+def runtime():
+    global _RUNTIME
+    if _RUNTIME is None:
+        _RUNTIME = select_runtime()
+    return _RUNTIME
+
+
 def runtime_run(argv, *, capture=True, check=True, stdin=None, stdout=None, stderr=None, replace=False):
-    """The sole process boundary for invoking the container executable."""
-    if not argv or argv[0] != "container":
-        raise AssertionError("runtime argv must begin with container")
+    """The sole process boundary for invoking the container runtime executable."""
+    if not argv or argv[0] != runtime().exe:
+        raise AssertionError("runtime argv must begin with " + runtime().exe)
     # The runtime's Swift process boundary is string typed; keep the
     # UTF-8/NUL check at the one production seam.
     argv = [runtime_argument(value, usage=False) for value in argv]
@@ -93,7 +115,7 @@ def runtime_run(argv, *, capture=True, check=True, stdin=None, stdout=None, stde
             raise AssertionError("runtime exec unexpectedly returned")
         return subprocess.run(argv, stdin=stdin, stdout=stdout, stderr=stderr, check=check)
     except FileNotFoundError:
-        fail("container CLI not found; install it with: brew install container")
+        fail(runtime().exe + " CLI not found; " + runtime().install_hint)
     except subprocess.CalledProcessError as exc:
         detail = quote(exc.stderr or exc.stdout or b"")
         fail("command failed: " + quote(" ".join(map(str, argv))) + " -- " + detail)
@@ -105,6 +127,145 @@ def runtime_json(argv) -> object:
         return json.loads(proc.stdout.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         fail(" ".join(argv) + " returned invalid JSON: " + quote(proc.stdout))
+
+
+@dataclass(frozen=True)
+class RemovalResult:
+    """Normalized removal outcome -- the one non-raising backend result channel."""
+    outcome: str                 # "removed" | "failed"; absence counts as removed
+    detail: str = ""             # terminal-safe diagnostic; non-empty iff "failed"
+
+
+@dataclass(frozen=True)
+class LaunchPlan:
+    """Runtime-agnostic launch description consumed by each backend's run_argv()."""
+    name: str                            # container name (given or generated)
+    user: str                            # "isolation" | "root" -- the single user-mode authority
+    tty: bool                            # append the runtime's --tty
+    workdir: str                         # "/work" or "/work/<inner>"
+    entrypoint: str                      # entry[0]
+    image: str
+    labels: tuple                        # ordered (key, value) pairs
+    env: tuple                           # ordered (key, value) pairs; CLAUDE_CONFIG_DIR first when present
+    mounts: tuple                        # ordered (source, target, readonly); /work first
+    command: tuple                       # entry[1:] + extra argv
+
+    def __post_init__(self):
+        if self.user not in ("isolation", "root"):
+            raise AssertionError("launch plan user must be isolation or root")
+
+
+class ContainerBackend:
+    """apple/container on macOS (Apple Silicon)."""
+
+    name = "container"
+    exe = "container"
+    install_hint = "install it with: brew install container"
+    version_min = (1, 1, 0)              # exact pin: min == max
+    version_max = (1, 1, 0)
+
+    # -- Class A: pure serializers and parsers (no I/O of any kind) --
+
+    def version_argv(self):
+        return [self.exe, "--version"]
+
+    def parse_version(self, first_line):
+        match = re.fullmatch(r"container CLI version (0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?: .*)?",
+                             first_line)
+        return tuple(map(int, match.groups())) if match else None
+
+    def local_name(self, ref):
+        prefix = "docker.io/library/"
+        return ref[len(prefix):] if ref.startswith(prefix) else ref
+
+    def mount_argument(self, source, target, readonly=False):
+        source_text = runtime_path(os.fsencode(source))
+        if "," in target or "=" in target:
+            fail("mount paths cannot contain ',' or '=': " + quote(target))
+        result = "source=" + source_text + ",target=" + target
+        return result + ",readonly" if readonly else result
+
+    def build_argv(self, context, tag, labels, *, no_cache, pull, project):
+        cmd = [self.exe, "build", "--tag", tag, "--file", context + "/Containerfile"]
+        for key, value in labels.items():
+            cmd += ["-l", key + "=" + value]
+        if no_cache:
+            cmd.append("--no-cache")
+        if pull:
+            cmd.append("--pull")
+        cmd.append(context)
+        return cmd
+
+    def run_argv(self, plan):
+        cmd = [self.exe, "run", "--rm", "--interactive"]
+        if plan.tty:
+            cmd.append("--tty")
+        cmd += ["--name", plan.name, "--user", plan.user, "--workdir", plan.workdir,
+                "--entrypoint", plan.entrypoint]
+        for key, value in plan.labels:
+            cmd += ["--label", key + "=" + value]
+        env = list(plan.env)
+        if env and env[0][0] == "CLAUDE_CONFIG_DIR":
+            key, value = env.pop(0)
+            cmd += ["--env", key + "=" + value]
+        mounts = list(plan.mounts)
+        source, target, readonly = mounts.pop(0)
+        cmd += ["--mount", self.mount_argument(source, target, readonly)]
+        for key, value in env:
+            cmd += ["--env", key + "=" + value]
+        for source, target, readonly in mounts:
+            cmd += ["--mount", self.mount_argument(source, target, readonly)]
+        cmd.append(plan.image)
+        cmd += list(plan.command)
+        return cmd
+
+    # -- Class B: executing queries and policy (every process crosses the
+    #    module-level runtime_run/runtime_json, looked up at call time) --
+
+    def validate_version(self, parsed, first_line):
+        if parsed < self.version_min:
+            fail("container runtime is too old; install container %s" % ".".join(map(str, self.version_min)))
+        if parsed > self.version_max:
+            parsed_text = ".".join(map(str, parsed))
+            max_text = ".".join(map(str, self.version_max))
+            if os.environ.get("JMS_RUNTIME_ACCEPT") == parsed_text:
+                print("warning: container %s is not qualified against jms %s (newest qualified: %s); proceeding per JMS_RUNTIME_ACCEPT"
+                      % (parsed_text, __version__, max_text), file=sys.stderr)
+            else:
+                fail("container %s is newer than the newest runtime this jms release is qualified against (%s); upgrade jms, install container %s, or set JMS_RUNTIME_ACCEPT=%s to accept it for one invocation" % (parsed_text, max_text, max_text, parsed_text))
+
+    def ensure_started(self):
+        probe = runtime_run([self.exe, "system", "status"], check=False)
+        if probe.returncode:
+            print("starting container runtime...")
+            started = runtime_run([self.exe, "system", "start"], capture=True, check=False)
+            recheck = runtime_run([self.exe, "system", "status"], check=False)
+            if recheck.returncode:
+                detail = recheck.stderr or recheck.stdout or started.stderr or started.stdout or b""
+                fail("container runtime did not start: " + quote(detail))
+
+    def image_exists(self, image):
+        proc = runtime_run([self.exe, "image", "inspect", image], check=False)
+        if proc.returncode == 0:
+            return True
+        try:
+            first_line = proc.stderr.decode("utf-8").split("\n", 1)[0]
+        except UnicodeDecodeError:
+            fail("container image inspect failed with invalid output for " + quote(image) + ": " + quote(proc.stderr))
+        if first_line == "Error: image not found: " + image:
+            return False
+        fail("container image inspect failed for " + quote(image) + ": " + quote(proc.stderr))
+
+
+class PodmanBackend:
+    """Rootless podman on Linux (implementation lands with the Podman phases)."""
+
+    name = "podman"
+    exe = "podman"
+    install_hint = ("install the qualified package set: sudo apt install "
+                    "podman uidmap passt dbus-user-session fuse-overlayfs coreutils")
+    version_min = (5, 4, 0)              # Debian 13's packaged podman
+    version_max = None                   # min-only policy
 
 
 def canon(path: str | bytes) -> bytes:
@@ -729,53 +890,29 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
 
 
 def runtime_ready():
-    version = runtime_run(["container", "--version"], check=False)
+    backend = runtime()
+    version = runtime_run(backend.version_argv(), check=False)
     output = version.stdout
     try:
         first_line = output.decode("utf-8").split("\n", 1)[0]
     except UnicodeDecodeError:
-        fail("container --version returned invalid UTF-8: " + quote(output))
-    match = re.fullmatch(r"container CLI version (0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?: .*)?", first_line)
-    if version.returncode or not match:
-        fail("cannot parse container runtime version: " + quote(output))
-    parsed = tuple(map(int, match.groups()))
-    if parsed < RUNTIME_MIN:
-        fail("container runtime is too old; install container %s" % ".".join(map(str, RUNTIME_MIN)))
-    if parsed > RUNTIME_MAX:
-        parsed_text = ".".join(map(str, parsed))
-        max_text = ".".join(map(str, RUNTIME_MAX))
-        if os.environ.get("JMS_RUNTIME_ACCEPT") == parsed_text:
-            print("warning: container %s is not qualified against jms %s (newest qualified: %s); proceeding per JMS_RUNTIME_ACCEPT"
-                  % (parsed_text, __version__, max_text), file=sys.stderr)
-        else:
-            fail("container %s is newer than the newest runtime this jms release is qualified against (%s); upgrade jms, install container %s, or set JMS_RUNTIME_ACCEPT=%s to accept it for one invocation" % (parsed_text, max_text, max_text, parsed_text))
-    probe = runtime_run(["container", "system", "status"], check=False)
-    if probe.returncode:
-        print("starting container runtime...")
-        started = runtime_run(["container", "system", "start"], capture=True, check=False)
-        recheck = runtime_run(["container", "system", "status"], check=False)
-        if recheck.returncode:
-            detail = recheck.stderr or recheck.stdout or started.stderr or started.stdout or b""
-            fail("container runtime did not start: " + quote(detail))
+        fail(backend.exe + " --version returned invalid UTF-8: " + quote(output))
+    parsed = None if version.returncode else backend.parse_version(first_line)
+    if parsed is None:
+        fail("cannot parse " + backend.name + " runtime version: " + quote(output))
+    backend.validate_version(parsed, first_line)
+    backend.ensure_started()
 
 
 def image_exists(image: str) -> bool:
-    proc = runtime_run(["container", "image", "inspect", image], check=False)
-    if proc.returncode == 0:
-        return True
-    try:
-        first_line = proc.stderr.decode("utf-8").split("\n", 1)[0]
-    except UnicodeDecodeError:
-        fail("container image inspect failed with invalid output for " + quote(image) + ": " + quote(proc.stderr))
-    if first_line == "Error: image not found: " + image:
-        return False
-    fail("container image inspect failed for " + quote(image) + ": " + quote(proc.stderr))
+    return runtime().image_exists(image)
 
 
 def image_records() -> list[dict]:
-    records = runtime_json(["container", "image", "list", "--format", "json"])
+    backend = runtime()
+    records = runtime_json([backend.exe, "image", "list", "--format", "json"])
     if not isinstance(records, list):
-        fail("container image list did not return a JSON array")
+        fail(backend.exe + " image list did not return a JSON array")
     return records
 
 
@@ -794,22 +931,16 @@ def image_record_facts(record) -> tuple[str, str, dict] | None:
 
 
 def local_name(ref: str) -> str:
-    prefix = "docker.io/library/"
-    return ref[len(prefix):] if ref.startswith(prefix) else ref
+    return runtime().local_name(ref)
 
 
 def run_build(context: bytes | str, tag: str, args, labels: dict[str, str] | None = None,
               *, project: bool):
+    backend = runtime()
     context_text = runtime_path(context)
-    cmd = ["container", "build", "--tag", tag,
-           "--file", context_text + "/Containerfile"]
-    for key, value in (labels or {}).items():
-        cmd += ["-l", key + "=" + value]
-    if getattr(args, "no_cache", False):
-        cmd.append("--no-cache")
-    if getattr(args, "pull", False):
-        cmd.append("--pull")
-    cmd.append(context_text)
+    cmd = backend.build_argv(context_text, tag, labels or {},
+                             no_cache=getattr(args, "no_cache", False),
+                             pull=getattr(args, "pull", False), project=project)
     try:
         runtime_run(cmd, capture=False)
     except JMSException:
@@ -873,8 +1004,9 @@ def gc_project_images(pid: str, tag_prefix: str, *, keep: int):
                 and local_name(facts[0]).startswith(tag_prefix + ":")):
             owned.append(facts)
     owned.sort(key=lambda facts: facts[1], reverse=True)
+    backend = runtime()
     for ref, _, _ in owned[keep:]:
-        proc = runtime_run(["container", "image", "delete", ref], check=False,
+        proc = runtime_run([backend.exe, "image", "delete", ref], check=False,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if proc.returncode == 0:
             print("removed image " + quote(ref))
@@ -962,12 +1094,8 @@ def ensure_shell_state_directory() -> None:
 
 
 def mount_argument(source: bytes | str, target: str, readonly=False) -> str:
-    """Serialize the one supported runtime mount grammar without ambiguity."""
-    source_text = runtime_path(os.fsencode(source))
-    if "," in target or "=" in target:
-        fail("mount paths cannot contain ',' or '=': " + quote(target))
-    result = "source=" + source_text + ",target=" + target
-    return result + ",readonly" if readonly else result
+    """Serialize the selected backend's mount grammar without ambiguity."""
+    return runtime().mount_argument(source, target, readonly)
 
 
 def validate_launch_cli_runtime_args(args) -> None:
@@ -982,8 +1110,8 @@ def validate_launch_cli_runtime_args(args) -> None:
         runtime_argument(value)
 
 
-def launch_plan(workdir: bytes, data, args, image: str, auth: bool):
-    """Build the exact container-run argv."""
+def launch_plan(workdir: bytes, data, args, image: str, auth: bool) -> LaunchPlan:
+    """Build the runtime-agnostic launch plan (all filesystem side effects live here)."""
     if data:
         mount = data["root"]
         inner = os.path.relpath(os.fsdecode(workdir), os.fsdecode(data["root"]))
@@ -1003,28 +1131,25 @@ def launch_plan(workdir: bytes, data, args, image: str, auth: bool):
             fail("manifest mount target is not allowed for the effective runtime user"
                  + (" under --root" if args.root else "") + ": " + quote(target))
     mount_auth = auth and (config["mount_auth"] or args.auth)
-    cmd = ["container", "run", "--rm", "--interactive"]
-    if sys.stdin.isatty():
-        cmd.append("--tty")
-    cmd += ["--name", name, "--user", user, "--workdir", container_workdir,
-            "--entrypoint", entry[0], "--label", "jms.project=" + pid]
+    env = []
     if mount_auth:
-        cmd += ["--env", "CLAUDE_CONFIG_DIR=" + effective_home + "/.claude"]
-    cmd += ["--mount", mount_argument(mount, "/work")]
-    for key, value in sorted(config["env"].items()):
-        cmd += ["--env", key + "=" + value]
+        env.append(("CLAUDE_CONFIG_DIR", effective_home + "/.claude"))
+    env += sorted(config["env"].items())
+    mounts = [(mount, "/work", False)]
     for extra_mount in config["mounts"]:
-        cmd += ["--mount", mount_argument(extra_mount["source"], extra_mount["target"], extra_mount["readonly"])]
+        mounts.append((extra_mount["source"], extra_mount["target"], extra_mount["readonly"]))
     shell_source, shell_target = shell_state_mount(user)
     ensure_shell_state_directory()
-    cmd += ["--mount", mount_argument(str(shell_source), shell_target, readonly=True)]
+    mounts.append((str(shell_source), shell_target, True))
     if mount_auth:
         for source, target in agent_state_mounts(user):
             ensure_agent_state_directory(source)
-            cmd += ["--mount", mount_argument(str(source), target)]
-    cmd.append(image)
-    cmd += entry[1:] + args.extra
-    return cmd
+            mounts.append((str(source), target, False))
+    return LaunchPlan(name=name, user=user, tty=sys.stdin.isatty(),
+                      workdir=container_workdir, entrypoint=entry[0], image=image,
+                      labels=(("jms.project", pid),),
+                      env=tuple(env), mounts=tuple(mounts),
+                      command=tuple(entry[1:] + args.extra))
 
 
 def cmd_build(args):
@@ -1068,12 +1193,12 @@ def cmd_launch(args):
         _, auth = approve(data["root"], data["tf"], args, action="launch", config=data["config"])
         runtime_ready()
         image, _ = build_project(data, args)
-        argv = launch_plan(workdir, data, args, image, auth)
+        plan = launch_plan(workdir, data, args, image, auth)
     else:
         runtime_ready()
         ensure_base(args)
-        argv = launch_plan(workdir, None, args, BASE, not args.no_auth)
-    runtime_run(argv, replace=True)
+        plan = launch_plan(workdir, None, args, BASE, not args.no_auth)
+    runtime_run(runtime().run_argv(plan), replace=True)
 
 
 def cmd_trust(args):
@@ -1207,18 +1332,19 @@ def cmd_init(args):
 
 
 def container_records() -> list[dict]:
-    records = runtime_json(["container", "list", "--all", "--format", "json"])
+    backend = runtime()
+    records = runtime_json([backend.exe, "list", "--all", "--format", "json"])
     if not isinstance(records, list):
-        fail("container list did not return a JSON array")
+        fail(backend.exe + " list did not return a JSON array")
     parsed = []
     for record in records:
         try:
             ident = record["id"]
             labels = record["configuration"].get("labels", {})
         except (KeyError, TypeError):
-            fail("container list returned an invalid container record")
+            fail(backend.exe + " list returned an invalid container record")
         if not isinstance(ident, str) or "\0" in ident or not isinstance(labels, dict):
-            fail("container list returned an invalid container record")
+            fail(backend.exe + " list returned an invalid container record")
         parsed.append({"id": ident, "labels": labels})
     return parsed
 
@@ -1268,14 +1394,15 @@ def cmd_clean(args):
         for ident in ids: print("would remove container " + quote(ident))
         for ref in image_refs: print("would remove image " + quote(ref))
         return
+    backend = runtime()
     for ident in ids:
         # Stopping an already-stopped container may error; delete --force is
         # the authoritative step.
-        runtime_run(["container", "stop", ident], check=False)
-        runtime_run(["container", "delete", "--force", ident])
+        runtime_run([backend.exe, "stop", ident], check=False)
+        runtime_run([backend.exe, "delete", "--force", ident])
         print("removed container " + quote(ident))
     for ref in image_refs:
-        runtime_run(["container", "image", "delete", ref])
+        runtime_run([backend.exe, "image", "delete", ref])
         print("removed image " + quote(ref))
 
 

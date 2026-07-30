@@ -28,6 +28,16 @@ GOLDEN_SINGLE_TF = "d0004b6bc950679f0de2eedf06f9bec5c9f02442b46109af80ef1915acd5
 DEFAULT_CONTAINERFILE = b"FROM jmscontainers-base:latest\n"
 
 
+def setUpModule():
+    # Install the backend by assigning the cache (seam #3): the suite must be
+    # platform-independent, never exercising select_runtime() implicitly.
+    JMS._RUNTIME = JMS.ContainerBackend()
+
+
+def tearDownModule():
+    JMS._RUNTIME = None
+
+
 @contextlib.contextmanager
 def sandbox():
     """Isolated HOME, a sandboxed checkout, and no ambient pins.
