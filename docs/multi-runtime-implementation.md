@@ -102,7 +102,7 @@ target rather than first-push acceptance material.
 | MIR-020 | High | CI definition | Resolved (design) |
 | MIR-021 | High | Rollout and documentation atomicity | Resolved (design) |
 | MIR-022 | Blocker | Isolation-user ABI attestation | Open |
-| MIR-023 | High | `/bin/realpath` diagnostic ordering | Open |
+| MIR-023 | High | `/bin/realpath` diagnostic ordering | Resolved (design) |
 | MIR-024 | Blocker | Container cleanup provenance | Open |
 | MIR-025 | Blocker | apple/container image identity schema | Open |
 | MIR-026 | Blocker | macOS build-argv compatibility | Open |
@@ -1046,7 +1046,21 @@ and resolved before backend enablement.
 
 ### MIR-023 — The `/bin/realpath` preflight runs after commands already need it
 
-- **Status:** Open — high
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** The diagnostic moves to the actual dependency boundary:
+  `canon()` itself. `subprocess.run` raises `FileNotFoundError` when
+  `/bin/realpath` is absent; `canon()` catches it and fails with a
+  terminal-safe "cannot canonicalize paths: /bin/realpath not found"
+  message plus the coreutils hint (Debian 13: `sudo apt install
+  coreutils`, consistent with the MIR-027 package contract). The check is
+  shared code, so macOS gets the same diagnostic (its absence there
+  indicates a broken OS install), and it sits below the runtime seam, so
+  it never selects a backend and pure commands keep working unchanged
+  (MIR-001). The separate `ensure_started()` realpath preflight from
+  MIR-015 is dropped as redundant: every path that could reach the probe
+  reaches `canon()` first. §4 is updated accordingly and R4.6 is
+  rewritten against the `canon()` boundary. Acceptance tests per
+  **Done when** land with the implementation.
 - **Affects:** MIR-015 and §§1, 4, 9, and 11
 - **Finding:** The Podman check is assigned to `ensure_started()`, but
   runtime-using commands call `resolve_operand()`, `project_data()`,
@@ -1710,15 +1724,14 @@ and the CLI surface jms uses (`run`, `build`, `image exists`,
 apple/container keeps the `system status` / `system start` dance. Podman is
 daemonless, so `ensure_started()` instead runs one cheap probe that catches
 the real-world rootless failure modes (missing `newuidmap`, unconfigured
-`/etc/subuid`, broken storage config). Before the probe, the Podman
-backend's preflight also checks that `/bin/realpath` exists — `canon()`
-hard-depends on it (§1) and a coreutils-less minimal install would
-otherwise fail obscurely — with its own hint naming the `coreutils`
-package (MIR-015). The probe itself:
+`/etc/subuid`, broken storage config). The missing-`/bin/realpath`
+diagnostic lives in `canon()` itself (MIR-023) — the actual dependency
+boundary, shared by both platforms — where a `FileNotFoundError` fails
+with the coreutils hint before any prompt, store write, or runtime
+process; the probe therefore carries no realpath check. The probe itself:
 
-> **Open issues:** MIR-023 shows that this realpath check occurs after the
-> first use of realpath, and MIR-028 shows that the accepted ID-map size is
-> not defined.
+> **Open issue:** MIR-028 shows that the accepted ID-map size is not
+> defined.
 
 ```sh
 podman info --format json
@@ -2218,7 +2231,7 @@ for non-enforceable wording, never for a behavioral claim).
 | R4.3 | 4 | Podman floor (5, 4, 0); silent within major 5; one-line warning on major ≥ 6; `JMS_RUNTIME_ACCEPT` ignored on Podman | unit | `test_podman_version_floor_and_untested_major_warning` |
 | R4.4 | 4 | `ensure_started()` validates `podman info` JSON: remote, rootful, missing/undersized ID maps, absent graph driver, invalid JSON each fail with their own hint and verbatim stderr; healthy engine passes | unit + int-A | `test_podman_readiness_matrix` over MIR-008 fixtures; tier-A preflight on the fresh CI user |
 | R4.5 | 4 | `approve()` runs before `runtime_ready()` on both backends; grant-then-preflight-failure leaves a valid grant | unit | `test_consent_precedes_runtime_readiness` (MIR-003 matrix: accepted, declined, non-interactive failure, missing runtime, unusable rootless Podman) |
-| R4.6 | 4 | Podman preflight checks `/bin/realpath` exists before the `podman info` probe; missing binary fails with the coreutils hint | unit | `test_podman_preflight_requires_realpath` (MIR-015) |
+| R4.6 | 4 | `canon()` fails with the coreutils hint when `/bin/realpath` is missing, on both platforms, before any prompt, store write, or runtime process | unit | `test_canon_missing_realpath_diagnostic` (MIR-023 matrix: `build`, `launch`, `inspect`, `init`, store-only trust forms) |
 | R5.1 | 5 | `image_exists` tri-state: 0 true, 1 false, other exit hard failure with stderr | conformance | existing `test_image_exists_distinguishes_absence_from_failure`, parametrized |
 | R5.2 | 5 | `image_facts()` strict fixture-backed normalizer; dangling skipped by rule; malformed ownership-relevant field aborts | unit | `test_podman_image_facts_normalizer` over 4.9.3/5.4.2 fixtures + malformed variants (MIR-006) |
 | R5.3 | 5 | `created` is Unix epoch seconds on both backends; ordering never compares backend-local shapes | conformance | mixed-timestamp retention-ordering cases (MIR-018) |
