@@ -33,7 +33,10 @@ listed here may change:
 **Invariant on macOS specifically:**
 
 - The exact `container` argv for build, launch (all variants), list, and
-  cleanup operations, pinned by golden argv tests.
+  cleanup operations, pinned by golden argv tests — with one additive
+  exception: the MIR-024 provenance label pair on build and launch argv,
+  listed below as an intentional change and pinned by the goldens in its
+  new form.
 - Diagnostics for existing failure modes (missing CLI, version mismatch,
   image not found).
 
@@ -49,6 +52,12 @@ listed here may change:
   `trust revoke --purge-images` attempt every selected removal and
   aggregate failures instead of aborting at the first, and project GC
   warns on stderr about failed deletions instead of staying silent.
+- Container-cleanup provenance (MIR-024): builds stamp
+  `jms.container=image`, launches pass `jms.container=launch`, and
+  cleanup on both backends selects only containers carrying the launch
+  value — a manual container started from a jms image is no longer
+  treated as jms-owned. macOS build and launch argv each gain one
+  additive label pair.
 
 **Explicitly not invariant:** startup timing, internal code structure, and
 wording of newly introduced (Linux-only) diagnostics.
@@ -105,14 +114,14 @@ target rather than first-push acceptance material.
 | MIR-019 | High | Integration coverage | Resolved (design) |
 | MIR-020 | High | CI definition | Resolved (design) |
 | MIR-021 | High | Rollout and documentation atomicity | Resolved (design) |
-| MIR-022 | Blocker | Isolation-user ABI attestation | Open |
+| MIR-022 | Blocker | Isolation-user ABI attestation | Resolved (design) |
 | MIR-023 | High | `/bin/realpath` diagnostic ordering | Resolved (design) |
-| MIR-024 | Blocker | Container cleanup provenance | Open |
+| MIR-024 | Blocker | Container cleanup provenance | Resolved (design) |
 | MIR-025 | Blocker | apple/container image identity schema | Open |
 | MIR-026 | Blocker | macOS build-argv compatibility | Resolved (design) |
 | MIR-027 | High | Debian prerequisite diagnostics | Resolved (design) |
 | MIR-028 | High | Subordinate-ID sizing | Resolved (design) |
-| MIR-029 | Blocker | Project base-image pull semantics | Open |
+| MIR-029 | Blocker | Project base-image pull semantics | Resolved (design) |
 | MIR-030 | High | Linux architecture support | Resolved (design) |
 | MIR-031 | Blocker | Selection-versus-consent ordering | Resolved (design) |
 | MIR-032 | High | Cleanup partial-failure semantics | Resolved (design) |
@@ -126,11 +135,11 @@ The follow-up repository cross-check recorded in MIR-022–033 found that six
 of those decisions have unresolved downstream contradictions. Those original
 issues remain closed as historical decisions, but the new blocker IDs
 supersede the affected portions of the design. Per this gate, implementation
-must not begin while MIR-022, MIR-024, MIR-025, or MIR-029 is open
-(MIR-026 and MIR-031 were resolved in design on 2026-07-29, as were
-MIR-023, MIR-027, MIR-028, MIR-030, and MIR-032); the remaining
-high-severity issue (MIR-033) must be assigned to an implementation phase
-and resolved before backend enablement.
+must not begin while MIR-025 is open
+(MIR-022, MIR-026, and MIR-031 were resolved in design on 2026-07-29, as
+were MIR-023, MIR-024, MIR-027, MIR-028, MIR-029, MIR-030, and MIR-032); the
+remaining high-severity issue (MIR-033) must be assigned to an
+implementation phase and resolved before backend enablement.
 
 ### MIR-001 — Runtime selection must not break runtime-free commands
 
@@ -539,6 +548,15 @@ and resolved before backend enablement.
   skipping the check preserves the compatibility contract for cached
   images. Acceptance tests per **Done when** land with the
   implementation.
+- **Superseded in part (2026-07-29, MIR-022):** the label mechanism is
+  replaced — no `jms.abi.isolation-uid` label is stamped anywhere.
+  Enforcement is instead a launch-time attestation of the final image
+  filesystem (`verify_image_abi`, §7.4), still Podman-only and still
+  failing closed before any mount. The single-`ISOLATION_UID`-constant
+  decision, the fail-closed posture, and the divergent-images-are-
+  unsupported policy stand. A pre-1.1.0 image whose filesystem happens
+  to satisfy the ABI now launches — attestation of actual state
+  supersedes the rebuild-marker idea (jms 1.0.0 has no install base).
 - **Affects:** §§3 and 7.1
 - **Finding:** A constant in `bin/jms` and a literal in the Containerfile are
   two sources of truth, not one. More importantly, project Containerfiles are
@@ -587,6 +605,11 @@ and resolved before backend enablement.
   **Done when**: a network-isolation proof in CI on the first-push
   substrate (Debian 13 / Podman ≥ 5.4; mechanism per MIR-020) rather than
   a scratch run.
+- **Superseded in part (2026-07-29, MIR-029):** project builds pass
+  `--pull=missing`, not `--pull=never` — the unconditional `never` rule
+  broke clean-store builds of standalone/external-base projects. The
+  local-first resolution finding and the missing-base hint stand; the
+  six-cell matrix is re-qualified under `missing` per MIR-029.
 - **Affects:** §§3, 6, 9, and 10
 - **Finding:** The entire project build path depends on
   `FROM jmscontainers-base:latest` resolving to
@@ -932,7 +955,8 @@ and resolved before backend enablement.
   cleanup check, ambient `PODMAN_USERNS`/`containers.conf` conflicts
   (MIR-009), and `label=disable` acceptance. The short-name check is the
   deterministic `--pull=never --network=none` form (MIR-011), not
-  "offline-ish". The integration script is split into a fast tier A
+  "offline-ish" (since superseded by MIR-029: `--pull=missing` with
+  network isolation around the jms invocation, per §9). The integration script is split into a fast tier A
   (base image only — preflight, launch-contract, and leak-sweep
   assertions) and an expensive tier B (example projects and agent-image
   coverage), and cleanup plus the leak sweep run from the EXIT trap so
@@ -1023,7 +1047,76 @@ and resolved before backend enablement.
 
 ### MIR-022 — The ABI label asserts the desired UID; it does not attest the image
 
-- **Status:** Open — blocker
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** The `jms.abi.isolation-uid` label is **dropped entirely** —
+  no ABI label is stamped on any build, on either backend (this also
+  vacuously satisfies MIR-026: macOS build argv needs no additive
+  exception at all). It is replaced by a **launch-time attestation read
+  from the final image filesystem**, owned by a new Class B protocol
+  method `verify_image_abi(image) -> None` (§2) and specified in §7.4:
+  - The Podman backend creates a **never-started** container from the
+    image (`podman create --pull=never --entrypoint /bin/true`, labeled
+    `jms.container=abi-probe`), reads `/etc/passwd` and `/etc/group` out
+    of it with `podman cp` (tar streams parsed strictly in memory),
+    proves the shell exists with a third `cp`, and force-removes the
+    probe in a `finally`. No image-controlled code ever executes, so the
+    observation cannot be forged by the image; the data checked
+    (`/etc/passwd`/`/etc/group`) is exactly what `--user isolation` and
+    the `keep-id:uid=1000,gid=1000` mapping resolve against, so the
+    attestation covers the load-bearing artifact itself. Every probe
+    process crosses `runtime_run()` (conformance-enforced).
+  - The complete ABI (§7.4): exactly one `passwd` entry named
+    `isolation` with UID 1000, primary GID 1000, home
+    `/home/isolation`, and shell `/bin/bash`; exactly one `group` entry
+    named `isolation` with GID 1000; the shell present in the image.
+    All four numbers/paths derive from the single `ISOLATION_UID`/
+    constant family in `bin/jms` (§3). Home-directory *existence* is
+    deliberately not part of the ABI: bind mounts create their targets,
+    and the passwd field is what target resolution reads.
+  - **When checked:** `cmd_launch` calls the free function
+    `verify_image_abi(image)` immediately after image resolution
+    (`build_project()`/`ensure_base()`) and **before `launch_plan()`**,
+    so failure precedes every state-directory side effect and any
+    credential-mount serialization; it runs after `approve()` and
+    `runtime_ready()` because it executes processes (MIR-003/031).
+    This one check point covers cached and freshly built images
+    uniformly — there is no label to go stale and no build/launch TOCTOU
+    to reason about. Additionally, `build_project()` and `ensure_base()`
+    run the same verification right after any build they actually
+    perform, so a divergent project Containerfile is reported at build
+    time, not first at launch.
+  - **Failure behavior:** fail closed via `fail()` with a
+    terminal-safe message naming the isolation-user ABI contract, the
+    divergent field and value, and the hint "rebuild with `jms build`;
+    images that deliberately alter the `isolation` user are
+    unsupported". Any probe subprocess failure, malformed tar/passwd
+    content, or non-UTF-8/NUL byte fails the check — never a skip.
+  - **Leftover probes:** the probe is removed in a `finally`
+    (`podman rm --force`, `check=False`; one stderr warning on
+    failure, added to the error contract's print exceptions). A probe
+    orphaned by a hard kill is inert (never started, no mounts) and is
+    garbage-collected by cleanup: the MIR-024 ownership predicate is
+    amended so `clean` and `trust revoke --purge-images` additionally
+    select any container labeled `jms.container=abi-probe`. Because
+    every jms build stamps the neutral `jms.container=image` on the
+    image, no Containerfile can preseed the probe (or launch) value
+    onto a container.
+  - macOS: `verify_image_abi` is a **no-op** running no process —
+    launch behavior, argv, and the compatibility contract are
+    untouched (virtiofs squashing keeps the mapping non-load-bearing
+    there, per MIR-010/026).
+  - Rejected alternatives, recorded: (a) keeping a label as a verified
+    cache — Podman cannot re-label without a second build, and a
+    Containerfile `LABEL` could forge it unless every launch re-checks
+    anyway; (b) running `id`/`getent` in a container — executes
+    image-controlled binaries, so output is forgeable and the run has
+    side effects; (c) `podman image mount` — needs
+    `podman unshare` gymnastics rootless, for no added fidelity.
+  Placement in the phase plan: probe implementation, fixtures, unit and
+  conformance tests land in phase 2; the built-image divergence matrix
+  lands in the phase-4 integration tier B (§11). §§2, 3, 5, 6, 7, 9 and
+  the requirements table (R3.2/R3.3, R5.8) are updated. Acceptance
+  tests per **Done when** land with the implementation.
 - **Affects:** MIR-010 and §§2, 3, 7.1, 9, and 11
 - **Finding:** The proposed build path stamps
   `jms.abi.isolation-uid=1000` from `ISOLATION_UID` on every project image.
@@ -1089,7 +1182,41 @@ and resolved before backend enablement.
 
 ### MIR-024 — Inherited image labels are not container provenance
 
-- **Status:** Open — blocker
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** Cleanup ownership is proven by a **container-only
+  provenance marker**, enforced identically on both backends, with no
+  legacy accommodation (jms has no meaningful 1.0.0 install base to
+  migrate). *Amended (2026-07-29, MIR-022):* the ownership predicate
+  additionally selects containers labeled `jms.container=abi-probe` —
+  orphaned never-started ABI probes (§7.4) — which, like the launch
+  value, no image can preseed because builds stamp the neutral value:
+  - Every jms-driven build (base and project) stamps the neutral value
+    `jms.container=image` on the image, in the shared build-label
+    assembly alongside the existing labels — both backends, not
+    per-backend. Because the build-time stamp overrides any value from
+    the Containerfile, no image — including a malicious project
+    definition that tries to `LABEL` the marker — can carry the launch
+    value.
+  - `jms launch` passes `--label jms.container=launch`, overriding the
+    inherited neutral value on the container.
+  - The cleanup ownership predicate on **both** backends requires the
+    existing `jms.project` label (scoping: project-scoped `clean`
+    matches its value, `clean --all` requires its presence) **and**
+    `jms.container=launch` (provenance). Containers that only inherit
+    labels from an image, manual containers, and `jms-`-prefixed names
+    are never selected. A marker-absent container means "not created by
+    jms", never "legacy": pre-1.1.0-style containers are conservatively
+    left alone. Dry-run and real cleanup share the one predicate.
+  - The corrected macOS selection semantics and the two additive label
+    pairs on macOS build and launch argv are **intentional
+    compatibility changes**, recorded in the compatibility contract's
+    intentionally-changed list and the changelog; the macOS argv
+    goldens pin the new form (unlike the per-image ABI attestation,
+    which is Podman-only per MIR-026/MIR-022, this marker is the
+    predicate itself and must exist on both backends).
+  §§2, 5, and 7 and the compatibility contract are updated, and the
+  requirements-to-tests table gains R5.8. Acceptance tests per
+  **Done when** land with the implementation.
 - **Affects:** MIR-007 and §§5, 7, 9, and the compatibility contract
 - **Finding:** The checked-in Podman fixtures already prove that image labels
   are inherited into container `Labels`. Every project image carries
@@ -1115,6 +1242,13 @@ and resolved before backend enablement.
 ### MIR-025 — The normalized image identity cannot yet be produced on macOS
 
 - **Status:** Open — blocker
+- **Progress (2026-07-29):** parked — no macOS capture machine is
+  currently available. The unblocking step is one sanitized
+  `container image list --format json` capture from the qualified
+  apple/container version on an Apple Silicon Mac; until it is checked
+  in, this issue keeps blocking the MIR-018 identity model and the §2
+  `ImageFact` protocol type. Phase-1 seam work that does not depend on
+  `ImageFact` is not blocked.
 - **Affects:** MIR-004, MIR-018, and §§2, 5, 9, and 11
 - **Finding:** `ImageFact` requires a full image ID plus every ref grouped by
   that identity. The current apple/container parser and `image_record()` test
@@ -1151,6 +1285,12 @@ and resolved before backend enablement.
   Podman launch. §3 and R3.2 are updated; the phase-3 claim that only the
   Containerfile changes on macOS is now true. Golden tests per
   **Done when** land with the implementation.
+- **Note (2026-07-29, MIR-022):** the anticipated redefinition happened —
+  the label is dropped everywhere and the attestation became the
+  Podman-only `verify_image_abi` probe (§7.4). This satisfies this
+  issue's decision in its strongest form: neither backend's build argv
+  changes for ABI purposes, and the macOS goldens simply pin today's
+  argv with no absence assertion needed.
 - **Affects:** the compatibility contract, MIR-005, MIR-010, and §§3, 6, 9,
   and 11
 - **Finding:** The compatibility contract declares exact apple/container
@@ -1248,7 +1388,45 @@ and resolved before backend enablement.
 
 ### MIR-029 — `--pull=never` breaks valid standalone and external-base projects
 
-- **Status:** Open — blocker
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** Project builds pass an explicit **`--pull=missing`**
+  instead of `--pull=never`. This preserves the project-definition
+  contract — standalone definitions with fully qualified external bases
+  (`examples/clean-slate`'s `FROM fedora:latest`) build on a clean store
+  by fetching their base — while a locally present
+  `jmscontainers-base:latest` is still used as-is: `missing` pulls only
+  when the reference is absent from local storage, and Buildah resolves
+  the `FROM` short name against local storage first. The flag is
+  explicit so ambient configuration cannot change the policy. The
+  conditional-FROM-parse alternative is rejected for 1.1.0 (multi-stage/
+  `ARG`/syntax-directive parsing rules are not worth specifying), as is
+  a contract change requiring pre-pulled external bases. Consequences:
+  - The MIR-011 no-registry guarantee narrows to the base-present case:
+    with the jms base built, a project build must not contact a
+    registry. The six-cell qualification matrix (three
+    `registries.conf` variants × base present/absent) is re-run under
+    `--pull=missing`, replacing the `never` evidence, as acceptance
+    work.
+  - The absent-jms-base path is no longer guaranteed to fail offline
+    with `image not known`: under `missing`, Buildah may attempt
+    registry resolution of the unqualified name. Acceptance must prove
+    the failure is fast and non-interactive under every qualified
+    `registries.conf` variant, and jms wraps the resulting error with
+    the existing "run `jms build` for the base image first" hint. If
+    any qualified configuration proves interactive (a short-name
+    prompt), this decision reopens with the conditional-FROM-parse
+    option as the leading fallback — never a revert to unconditional
+    `--pull=never`.
+  - Base builds are unchanged: `--pull=always` only when the caller
+    requests pull (§6).
+  MIR-011 is superseded in this one respect (its local-first resolution
+  finding and missing-base hint survive); §§3, 6, and 9 and rows
+  R3.7/R6.1 are updated. Integration additionally gains a clean-store
+  standalone-project build proving the external base fetches, invoked
+  through jms per the finding (the network-isolation proof wraps the
+  jms invocation, e.g. in a network namespace — jms has no
+  project-build network flag). Acceptance per **Done when** lands with
+  the implementation.
 - **Affects:** MIR-011 and §§3, 6, 9, 10, and 12
 - **Finding:** Project definitions are not required to inherit the jms base.
   `examples/clean-slate` explicitly says so and uses `FROM fedora:latest`;
@@ -1401,6 +1579,14 @@ and resolved before backend enablement.
 ### MIR-033 — The nested Linux CI job still lacks an executable contract
 
 - **Status:** Open — high
+- **Progress (2026-07-29):** two of the open parameters are decided.
+  The job is **not a required PR check for 1.1.0**: it ships as
+  `workflow_dispatch` plus the weekly `schedule` only. The promotion
+  criterion is a numeric threshold of **4 consecutive green scheduled
+  runs**, evaluated after the 1.1.0 release. Still open: the exact
+  outer privileged invocation and device/mount contract, fresh-user
+  setup, storage/cgroup/network configuration, cancellation cleanup,
+  artifact paths/retention, and cache policy.
 - **Affects:** MIR-020 and §§9 and 11
 - **Finding:** The decision says integration runs "inside a `debian:13`
   container" but does not specify how. The repository's existing nested
@@ -1599,9 +1785,9 @@ about a backend is visible outside it.
 All data crossing the protocol boundary is normalized. Command functions
 never see raw runtime JSON, stderr bytes, or `subprocess` objects.
 
-> **Implementation blocked by MIR-022 and MIR-025:** the protocol is missing
-> the final-image ABI query, and the required apple/container image identity
-> has not been established from a real fixture.
+> **Implementation blocked by MIR-025:** the required apple/container image
+> identity has not been established from a real fixture. (The final-image
+> ABI query is now defined: `verify_image_abi`, per MIR-022 and §7.4.)
 
 ```python
 Version = tuple[int, int, int]
@@ -1631,8 +1817,10 @@ class LaunchPlan:
     workdir: str                         # "/work" or "/work/<inner>"
     entrypoint: str                      # entry[0]
     image: str
-    labels: tuple[tuple[str, str], ...]  # ordered; today exactly
-                                         #   (("jms.project", pid),)
+    labels: tuple[tuple[str, str], ...]  # ordered; exactly
+                                         #   (("jms.project", pid),
+                                         #    ("jms.container", "launch"))
+                                         #   (MIR-024)
     env: tuple[tuple[str, str], ...]     # ordered, see invariants
     mounts: tuple[Mount, ...]            # ordered, see invariants
     command: tuple[str, ...]             # entry[1:] + extra argv
@@ -1691,6 +1879,7 @@ monkeypatch intercepts every execution on both backends:
 | `image_exists` | `(image: str) -> bool` | apple/container: exit 0 vs. the exact `Error: image not found: <ref>` stderr line; Podman: `image exists` exit 0/1, anything else a hard failure (§5) |
 | `image_facts` | `() -> list[ImageFact]` | per-backend strict, fixture-backed, fail-closed normalizer (§5, MIR-006/018) |
 | `ps` | `() -> list[ContainerFact]` | per-backend strict, fail-closed normalizer (§5, MIR-007); id/label validation (string, NUL-free, dict) shared |
+| `verify_image_abi` | `(image: str) -> None` | Podman: never-started create/cp/rm probe attesting the final image's `isolation` user against the ABI (§7.4, MIR-022), fail-closed; apple/container: no-op running no process (MIR-026) |
 
 #### Free-function surface and monkeypatch seams
 
@@ -1700,7 +1889,8 @@ The public surface stays the existing free functions, which delegate to
 nonzero exit or a `None` parse fails closed with the output quoted — then
 calls `validate_version()` and `ensure_started()`), `image_exists()`,
 `image_facts()` (replacing `image_records()`/`image_record_facts()`),
-`local_name()`, `run_build()`, `launch_plan()`, and `container_records()`
+`local_name()`, `run_build()`, `launch_plan()`, `verify_image_abi()`
+(delegating to the backend method, §7.4), and `container_records()`
 (delegating to `ps()`). The stable monkeypatching seams, in order of
 authority:
 
@@ -1727,11 +1917,12 @@ authority:
 - Malformed values in ownership-relevant fields abort the whole operation;
   they are never silently skipped (MIR-006/007). Podman dangling images
   are skipped by rule, not by error.
-- No backend method calls `sys.exit`, prompts, or prints, with exactly two
-  exceptions: `ensure_started()` may print daemon-start progress on stdout
-  (apple/container's "starting container runtime..."), and
+- No backend method calls `sys.exit`, prompts, or prints, with exactly
+  three exceptions: `ensure_started()` may print daemon-start progress on
+  stdout (apple/container's "starting container runtime..."),
   `validate_version()` may print its one-line untested-major warning on
-  stderr.
+  stderr, and `verify_image_abi()` may print one stderr warning when
+  removing its probe container fails (§7.4, MIR-022/032).
 - Exit codes are unchanged: runtime failures raise `JMSException` (exit 1);
   selection/usage failures raise `UsageError` (exit 2, §2).
 
@@ -1757,10 +1948,13 @@ lines (valid, distro-suffixed, malformed, invalid UTF-8); image/`ps`/`info`
 payloads (fixture-true, malformed records, wrong types, invalid UTF-8
 bytes, non-array top level); `image_exists` tri-state (present, absent,
 hard error with stderr preserved); mount serialization (plain, readonly,
-and rejection of `,`, `=`, NUL, and non-UTF-8 in sources/targets); and
-golden argv comparisons for build and every launch variant. A seam test
-patches `runtime_run` and asserts no backend operation reaches
-`subprocess` any other way.
+and rejection of `,`, `=`, NUL, and non-UTF-8 in sources/targets);
+`verify_image_abi` (Podman: the §7.4 fixture matrix through the faked
+`runtime_run`, probe removal on success and failure; apple/container:
+asserts zero process executions); and golden argv comparisons for build,
+every launch variant, and the probe argv triplet (fixed injected probe
+name). A seam test patches `runtime_run` and asserts no backend operation
+reaches `subprocess` any other way.
 
 ---
 
@@ -1768,10 +1962,6 @@ patches `runtime_run` and asserts no backend operation reaches
 
 The existing Fedora `Containerfile` builds unchanged under Podman/Buildah.
 Two small hardening edits make it deterministic across backends:
-
-> **Implementation blocked by MIR-022:** the proposed label is not a
-> final-image attestation. (The macOS argv conflict is resolved: per MIR-026
-> the label is stamped and validated by the Podman backend only.)
 
 1. **Pin the `isolation` UID/GID.** Rootless Podman's `--userns=keep-id`
    mapping (§7) must name the container-side UID, so it cannot be left to
@@ -1785,11 +1975,13 @@ Two small hardening edits make it deterministic across backends:
 
    Keep `1000` in one place — a `ISOLATION_UID = 1000` constant in `bin/jms`
    and this line — and note the pairing in a comment on both sides. The
-   constant also feeds the `jms.abi.isolation-uid=1000` label stamped on
-   every **Podman-backend** build (base and project; macOS build argv is
-   unchanged, MIR-026), which Podman launches validate before mounting
-   anything (MIR-010); a stale or divergent image fails closed with a
-   rebuild hint.
+   constant also feeds the `keep-id` mapping (§7.1) and the launch-time
+   ABI attestation (§7.4, MIR-022): before any Podman launch,
+   `verify_image_abi()` reads the final image's `/etc/passwd` and
+   `/etc/group` and fails closed — before mounting anything — when the
+   `isolation` user diverges from the pinned values. No ABI label is
+   stamped on any build (MIR-022 superseding MIR-010's label mechanism;
+   macOS build argv is unchanged, MIR-026).
 
 2. **Update the virtiofs comment** (`Containerfile` line 26) to describe both
    backends: virtiofs squashes UIDs on macOS; on Linux, `keep-id` performs
@@ -1805,10 +1997,12 @@ exists in Fedora regardless of what runs the build.
 `localhost/jmscontainers-base:latest`. Project Containerfiles keep
 `FROM jmscontainers-base:latest` — Buildah resolves `FROM` short names
 against local storage first, so this finds the locally built base without
-touching a registry, and project builds pass `--pull=never` to make that
-deterministic under every `registries.conf` (MIR-011, qualified locally on
-5.4.2). The Linux integration run (§9) re-verifies it on the matrix minimum;
-it is the one short-name resolution the design depends on.
+touching a registry, and project builds pass an explicit `--pull=missing`,
+which uses the local base whenever present and never re-pulls it while
+letting standalone projects fetch external bases (MIR-029, superseding
+MIR-011's `--pull=never`; the base-present no-registry case is
+re-qualified under `missing`). The Linux integration run (§9) re-verifies
+it; it is the one short-name resolution the design depends on.
 
 Consequences handled by the backend:
 
@@ -1965,8 +2159,20 @@ top-level `Labels` map. Normalize to the existing
 `[{"id": …, "labels": {…}}]` shape; validation rules (string id, no NUL,
 dict labels) carry over unchanged.
 
-> **Implementation blocked by MIR-024:** `jms.project` is inherited from the
-> image and therefore cannot by itself prove that jms created the container.
+Ownership requires launch provenance, not just the label (MIR-024):
+`jms.project` inherits from the image, so the cleanup predicate additionally
+requires the container-only marker `jms.container=launch`, which only
+`jms launch` sets — builds stamp the neutral `jms.container=image` in the
+shared build-label assembly, overriding any Containerfile-preseeded value,
+so no image can carry the launch value. Containers without the launch
+value — including manual containers started from jms images — are never
+selected by project-scoped or `--all` cleanup, on either backend, with
+one addition (MIR-022 amending MIR-024): a container labeled
+`jms.container=abi-probe` — a never-started ABI probe (§7.4) orphaned by
+a hard kill — is jms-owned transient garbage and is selected by every
+`clean` and `trust revoke --purge-images` run regardless of project
+scope. The neutral build-time stamp means no image can preseed this
+value either.
 
 ### Cleanup verbs
 
@@ -1993,21 +2199,22 @@ silent GC — change intentionally (see the compatibility contract).
 
 ## 6. Build (`run_build`)
 
-> **Implementation blocked by MIR-029:** the unconditional project
-> `--pull=never` rule below breaks clean-store builds of valid standalone
-> definitions and must be replaced or declared as a compatibility change.
-
 | Aspect | apple/container | podman |
 | --- | --- | --- |
 | tag/file/context | `--tag`, `--file`, positional context | identical |
 | labels | `-l key=value` | `--label key=value` |
 | no cache | `--no-cache` | identical |
 | pull (base only) | `--pull` | `--pull=always` |
-| project builds | (no pull flag) | `--pull=never` (MIR-011: pins `FROM jmscontainers-base:latest` to local storage; never contacts or prompts for a registry) |
+| project builds | (no pull flag) | `--pull=missing` (explicit; a present local `jmscontainers-base:latest` always wins and is never re-pulled, external bases fetch on a clean store — MIR-029) |
 
 `build_argv()` on the backend assembles this; the surrounding logic —
 context = `.jmscontainer/`, the pre-build fingerprint re-check in
-`build_project`, `CONTEXT_NOTE` on failure — is untouched. The v2 context
+`build_project`, `CONTEXT_NOTE` on failure — is untouched. After any
+build they actually perform, `build_project()` and `ensure_base()` call
+`verify_image_abi()` on the result (a Podman-only probe, no-op on
+macOS — §7.4, MIR-022), so an image whose Containerfile breaks the
+`isolation` user is rejected at build time; the launch-time check (§7.4)
+remains the authoritative gate. The v2 context
 rule ("COPY/ADD sources must live inside `.jmscontainer/`") is enforced by
 both builders since the context directory is identical; the integration
 escape test (§9) verifies the Podman error path still trips `CONTEXT_NOTE`.
@@ -2095,12 +2302,93 @@ in `/etc/profile.d/jms.sh`. Podman has one — pass `--hostname container` for
 parity so the prompt and `$HOSTNAME` agree by construction. The profile
 fallback stays (harmless, still needed on macOS).
 
+### 7.4 Final-image ABI attestation (resolves MIR-022)
+
+`--user isolation` and `--userns=keep-id:uid=1000,gid=1000` are only
+coherent if the image's own `/etc/passwd` resolves `isolation` to
+UID/GID 1000 — and a project Containerfile is free to break that. So the
+Podman backend attests the **final image filesystem** before every
+launch, instead of trusting anything recorded at build time.
+
+**The ABI.** An image satisfies the isolation-user ABI iff:
+
+1. `/etc/passwd` contains **exactly one** entry named `isolation`, and
+   that entry has UID `ISOLATION_UID` (1000), primary GID 1000, home
+   `/home/isolation`, and shell `/bin/bash`.
+2. `/etc/group` contains **exactly one** entry named `isolation`, with
+   GID 1000.
+3. `/bin/bash` is present in the image (resolving symlinks such as the
+   usrmerge `/bin` link inside the image, which `podman cp` does
+   natively).
+
+All pinned values derive from the `ISOLATION_UID` constant family in
+`bin/jms` (§3) — the same source that feeds the Containerfile line and
+the `keep-id` mapping. Home-directory *existence* is deliberately not
+part of the ABI: bind mounts create their target paths, and target
+resolution reads the passwd field, which is checked.
+
+**The probe.** `verify_image_abi(image)` on the Podman backend observes
+the image without executing any image-controlled code, so the
+observation cannot be forged and has no side effects inside the image:
+
+```sh
+podman create --pull=never --name jms-abi-<hex> \
+  --label jms.container=abi-probe --entrypoint /bin/true <image>
+podman cp jms-abi-<hex>:/etc/passwd -     # tar stream, parsed in memory
+podman cp jms-abi-<hex>:/etc/group -      # tar stream, parsed in memory
+podman cp jms-abi-<hex>:/bin/bash -       # existence proof; bytes discarded
+podman rm --force jms-abi-<hex>           # always, in a finally
+```
+
+The container is **never started**; `podman cp` reads from container
+storage directly, which works rootless. Every invocation crosses the
+module-level `runtime_run()` (conformance-enforced, §2). The probe name
+uses the launch-name generator's random suffix, so concurrent jms
+processes never collide.
+
+**Strict parsing, fail closed.** Each `cp` stream must be a tar
+containing exactly one regular-file member of at most 1 MiB (the shell
+stream is discarded unread, only its exit status matters); the file must
+be NUL-free valid UTF-8; every non-empty `passwd`/`group` line must have
+exactly 7 / 4 colon-separated fields with numeric UID/GID fields.
+Anything else — a failed subprocess, malformed tar, malformed line,
+zero or multiple `isolation` entries, a divergent field — fails the
+launch via `fail()` with a terminal-safe message naming the
+isolation-user ABI contract, the divergent observation, and the hint:
+rebuild with `jms build`; images that deliberately alter the
+`isolation` user are unsupported. A failure is never downgraded to a
+skip or a warning.
+
+**When it runs.** `cmd_launch` calls the free function
+`verify_image_abi(image)` immediately after image resolution
+(`build_project()`/`ensure_base()`) and **before `launch_plan()`** — so
+an ABI failure precedes every state-directory side effect and any
+credential-mount serialization. It runs after `approve()` and
+`runtime_ready()`, since it executes processes (MIR-003/031). Checking
+at launch covers cached and freshly built images uniformly; there is no
+cached assertion to go stale or be forged. Builds additionally verify
+their own output for early feedback (§6). The per-launch cost is five
+short `podman` invocations against local storage.
+
+**Probe lifecycle.** Removal runs in a `finally` with `check=False`;
+if it fails, the backend prints one warning line on stderr (an error-
+contract print exception, §2). A probe orphaned by a hard kill is inert
+— never started, no mounts — is invisible to the leak sweep's mount
+predicate by construction, and is collected by the amended MIR-024
+cleanup predicate (`jms.container=abi-probe`, §5).
+
+**apple/container.** `verify_image_abi` is a no-op running no process:
+virtiofs squashing makes the container-side UID non-load-bearing on
+macOS (MIR-010), and the compatibility contract keeps macOS behavior
+and argv byte-identical (MIR-026).
+
 ### Resulting Podman argv shape
 
 ```text
 podman run --rm --interactive [--tty]
   --name jms-<slug>-<hex> --user isolation --workdir /work
   --entrypoint /bin/bash --label jms.project=<pid>
+  --label jms.container=launch
   --hostname container --security-opt label=disable
   --userns=keep-id:uid=1000,gid=1000            # --userns=host under --root
   [--env CLAUDE_CONFIG_DIR=…]
@@ -2225,10 +2513,12 @@ Parametrize on the selected runtime instead of hard-requiring `container`:
   JSON `Mounts` field is only a list of target paths with no sources
   (MIR-007), so `ps` alone cannot identify jms mounts.
 - Add a `FROM jmscontainers-base:latest` resolution check (§3): build one
-  example with `--pull=never --network=none` and assert success with the
-  base present and a fast, non-interactive `image not known` failure
-  (exit 125) with it absent — the deterministic form of the earlier
-  "offline-ish" check, qualified locally per MIR-011.
+  example through jms (real argv, `--pull=missing`) with network isolation
+  wrapped around the jms invocation (jms has no project-build network
+  flag), asserting success with the base present; with the base absent,
+  assert a fast, non-interactive failure wrapped in the missing-base hint
+  (MIR-011/MIR-029). A clean-store standalone-project build proving the
+  external base fetches lands in tier B (the MIR-029 **Done when**).
 
 The script is split into two tiers (MIR-019), so the launch-contract
 assertions do not pay for the example-image builds:
@@ -2241,9 +2531,19 @@ assertions do not pay for the example-image builds:
   shell-state mount, the ambient-config conflict runs (MIR-009), the
   bwrap probes (MIR-017), and the deliberate-failure cleanup check.
 - **Tier B — expensive, example images.** The existing per-example
-  build/inspect/launch/clean cycle, the context-escape test, and the
+  build/inspect/launch/clean cycle, the context-escape test, the
   credential/agent-state mount assertions (which need `--auth` and real
-  agent state directories).
+  agent state directories), and the **ABI divergence matrix**
+  (the MIR-022 **Done when**): six tiny project Containerfiles
+  `FROM jmscontainers-base:latest` whose final filesystems have,
+  respectively, the correct `isolation` user, a wrong UID, a wrong GID,
+  a missing user, a wrong home, and a missing shell. Only the correct
+  image launches; each divergent one fails with the §7.4 contract
+  message, before any state-directory or credential-mount side effect
+  (asserted by inspecting the temp home after the failure). Both tiers
+  also assert after their jms invocations that no
+  `jms.container=abi-probe` container remains in `podman ps --all`
+  (probe-removal check, distinct from the mount-based leak sweep).
 
 Both tiers end in the leak sweep, and cleanup plus the sweep run from the
 EXIT trap, so a failure in any step still sweeps and reports — a partial
@@ -2370,12 +2670,13 @@ for non-enforceable wording, never for a behavioral claim).
 | ID | § | Claim | Tier | Test |
 | --- | --- | --- | --- | --- |
 | R3.1 | 3 | `isolation` UID/GID pinned to 1000; `ISOLATION_UID` constant and Containerfile line agree | unit | `test_isolation_uid_constant_matches_containerfile` (reads the Containerfile) |
-| R3.2 | 3 | every Podman-backend build stamps `jms.abi.isolation-uid` from the constant; macOS build argv is unchanged | golden | `test_build_argv_stamps_abi_label` (Podman: label present; apple/container: label absent; MIR-026) |
-| R3.3 | 3 | Podman launch validates the ABI label before mounting; missing label → rebuild hint; divergent UID → rejected naming the contract | unit | `test_podman_launch_rejects_stale_or_divergent_abi_image` (MIR-010 matrix: missing label, divergent UID, cached project image) |
+| R3.2 | 3 | no ABI label on any build; `verify_image_abi` probe argv (create/cp×3/rm) pinned on Podman; apple/container runs zero probe processes | golden + conformance | `test_abi_probe_argv_golden` (fixed injected probe name) and the no-op/no-process conformance case (MIR-022/026) |
+| R3.3 | 3 | Podman launch attests the final image's `isolation` user before `launch_plan()`: wrong UID, wrong GID, missing user, duplicate user, wrong home, missing shell, malformed passwd/group, and probe-subprocess failure each fail closed naming the contract; no state directory or credential mount side effect precedes the failure | unit | `test_verify_image_abi_matrix` over §7.4 tar-stream fixtures plus `test_abi_failure_precedes_launch_plan_side_effects` (MIR-022) |
+| R3.8 | 3 | probe container removed on success and on failure; orphaned `jms.container=abi-probe` containers selected by `clean` and purge; no image can preseed the probe value | conformance | probe-lifecycle cases in `test_verify_image_abi_matrix`; `abi-probe` rows added to `test_cleanup_provenance_predicate` (R5.8) |
 | R3.4 | 3 | rebuilt base image behaves unchanged on macOS | macOS-int | phase-3 rebuild-and-verify run of the full integration script |
 | R3.5 | 3 | Podman `local_name()` strips `localhost/` so tag-prefix ownership checks work unmodified | conformance | `local_name` cases in the conformance suite |
 | R3.6 | 3 | `image_exists` matches the `localhost/`-prefixed stored name | int-A | base built then `image_exists` true via a `jms build` no-op path; unit exit-code cases in R5.1 |
-| R3.7 | 3 | `FROM jmscontainers-base:latest` resolves locally under `--pull=never`; base absent fails fast, non-interactive, exit 125 | int-A | FROM-resolution check (`--network=none`, base present/absent; MIR-011) |
+| R3.7 | 3 | `FROM jmscontainers-base:latest` resolves locally under `--pull=missing` with no registry contact when present; base absent fails fast and non-interactively with the missing-base hint; a clean-store standalone project fetches its external base | int-A + int-B | FROM-resolution check via jms under external network isolation (MIR-011/MIR-029); clean-store standalone build (tier B) |
 | R4.1 | 4 | version first-line parsing: both formats, distro suffix truncation, malformed/non-numeric rejected, invalid UTF-8 fails closed | conformance | version-line fixtures (MIR-014) |
 | R4.2 | 4 | apple/container exact `min == max` pin and `JMS_RUNTIME_ACCEPT` unchanged | unit | existing `test_version_gate`, `test_runtime_accept_pin_admits_one_exact_newer_version` |
 | R4.3 | 4 | Podman floor (5, 4, 0); silent within major 5; one-line warning on major ≥ 6; `JMS_RUNTIME_ACCEPT` ignored on Podman | unit | `test_podman_version_floor_and_untested_major_warning` |
@@ -2390,7 +2691,8 @@ for non-enforceable wording, never for a behavioral claim).
 | R5.5 | 5 | `ps()` strict normalizer: full 64-char `Id`, top-level `Labels`; malformed record aborts | unit | `test_podman_ps_normalizer` over `ps` fixtures + malformed variants (MIR-007) |
 | R5.6 | 5 | stop may fail, forced delete authoritative, on both backends | unit | existing `test_stop_failure_does_not_abort_deletion` under both fakes |
 | R5.7 | 5 | partial cleanup/GC failures: attempt-all with aggregated diagnostics, exit 1 for `clean`/purge, warn-only GC, vanished-resource tolerated, second run converges | conformance | `test_cleanup_partial_failure_semantics` (MIR-032 matrix: failures injected at every stop/remove/untag position, both backends) |
-| R6.1 | 6 | per-backend build argv: label flag spelling, `--pull=always` base-with-pull, `--pull=never` project builds | golden | `test_build_argv_golden` per backend |
+| R5.8 | 5 | cleanup ownership requires `jms.project` **and** `jms.container=launch`, or `jms.container=abi-probe` (MIR-022 amendment); builds stamp the neutral value overriding any preseeded label; inherited-label, manual, and marker-absent containers never selected; dry-run and real cleanup select the same IDs | conformance + golden | `test_cleanup_provenance_predicate` (MIR-024 matrix: jms-launched, manual-from-jms-image, unrelated `jms-` name, malicious preseed, marker-absent, orphaned abi-probe) plus build/launch argv goldens pinning both label stamps on both backends |
+| R6.1 | 6 | per-backend build argv: label flag spelling, `--pull=always` base-with-pull, `--pull=missing` project builds | golden | `test_build_argv_golden` per backend |
 | R6.2 | 6 | v2 context-escape failure still trips `CONTEXT_NOTE` under Podman | int-B | existing escape test, parametrized |
 | R7.1 | 7.1 | explicit `--userns` on both variants: `keep-id:uid=1000,gid=1000` default, `host` under `--root` | golden | launch argv goldens (default, `--root`, manifest mounts, `--auth`) |
 | R7.2 | 7.1 | default launch: `/work` writes host-owned by the invoking user; in-container UID 1000 | int-A | ownership (default) assertion |
@@ -2433,8 +2735,9 @@ listed under those issues and the unit-test plan above.
   least-privilege permissions, per-ref concurrency cancellation, verified
   (not assumed) rootless prerequisites, and `podman info`, version, and
   `uname -m` output uploaded as an artifact (the architecture record per
-  MIR-030). Keep it out of required PR checks until the
-  documented stability criterion is met (MIR-020). The non-nested
+  MIR-030). It is not a required PR check for 1.1.0; promotion requires
+  4 consecutive green scheduled runs, evaluated after release
+  (MIR-020/MIR-033). The non-nested
   confirmation on real Debian 13 is a manual release-checklist step
   (§10). macOS integration remains manual (no nested virtualization on
   GH macOS runners).
@@ -2500,14 +2803,17 @@ clear "Linux support is not yet released" error.
    jobs stay green unchanged. Full suite green, golden argvs identical. No
    user-visible change on macOS.
 2. **Podman backend + unit coverage, gated.** Implement §§4–7 argv assembly
-   and normalizers behind `JMS_PODMAN_PREVIEW=1`; parametrized fakes; golden
-   argv tests; selection and laziness tests. No doc promises; the gate is
-   documented only as unsupported/dev-only.
+   and normalizers behind `JMS_PODMAN_PREVIEW=1`, including the
+   `verify_image_abi` probe with its tar-stream fixtures, probe argv
+   goldens, and the R3.3/R3.8 unit/conformance matrix (MIR-022);
+   parametrized fakes; golden argv tests; selection and laziness tests.
+   No doc promises; the gate is documented only as unsupported/dev-only.
 3. **Base image determinism.** Pin `isolation` to UID/GID 1000; update the
    Containerfile comments. Rebuild-and-verify on macOS to confirm no
    behavior change there.
 4. **Linux integration.** Parametrize `scripts/integration.sh` (CI sets the
-   gate); add the ownership and FROM-resolution assertions; add the opt-in
+   gate); add the ownership and FROM-resolution assertions, the tier-B
+   ABI divergence matrix and probe-removal checks (MIR-022); add the opt-in
    CI job. Fix whatever reality disagrees with (most likely candidates:
    short-name FROM resolution details, `podman images` field names across
    4.9/5.x, seccomp interactions with the agent CLIs).
