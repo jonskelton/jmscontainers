@@ -1781,6 +1781,17 @@ class MountGrammarTests(unittest.TestCase):
             self.assertEqual(messages[0], messages[1])
 
 
+class IsolationUidPinTests(unittest.TestCase):
+    """R3.1: ISOLATION_UID and the base Containerfile agree on the pin."""
+
+    def test_isolation_uid_constant_matches_containerfile(self):
+        containerfile = (pathlib.Path(JMS.__file__).parents[1] / "Containerfile").read_text()
+        uid = JMS.ISOLATION_UID
+        self.assertEqual(uid, 1000)
+        self.assertIn("groupadd -g %d isolation" % uid, containerfile)
+        self.assertIn("useradd -m -s /bin/bash -u %d -g %d isolation" % (uid, uid), containerfile)
+
+
 class MissingBaseHintTests(unittest.TestCase):
     """R3.7 (unit half): conditional wording, keyed to observed absence."""
 

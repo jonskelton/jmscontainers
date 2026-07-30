@@ -21,10 +21,13 @@ RUN dnf -y upgrade && \
 
 RUN npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai pnpm @ast-grep/cli
 
-# Non-root default user with passwordless sudo (throwaway VM — convenience wins).
+# Non-root default user with passwordless sudo (throwaway sandbox — convenience wins).
 # Pre-create the agent auth dirs so the runtime mounts land with sane ownership.
-# virtiofs squashes UIDs both ways (verified), so no host-UID alignment is needed.
-RUN useradd -m -s /bin/bash isolation && \
+# UID/GID are pinned to 1000 and paired with ISOLATION_UID in bin/jms: on macOS
+# virtiofs squashes UIDs both ways (verified), while on Linux rootless Podman's
+# --userns=keep-id:uid=1000,gid=1000 performs the equivalent alignment explicitly.
+RUN groupadd -g 1000 isolation && \
+    useradd -m -s /bin/bash -u 1000 -g 1000 isolation && \
     echo 'isolation ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/isolation && \
     chmod 440 /etc/sudoers.d/isolation && \
     mkdir -p /home/isolation/.claude /home/isolation/.codex \
