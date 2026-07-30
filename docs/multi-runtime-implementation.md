@@ -83,23 +83,23 @@ target rather than first-push acceptance material.
 | MIR-001 | Blocker | Runtime lifecycle | Resolved (design) |
 | MIR-002 | Blocker | Runtime/platform selection | Resolved (design) |
 | MIR-003 | Blocker | Consent and preflight ordering | Resolved (design) |
-| MIR-004 | Blocker | Backend interface | Open |
+| MIR-004 | Blocker | Backend interface | Resolved (design) |
 | MIR-005 | Blocker | Compatibility contract | Resolved (design) |
-| MIR-006 | Blocker | Podman image schema | Open (partially addressed) |
+| MIR-006 | Blocker | Podman image schema | Resolved (design) |
 | MIR-007 | Blocker | Podman container schema | Open (partially addressed) |
-| MIR-008 | Blocker | Rootless readiness | Open (partially addressed) |
+| MIR-008 | Blocker | Rootless readiness | Resolved (design) |
 | MIR-009 | Blocker | Deterministic user namespaces | Resolved (design) |
-| MIR-010 | Blocker | Isolation-user ABI | Open |
+| MIR-010 | Blocker | Isolation-user ABI | Resolved (design) |
 | MIR-011 | Blocker | Base-image resolution | Resolved (design) |
 | MIR-012 | Blocker | Security claims | Resolved (design) |
 | MIR-013 | High | SELinux policy | Resolved (design) |
-| MIR-014 | High | Version/support policy | Open (partially addressed) |
+| MIR-014 | High | Version/support policy | Resolved (design) |
 | MIR-015 | High | Linux prerequisites | Open (partially addressed) |
-| MIR-016 | High | Host filesystem permissions | Open |
-| MIR-017 | High | Nested sandbox behavior | Open (partially addressed) |
-| MIR-018 | High | Image identity and garbage collection | Open |
+| MIR-016 | High | Host filesystem permissions | Resolved (design) |
+| MIR-017 | High | Nested sandbox behavior | Resolved (design) |
+| MIR-018 | High | Image identity and garbage collection | Resolved (design) |
 | MIR-019 | High | Integration coverage | Open |
-| MIR-020 | High | CI definition | Open |
+| MIR-020 | High | CI definition | Resolved (design) |
 | MIR-021 | High | Rollout and documentation atomicity | Resolved (design) |
 
 "Resolved (design)" means the design ambiguity is settled in this document
@@ -192,7 +192,33 @@ acceptance tests the implementation must land before release.
 
 ### MIR-004 — The backend contract is incomplete and too implicit
 
-- **Status:** Open
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** §2's new "The backend protocol" subsection specifies the
+  complete protocol. In summary: the protocol is exactly five class
+  attributes plus fourteen methods split into two ownership classes —
+  **pure serializers** (`version_argv`, `parse_version`, `local_name`,
+  `mount_argument`, `build_argv`, `run_argv`, `stop_argv`, `remove_argv`,
+  `remove_image_argv`) that return argv/strings, touch no process,
+  filesystem, or environment, and are executed by their callers through
+  `runtime_run()`; and **executing queries** (`ensure_started`,
+  `image_exists`, `image_facts`, `ps`, plus the policy method
+  `validate_version`) that own their invocation and normalization but must
+  route every process through the module-level `runtime_run()` /
+  `runtime_json()`. Inputs/outputs are typed and normalized: `ImageFact`
+  is the MIR-006/018 `(id, refs, created, labels)` shape, `ps()` returns
+  the MIR-007 `{"id", "labels"}` shape, and `run_argv(plan)` takes a new
+  frozen `LaunchPlan` value whose field-by-field invariants (validation
+  state, env/mount ordering, purity of serialization) are enumerated in
+  §2. The error contract is single-channel: raise `JMSException` via
+  `fail()` with terminal-safe messages — never returned errors, raw
+  process objects, or printed diagnostics, with two enumerated output
+  exceptions (`ensure_started` daemon-start progress, the
+  `validate_version` untested-major warning). Stable monkeypatch seams
+  are, in order, `JMS.runtime_run`, the unchanged public free functions,
+  and the `_RUNTIME` cache (MIR-001); backends are prohibited from
+  bypassing `runtime_run()`, and command functions are prohibited from
+  branching on backend type, name, or platform. Conformance tests per
+  **Done when** land with the implementation.
 - **Affects:** §§2, 5, 6, and 7
 - **Finding:** The method table omits the later backend-specific
   `mount_argument()`, does not define the type or invariants of the `plan`
@@ -237,7 +263,21 @@ acceptance tests the implementation must land before release.
 
 ### MIR-006 — The proposed Podman image JSON schema is contradicted upstream
 
-- **Status:** Open (partially addressed 2026-07-29)
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** jms consumes raw `podman images --format json` through a
+  **strict fixture-backed normalizer**: the parser accepts exactly the shape
+  proven by the checked-in 4.9.3/5.4.2 fixtures (uppercase `Id`,
+  `Names` array-or-null, integer `Created`, top-level `Labels` map) and
+  fails closed on anything else. Handling rules: records with null/empty
+  `Names` (dangling) are skipped — dangling layers are never jms-owned; a
+  malformed value in any ownership-relevant field (`Id`, `Names`,
+  `Labels`) aborts the operation with an error rather than being silently
+  skipped; `<none>` names are treated as absent; digests and `RepoTags`
+  are ignored. No Go-template projection is used. Qualifying a new Podman
+  version requires capturing a new fixture first, consistent with the
+  MIR-014 forward-version policy. The fact shape itself is per image ID
+  (MIR-018, §5). Acceptance tests per **Done when** land with the
+  implementation.
 - **Progress (local qualification, Podman 5.4.2 rootless, Debian 13):**
   a real `podman images --format json` fixture is checked in as
   `tests/fixtures/podman-5.4.2-images.json`. On 5.4.2 the raw shape matches the
@@ -252,9 +292,8 @@ acceptance tests the implementation must land before release.
   uppercase `Id`, `Names` array, integer `Created`, top-level `Labels` —
   and adds dangling-image coverage: dangling records carry JSON null for
   both `Names` and `RepoTags`. Both ends of the version range now agree, so
-  a single normalizer can serve 4.9–5.4. Still open: the contract decision
-  (jms-owned projection vs. fixture-versioned normalizer) and the strict
-  handling rules for `<none>`/null names, digests, and malformed records.
+  a single normalizer can serve 4.9–5.4 — the basis for the strict
+  fixture-backed normalizer decision above.
 - **Affects:** §§5 and 9
 - **Finding:** The proposal assumes `Id`, `Names`, integer `Created`, and
   `Labels`. The current Podman manual's `podman images --format json` example
@@ -315,7 +354,23 @@ acceptance tests the implementation must land before release.
 
 ### MIR-008 — `podman info` is not a sufficient rootless health probe
 
-- **Status:** Open (partially addressed 2026-07-29)
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** `ensure_started()` performs **full `podman info` validation
+  and no create/run probe**. It parses `podman info --format json` and
+  requires: `host.serviceIsRemote == false`, `host.security.rootless ==
+  true`, non-empty `host.idMappings.uidmap`/`gidmap` including a
+  subordinate-range entry beyond the invoking user's single mapping, and a
+  present `store.graphDriverName`. Each failed check selects its own hint
+  (remote connection configured; rootful invocation; missing/undersized
+  `/etc/subuid`–`/etc/subgid` ranges; storage misconfiguration), and
+  Podman's stderr is preserved verbatim — the single universal
+  shadow-utils diagnosis is dropped. A cached minimal create/run probe is
+  rejected for 1.1.0: it adds latency and an image dependency plus
+  cache-invalidation rules, and the failure classes it would additionally
+  catch (OCI runtime, network helper) surface with full stderr at the
+  first real launch, after which the same evidence-keyed hint machinery
+  applies. §4 is updated accordingly. Acceptance tests per **Done when**
+  land with the implementation.
 - **Progress (local qualification, Podman 5.4.2 rootless, Debian 13):**
   a healthy-engine `podman info --format json` fixture is checked in as
   `tests/fixtures/podman-5.4.2-info.json` (sanitized: username and hostname
@@ -332,12 +387,10 @@ acceptance tests the implementation must land before release.
   present with identical casing on 4.9.3 (`host.serviceIsRemote`,
   `host.security.rootless`, `host.idMappings.uidmap`/`gidmap`,
   `host.ociRuntime.name`, `host.networkBackend`,
-  `store.graphDriverName`), so one parser covers the version range. Still
-  open: the readiness scope decision (which of these fields are checked,
-  and whether a cached create/run probe is included), failure-mode fixtures
-  (rootful, remote, missing/undersized ID maps, storage/OCI/network
-  failures, invalid JSON), and evidence-driven hints instead of the single
-  shadow-utils diagnosis.
+  `store.graphDriverName`), so one parser covers the version range. The
+  readiness scope is now decided above; the failure-mode fixtures
+  (rootful, remote, missing/undersized ID maps, storage failure, invalid
+  JSON) are acceptance work per **Done when**.
 - **Affects:** §§2, 4, and 9
 - **Finding:** Printing only `Store.GraphDriverName` proves that Podman can
   inspect storage; it does not prove the selected engine is local, Linux,
@@ -424,7 +477,25 @@ acceptance tests the implementation must land before release.
 
 ### MIR-010 — UID/GID 1000 must be an enforced image ABI, not a comment
 
-- **Status:** Open
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** The runtime-user ABI is enforced by an **image label plus a
+  preflight check on the Podman backend**. Every jms-driven build (base
+  and project) stamps `jms.abi.isolation-uid=1000` alongside the existing
+  labels, sourced from the single `ISOLATION_UID` constant in `bin/jms`
+  (§3) — one source of truth feeding the Containerfile line, the
+  `keep-id` mapping, and the label. Before any Podman launch, the backend
+  reads the image's labels and fails closed — before mounting
+  credentials, shell state, or the project — when the label is missing
+  (stale pre-1.1.0 image → "rebuild with `jms build`" hint) or differs
+  from the constant (a project Containerfile that recreates `isolation`
+  at another UID → rejected with an error naming the label contract;
+  deliberately divergent images are unsupported, not accommodated).
+  Because OCI labels inherit through `FROM`, project images carry the
+  base's stamp automatically. macOS launch behavior is unchanged in
+  1.1.0: virtiofs squashing makes the mapping non-load-bearing there, and
+  skipping the check preserves the compatibility contract for cached
+  images. Acceptance tests per **Done when** land with the
+  implementation.
 - **Affects:** §§3 and 7.1
 - **Finding:** A constant in `bin/jms` and a literal in the Containerfile are
   two sources of truth, not one. More importantly, project Containerfiles are
@@ -567,15 +638,27 @@ acceptance tests the implementation must land before release.
 
 ### MIR-014 — A minimum Podman version is not a support matrix
 
-- **Status:** Open (partially addressed 2026-07-29)
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** The forward-version policy is **warn on untested major**:
+  Podman ≥ 5.4 within major 5 is accepted silently; a future major
+  (≥ 6.0.0) proceeds but prints a one-line warning that this Podman
+  major has not been qualified with this jms release. There is no hard
+  maximum and no Podman escape-hatch variable; `JMS_RUNTIME_ACCEPT`
+  stays apple/container-only (§4). Version strings: accept a non-numeric
+  suffix on the patch component (distro builds such as `5.4.2-dev`,
+  `5.4.2+ds1`), truncated after the numeric prefix; a string not starting
+  with numeric `major.minor.patch` is rejected as unparseable. Only the
+  local client version is checked — remote services are rejected at
+  readiness (MIR-002), so client and engine are the same binary on every
+  supported configuration. The remaining matrix dimensions (kernel,
+  cgroup manager, OCI runtime, storage driver, network backend) are
+  recorded per release in the release checklist for the Debian 13 target
+  (§10). Parser fixtures and the deliberate untested-major behavior per
+  **Done when** land with the implementation.
 - **Progress (2026-07-29):** the MIR-015 scope decision narrows the matrix
   materially: the first push is Debian 13 with its packaged rootless Podman
-  5.4.x only, `version_min = (5, 4, 0)`, no maximum; recent Fedora and
-  Ubuntu are declared mid-term targets. Still open: the forward-version
-  policy for untested future majors, accepted version-string forms (distro
-  suffixes), client-versus-service version handling, and recording the
-  remaining matrix dimensions (kernel, cgroup manager, OCI runtime, storage
-  driver, network backend) for the Debian 13 target.
+  5.4.x only, `version_min = (5, 4, 0)`; recent Fedora and Ubuntu are
+  declared mid-term targets.
 - **Affects:** §§4, 9, 10, and 11
 - **Finding:** "Podman >= 4.9 on Linux" leaves distro, architecture, kernel,
   cgroup version/manager, OCI runtime, storage driver, network backend, and
@@ -631,7 +714,19 @@ acceptance tests the implementation must land before release.
 
 ### MIR-016 — Host group/ACL access and ownership parity are not covered
 
-- **Status:** Open
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** The 1.1.0 host-permission contract is **owner-based only**:
+  supported project trees, extra mounts, and shell/credential state are
+  those readable/writable through the invoking user's own UID (any value,
+  not just 1000) and primary GID, which `keep-id:uid=1000,gid=1000` maps
+  faithfully for reads and writes. Access that exists only via
+  supplementary groups, ACL grants, or setgid directories is a
+  **documented limitation** in README and SECURITY.md — no preflight
+  detection is added (owner/ACL heuristics false-positive too easily) and
+  no `--group-add keep-groups` is passed (its portability across OCI
+  runtimes is exactly the unqualified surface this issue flags).
+  Supporting supplementary groups becomes entry criteria for a future
+  release if the limitation proves painful in practice.
 - **Affects:** §§7.1 and 9
 - **Finding:** Mapping only the invoking UID/GID does not establish behavior
   for project files accessible through supplementary groups, ACLs, setgid
@@ -643,13 +738,30 @@ acceptance tests the implementation must land before release.
   decide whether supplementary groups/ACL-only projects are supported,
   detected, or documented as limitations. Include both reads and writes for
   `/work`, extra mounts, shell state, and credential state.
-- **Done when:** Integration tests use a non-1000 host UID/GID and cover
-  user-owned, group-owned/setgid, ACL-granted, read-only, and denied paths for
-  normal and `--root` launches.
+- **Done when (1.1.0):** Integration tests use a non-1000 host UID/GID and
+  cover user-owned, read-only, and denied paths for normal and `--root`
+  launches; README/SECURITY.md state the supplementary-group/ACL/setgid
+  limitation in the terms of the decision above.
+- **Done when (follow-up, if supplementary groups are promoted):**
+  group-owned/setgid and ACL-granted paths are covered by integration
+  tests under the then-qualified mechanism.
 
 ### MIR-017 — Nested sandbox behavior cannot remain speculative at release
 
-- **Status:** Open (partially addressed 2026-07-29)
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** 1.1.0 **documents the limitation only**. SECURITY.md and
+  README state that bwrap-based inner sandboxes fail inside the container
+  on the masked `/proc` (reproduced on 5.4.2 and 4.9.3, evidence below)
+  and that agents should run without their inner sandbox — they are
+  already inside jms's boundary. No unmask workaround is documented as a
+  runnable command, and jms never passes `unmask` itself; qualifying a
+  narrower `unmask=/proc/*` opt-in is deferred until a concrete need
+  appears, precisely because documenting it would bless unmasking kernel
+  interfaces inside the boundary. Testing the shipped Claude, Codex, and
+  OpenCode launchers lands as integration assertions per **Done when**
+  (recording agent and sandbox versions); if a launcher hard-requires
+  bwrap, the recorded behavior becomes part of the documented limitation,
+  not grounds for weakening container defaults (§12).
 - **Progress (local reproduction, Podman 5.4.2 rootless, Debian 13,
   bubblewrap 0.11.0 in the Fedora 44 image, jms-shaped launch flags
   `--userns=keep-id:uid=1000,gid=1000 --user isolation --security-opt
@@ -665,11 +777,9 @@ acceptance tests the implementation must land before release.
   2026-07-29 addendum: the same three-way reproduction (unshare-user works;
   full sandbox fails on masked `/proc`; `unmask=ALL` makes it succeed)
   holds on Podman 4.9.3 rootless under Ubuntu 24.04 (nested capture, so
-  kernel-adjacent — re-confirm on a real runner). Still
-  open: testing the actual shipped Claude/Codex/OpenCode launchers, whether
-  a narrower unmask (e.g. `unmask=/proc/*`) suffices, and the decision on
-  whether any workaround is documented given its security consequence
-  (unmasking kernel interfaces inside the boundary).
+  kernel-adjacent — re-confirm on a real runner). Testing the shipped
+  Claude/Codex/OpenCode launchers is acceptance work per **Done when**;
+  the workaround-documentation question is settled by the decision above.
 - **Affects:** §§7.3, 8, 9, and 10
 - **Finding:** The proposal says bwrap "may fail", says the Codex native Linux
   sandbox is unaffected, and suggests disabling an inner sandbox without a
@@ -686,7 +796,25 @@ acceptance tests the implementation must land before release.
 
 ### MIR-018 — Image identity, multi-tag behavior, and GC semantics are unclear
 
-- **Status:** Open
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** Retention and GC are **per image ID, with tags as
+  aliases**. `image_facts()` normalizes to `(id, refs, created, labels)` —
+  one fact per image identity carrying all of its names — and `created`
+  is normalized to a single internal type (Unix epoch seconds) on both
+  backends: parsed from the ISO-8601 `creationDate` on apple/container,
+  taken directly from integer `Created` on Podman. Retention counts
+  distinct image IDs, so a multi-tagged image is one retained unit, and
+  duplicate-removal scheduling is impossible by construction. Deletion is
+  issued **per jms-owned ref** (untagging): the image itself disappears
+  when its last name is removed, and an image that also bears a
+  non-jms-owned tag loses only its jms tags — jms never deletes by bare
+  ID, so it cannot destroy a user's unrelated alias of the same image.
+  Ownership still requires label **and** tag prefix, now evaluated per
+  ref within a fact. Dangling images are never jms-owned and are skipped
+  (MIR-006). §§2 and 5 are updated accordingly. Verifying that
+  apple/container's list output supports this identity model, plus
+  deletion ordering and partial-failure behavior for base/child images,
+  is part of the **Done when** conformance tests.
 - **Affects:** §5
 - **Finding:** Expanding one Podman image into one fact per name makes retention
   count tags rather than image identities and can schedule multiple removals
@@ -722,7 +850,27 @@ acceptance tests the implementation must land before release.
 
 ### MIR-020 — The CI job is not sufficiently defined or reproducible
 
-- **Status:** Open
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** The `integration-linux` job runs on a **pinned
+  `ubuntu-24.04` runner label** and executes the integration inside a
+  **`debian:13` container using Debian's packaged rootless Podman 5.4**
+  (nested, matching the nested-capture methodology already used for the
+  4.9.3 qualification evidence). This pins the actual first-push userland
+  and Podman build; the accepted caveat is that the kernel is the
+  runner's Ubuntu kernel, so the non-nested confirmation on real
+  Debian 13 remains a manual release-checklist step (§10) — the
+  MIR-009/MIR-011 "CI on the first-push substrate" acceptance is
+  satisfied by that checklist run plus this recurring nested job, not by
+  CI alone. Workflow contract: `workflow_dispatch` plus a weekly
+  `schedule` trigger; an explicit job timeout; least-privilege
+  `permissions`; per-ref concurrency with cancellation; setup steps that
+  *verify* (not assume) rootless prerequisites inside the Debian
+  container; `podman info` and version output captured as a build
+  artifact with no secrets; cleanup runs on cancellation where possible;
+  and promotion to a required PR check only after a documented stability
+  criterion (e.g. a recorded streak of consecutive green scheduled runs)
+  is met. The workflow lands in phase 4 (§11); §9 is updated
+  accordingly. Acceptance per **Done when**.
 - **Affects:** §9
 - **Finding:** "Opt-in or nightly" is not a workflow definition.
   `ubuntu-latest` moves over time, preinstalled Podman and subordinate-ID
@@ -913,19 +1061,182 @@ except FileNotFoundError:
 
 Every current `["container", ...]` literal becomes `[RUNTIME.exe, ...]` where
 the subcommand grammar is shared, or a call to a backend method where it is
-not. The methods that must exist on the backend, and nothing more:
+not.
 
-| Backend method | Returns |
-| --- | --- |
-| `version_argv()` / `parse_version(first_line)` | argv; `(major, minor, patch)` or `None` |
-| `ensure_started()` | raises on an unusable runtime (see §4) |
-| `image_exists(image)` | bool (see §5) |
-| `image_facts()` | normalized `[(ref, created_key, labels)]` (see §5) |
-| `local_name(ref)` | ref with registry/localhost prefix stripped |
-| `build_argv(context, tag, labels, no_cache, pull)` | argv (see §6) |
-| `run_argv(plan)` | argv (see §7) |
-| `ps()` | normalized `[{"id", "labels"}]` |
-| `stop_argv(id)` / `remove_argv(id)` / `remove_image_argv(ref)` | argv |
+`runtime_json()` keeps owning UTF-8 decoding and JSON-syntax failures, so
+both backends share one malformed-output error path; each backend's
+normalizer then owns shape validation on the parsed object.
+
+### The backend protocol (resolves MIR-004)
+
+The protocol below is complete: a backend implements exactly the five class
+attributes shown above (`name`, `exe`, `install_hint`, `version_min`,
+`version_max`) plus the methods in the two tables below, and nothing else
+about a backend is visible outside it.
+
+#### Normalized types
+
+All data crossing the protocol boundary is normalized. Command functions
+never see raw runtime JSON, stderr bytes, or `subprocess` objects.
+
+```python
+Version = tuple[int, int, int]
+
+ImageFact = tuple[               # one fact per image identity (MIR-018)
+    str,                         # id: full, untruncated image identity
+    tuple[str, ...],             # refs: every name exactly as the runtime
+                                 #   stores it ("localhost/…" preserved);
+                                 #   always non-empty — dangling images are
+                                 #   skipped by rule (MIR-006)
+    int,                         # created: Unix epoch seconds
+    dict[str, str],              # labels
+]
+
+ContainerFact = {"id": str,      # full, untruncated, NUL-free
+                 "labels": dict[str, str]}
+
+Mount = tuple[bytes, str, bool]  # (host source, container target, readonly)
+
+@dataclass(frozen=True)
+class LaunchPlan:
+    name: str                            # container name (given or generated)
+    user: str                            # "isolation" | "root"
+    root: bool                           # True iff --root; drives the Podman
+                                         #   --userns variant (§7.1)
+    tty: bool                            # append the runtime's --tty
+    workdir: str                         # "/work" or "/work/<inner>"
+    entrypoint: str                      # entry[0]
+    image: str
+    labels: tuple[tuple[str, str], ...]  # ordered; today exactly
+                                         #   (("jms.project", pid),)
+    env: tuple[tuple[str, str], ...]     # ordered, see invariants
+    mounts: tuple[Mount, ...]            # ordered, see invariants
+    command: tuple[str, ...]             # entry[1:] + extra argv
+```
+
+`LaunchPlan` invariants, established by the plan builder (`launch_plan()`,
+which stays a runtime-agnostic free function and now returns a `LaunchPlan`)
+and relied on by both serializers:
+
+- Every `str` field is already NUL-free valid UTF-8: user-supplied values
+  pass `runtime_argument()` at the CLI boundary, and `runtime_run()`
+  re-checks the final argv as today.
+- Mount **targets** are already validated (`valid_target`,
+  reserved-target/overlap checks). Mount **sources** are absolute host
+  paths still in bytes: grammar validation (`runtime_path()`: NUL, UTF-8,
+  no `,`/`=`) happens at serialization time inside the backend's
+  `mount_argument()`, with identical rules and error text on both backends.
+- Ordering is fixed by the plan and preserved verbatim by `run_argv()`:
+  `env` is `CLAUDE_CONFIG_DIR` first (auth only) then manifest env sorted
+  by key; `mounts` is `/work`, manifest mounts in manifest order, the
+  read-only shell-state mount, then agent-state mounts (auth only). The
+  golden argv tests (§9) pin this per backend.
+- Plan construction performs all filesystem side effects
+  (`ensure_shell_state_directory`, `ensure_agent_state_directory`);
+  `run_argv()` performs none.
+
+#### Methods and execution ownership
+
+**Class A — pure serializers and parsers.** No subprocess, no filesystem, no
+environment reads; deterministic functions of their arguments plus class
+attributes (the golden argv tests rely on this). The *caller* executes any
+returned argv through `runtime_run()`:
+
+| Method | Signature | Executed by |
+| --- | --- | --- |
+| `version_argv` | `() -> list[str]` | `runtime_ready()` |
+| `parse_version` | `(first_line: str) -> Version \| None` | — (pure parse; `None` = unparseable, converted to a failure by `runtime_ready()`) |
+| `local_name` | `(ref: str) -> str` | — |
+| `mount_argument` | `(source: bytes \| str, target: str, readonly: bool = False) -> str` | — (called by `run_argv()`; grammar per §7.2) |
+| `build_argv` | `(context: str, tag: str, labels: dict[str, str], *, no_cache: bool, pull: bool, project: bool) -> list[str]` | `run_build()` with `capture=False` (context already validated via `runtime_path()` by `run_build()`, as today) |
+| `run_argv` | `(plan: LaunchPlan) -> list[str]` | `cmd_launch` via `runtime_run(argv, replace=True)` |
+| `stop_argv` / `remove_argv` | `(container_id: str) -> list[str]` | `cmd_clean` (stop with `check=False`; forced remove authoritative, §5) |
+| `remove_image_argv` | `(ref: str) -> list[str]` | `cmd_clean`, `gc_project_images` |
+
+**Class B — executing queries and policy.** These own their invocation and
+normalization because their success criteria are backend-specific, but every
+process they start MUST cross the module-level `runtime_run()` /
+`runtime_json()` — looked up as a module attribute at call time, never
+`subprocess` directly and never a stored/bound reference — so the tests'
+monkeypatch intercepts every execution on both backends:
+
+| Method | Signature | Backend-specific part |
+| --- | --- | --- |
+| `validate_version` | `(parsed: Version, first_line: str) -> None` | policy: exact `min == max` pin (apple/container, honoring `JMS_RUNTIME_ACCEPT`) vs. min-only plus warn-on-untested-major (Podman, §4/MIR-014). Runs no process; grouped here because it reads the environment and may print one warning line to stderr |
+| `ensure_started` | `() -> None` | apple/container: `system status`/`system start` dance; Podman: full `podman info --format json` validation, no create/run probe (§4, MIR-008) |
+| `image_exists` | `(image: str) -> bool` | apple/container: exit 0 vs. the exact `Error: image not found: <ref>` stderr line; Podman: `image exists` exit 0/1, anything else a hard failure (§5) |
+| `image_facts` | `() -> list[ImageFact]` | per-backend strict, fixture-backed, fail-closed normalizer (§5, MIR-006/018) |
+| `ps` | `() -> list[ContainerFact]` | per-backend strict, fail-closed normalizer (§5, MIR-007); id/label validation (string, NUL-free, dict) shared |
+
+#### Free-function surface and monkeypatch seams
+
+The public surface stays the existing free functions, which delegate to
+`runtime()` internally: `runtime_ready()` (runs `version_argv()` through
+`runtime_run(check=False)`, decodes the first line — invalid UTF-8 or a
+nonzero exit or a `None` parse fails closed with the output quoted — then
+calls `validate_version()` and `ensure_started()`), `image_exists()`,
+`image_facts()` (replacing `image_records()`/`image_record_facts()`),
+`local_name()`, `run_build()`, `launch_plan()`, and `container_records()`
+(delegating to `ps()`). The stable monkeypatching seams, in order of
+authority:
+
+1. `JMS.runtime_run` — the sole process boundary, exactly as today. Its
+   only changes: the argv[0] assertion becomes `argv[0] == runtime().exe`,
+   and the `FileNotFoundError` hint becomes `runtime().install_hint`.
+2. The free functions above — existing tests that patch
+   `JMS.image_exists`, `JMS.runtime_ready`, etc. keep working because
+   command functions call them, never the backend directly.
+3. `JMS._RUNTIME` — tests install a backend by assigning the cache
+   (MIR-001), bypassing selection entirely.
+
+#### Error contract
+
+- The only failure channel is raising `JMSException` via `fail()`, with
+  terminal-safe messages (`quote()`/`terminal_safe_text()`) — runtime
+  output is untrusted bytes. Methods never return error strings, raw
+  stderr, or `subprocess` results to commands; `parse_version`'s `None` is
+  the single sentinel, and `runtime_ready()` converts it to a failure
+  immediately.
+- Executing queries preserve the runtime's stderr, quoted, in the raised
+  message, and where a check has a known cause they append the
+  evidence-keyed hint (§4, MIR-008) — never a universal diagnosis.
+- Malformed values in ownership-relevant fields abort the whole operation;
+  they are never silently skipped (MIR-006/007). Podman dangling images
+  are skipped by rule, not by error.
+- No backend method calls `sys.exit`, prompts, or prints, with exactly two
+  exceptions: `ensure_started()` may print daemon-start progress on stdout
+  (apple/container's "starting container runtime..."), and
+  `validate_version()` may print its one-line untested-major warning on
+  stderr.
+- Exit codes are unchanged: runtime failures raise `JMSException` (exit 1);
+  selection/usage failures raise `UsageError` (exit 2, §2).
+
+#### Prohibitions
+
+Each is enforced by a conformance test, not convention:
+
+- No command function reads `runtime().name`, isinstance-checks a backend,
+  or branches on `sys.platform` for runtime behavior. Anything
+  backend-specific must be a protocol method.
+- No backend method reaches `subprocess` (or `os.execvp`) except through
+  the module-level `runtime_run()`.
+- No backend method reads the trust store, prompts for consent, or mutates
+  the filesystem — consent, state directories, and discovery are
+  runtime-agnostic and stay outside the protocol.
+- Class A methods perform no I/O of any kind.
+
+#### Conformance suite
+
+One parametrized test module (the MIR-004 **Done when**) runs both backends
+through identical scenarios via the per-backend fakes (§9): version first
+lines (valid, distro-suffixed, malformed, invalid UTF-8); image/`ps`/`info`
+payloads (fixture-true, malformed records, wrong types, invalid UTF-8
+bytes, non-array top level); `image_exists` tri-state (present, absent,
+hard error with stderr preserved); mount serialization (plain, readonly,
+and rejection of `,`, `=`, NUL, and non-UTF-8 in sources/targets); and
+golden argv comparisons for build and every launch variant. A seam test
+patches `runtime_run` and asserts no backend operation reaches
+`subprocess` any other way.
 
 ---
 
@@ -945,7 +1256,11 @@ Two small hardening edits make it deterministic across backends:
    ```
 
    Keep `1000` in one place — a `ISOLATION_UID = 1000` constant in `bin/jms`
-   and this line — and note the pairing in a comment on both sides.
+   and this line — and note the pairing in a comment on both sides. The
+   constant also feeds the `jms.abi.isolation-uid=1000` label stamped on
+   every jms-driven build, which Podman launches validate before mounting
+   anything (MIR-010); a stale or divergent image fails closed with a
+   rebuild hint.
 
 2. **Update the virtiofs comment** (`Containerfile` line 26) to describe both
    backends: virtiofs squashes UIDs on macOS; on Linux, `keep-id` performs
@@ -1003,9 +1318,12 @@ and the CLI surface jms uses (`run`, `build`, `image exists`,
   When the mid-term Ubuntu 24.04 target is promoted, the floor is
   revisited: its packaged Podman is 4.9.x, already pre-qualified by the
   fixture evidence in §0.
-- No maximum. Record the newest *tested* version in the release checklist
-  instead. `JMS_RUNTIME_ACCEPT` remains meaningful only for the
-  apple/container backend; document that.
+- No hard maximum, but **warn on an untested major** (MIR-014): versions
+  within major 5 are accepted silently; a future major (≥ 6.0.0) proceeds
+  with a one-line "not qualified with this jms release" warning. Record
+  the newest *tested* version in the release checklist.
+  `JMS_RUNTIME_ACCEPT` remains meaningful only for the apple/container
+  backend; document that.
 
 ### Startup / health probe
 
@@ -1018,13 +1336,19 @@ the real-world rootless failure modes (missing `newuidmap`, unconfigured
 podman info --format json
 ```
 
-The JSON is parsed for two things: `host.serviceIsRemote` must be false
-(remote Podman is unsupported, §2/MIR-002) and `store.graphDriverName` must
-be present, proving the storage stack initializes. (Whether readiness must
-validate more than this — ID mappings, OCI runtime, network helper — is
-MIR-008, still open.)
+The JSON is validated in full (MIR-008): `host.serviceIsRemote` must be
+false (remote Podman is unsupported, §2/MIR-002); `host.security.rootless`
+must be true; `host.idMappings.uidmap`/`gidmap` must be non-empty and
+include a subordinate-range entry beyond the invoking user's single
+mapping; and `store.graphDriverName` must be present, proving the storage
+stack initializes. No create/run probe is performed — the residual failure
+classes (OCI runtime, network helper) surface with full stderr at the
+first real launch.
 
-On failure, surface Podman's stderr plus a targeted hint:
+On failure, surface Podman's stderr verbatim plus a hint keyed to the
+check that failed — remote connection configured, rootful invocation,
+missing/undersized `/etc/subuid`–`/etc/subgid` ranges (the shadow-utils
+hint below), or storage misconfiguration — never one universal diagnosis:
 
 ```
 rootless podman is not usable: <stderr>
@@ -1032,8 +1356,8 @@ hint: rootless podman needs shadow-utils (newuidmap/newgidmap) and an
 entry for your user in /etc/subuid and /etc/subgid; see podman(1).
 ```
 
-This converts the single most common Linux support issue into a
-self-explanatory error.
+This converts each common Linux support issue into a self-explanatory
+error without misdiagnosing the others.
 
 **Ordering (MIR-003):** the current consent-first order is unchanged on both
 backends: project `build` and `launch` call `approve()` before
@@ -1070,24 +1394,29 @@ This also transparently handles the `localhost/` prefix for local tags.
 ```
 
 Replace the current `image_record_facts()` with a backend method
-`image_facts()` returning the already-normalized
-`(ref, created_key, labels)` tuples the callers sort and filter on:
+`image_facts()` returning already-normalized `(id, refs, created, labels)`
+tuples — **one fact per image identity**, carrying all of its names
+(MIR-018). Parsing is a strict fixture-backed normalizer (MIR-006): the
+shape proven by the checked-in fixtures is accepted, anything else fails
+closed, and malformed ownership-relevant fields abort rather than skip.
 
-- apple/container: exactly the current extraction; `created_key` is the
-  ISO-8601 `creationDate` string (sorts correctly lexicographically).
-- Podman: one tuple **per name** in `Names` (a multi-tagged image is
-  multiple refs to the callers, same as today's semantics); skip records with
-  empty/None `Names` (dangling layers are never jms-owned); `created_key` is
-  the integer `Created`.
+- apple/container: the current extraction, regrouped by image identity;
+  `created` parsed from the ISO-8601 `creationDate` string.
+- Podman: `refs` from `Names`; skip records with null/empty `Names`
+  (dangling layers are never jms-owned); `created` from the integer
+  `Created`.
 
-`created_key` types must never be compared across backends — they aren't:
-each invocation runs one backend. Keep the sort call sites unchanged.
+`created` is one internal type — Unix epoch seconds — on both backends, so
+sorting is uniform and never compares backend-local representations.
 
-`gc_project_images` and `cmd_clean --images` then work verbatim, because
-their ownership logic (label **and** tag prefix) operates on normalized
-facts. The label-inheritance caveat (`bin/jms:869`) applies identically to
-Podman — OCI labels inherit through `FROM` there too — so the dual check
-stays load-bearing on both backends.
+Retention in `gc_project_images` counts distinct image IDs (a multi-tagged
+image is one retained unit); ownership still requires label **and** tag
+prefix, evaluated per ref within a fact. Deletion untags per jms-owned ref
+rather than deleting by bare ID: the image disappears when its last name
+goes, and a non-jms alias of the same image survives. The
+label-inheritance caveat (`bin/jms:869`) applies identically to Podman —
+OCI labels inherit through `FROM` there too — so the dual check stays
+load-bearing on both backends.
 
 ### `container_records` → `ps()`
 
@@ -1238,11 +1567,13 @@ capability set, but mounting a fresh `/proc` inside it fails with
 `Can't mount proc on /newroot/proc: Operation not permitted`, because
 Podman masks `/proc` paths in the container. Launching the container with
 `--security-opt unmask=ALL` makes the same bwrap invocation succeed —
-but that unmasks kernel interfaces inside the boundary, so jms does **not**
-pass it by default and must not weaken the container defaults globally.
-Document the limitation; a project that truly needs bwrap can either run
-the agent without its inner sandbox (it is already inside jms's boundary)
-or accept the unmask trade-off explicitly. Codex's native Linux sandbox
+but that unmasks kernel interfaces inside the boundary, so jms never
+passes it and must not weaken the container defaults globally. Per
+MIR-017, 1.1.0 documents the limitation only — agents should run without
+their inner sandbox, since they are already inside jms's boundary — and
+no unmask workaround is documented as a runnable command; a narrower
+`unmask=/proc/*` opt-in is deferred until a concrete need appears.
+Codex's native Linux sandbox
 (Landlock/seccomp) is expected to be unaffected — still to be verified
 against the shipped agent CLIs (MIR-017).
 
@@ -1348,16 +1679,18 @@ Parametrize on the selected runtime instead of hard-requiring `container`:
 
 - Existing matrix (`make test` on Ubuntu 3.11/3.14 + macOS) unchanged; it
   now also exercises the Podman fake on the Ubuntu legs automatically.
-- Add an **opt-in or nightly** job `integration-linux` on `ubuntu-latest`
-  running `scripts/integration.sh` with rootless Podman — GitHub's Ubuntu
-  runners ship Podman preinstalled and subuid-configured, so this is the
-  first time real-runtime coverage can run in CI at all. Note the runner's
-  preinstalled Podman is 4.9.x, below the first-push floor of 5.4 (§4,
-  MIR-015); the job must either provision Podman ≥ 5.4 on the runner or run
-  the integration inside a Debian 13 environment — choosing that mechanism
-  is part of MIR-020. Keep it out of required PR checks initially (network
-  + registry flakiness), promote once it proves stable. macOS integration
-  remains manual (no nested virtualization on GH macOS runners).
+- Add the `integration-linux` job per the MIR-020 decision: pinned
+  `ubuntu-24.04` runner, integration executed inside a `debian:13`
+  container with Debian's packaged rootless Podman 5.4 (nested — the
+  first-push userland on the runner's kernel), triggered by
+  `workflow_dispatch` plus a weekly `schedule`, with an explicit timeout,
+  least-privilege permissions, per-ref concurrency cancellation, verified
+  (not assumed) rootless prerequisites, and `podman info`/version output
+  uploaded as an artifact. Keep it out of required PR checks until the
+  documented stability criterion is met (MIR-020). The non-nested
+  confirmation on real Debian 13 is a manual release-checklist step
+  (§10). macOS integration remains manual (no nested virtualization on
+  GH macOS runners).
 
 ---
 
@@ -1365,9 +1698,10 @@ Parametrize on the selected runtime instead of hard-requiring `container`:
 
 - `README.md`: platform section becomes "Apple Silicon Mac (apple/container)
   **or** Debian 13 with rootless Podman ≥ 5.4", naming recent Fedora and
-  Ubuntu as mid-term targets that are out of scope for 1.1.0 (MIR-015) and
-  SELinux-enforcing hosts as unqualified (MIR-013); install instructions
-  per platform; stack line gains a Linux variant
+  Ubuntu as mid-term targets that are out of scope for 1.1.0 (MIR-015),
+  SELinux-enforcing hosts as unqualified (MIR-013), and
+  supplementary-group/ACL-only project access as unsupported (MIR-016);
+  install instructions per platform; stack line gains a Linux variant
   (`Linux → rootless podman (user namespace) → Fedora → …`); isolation
   wording per §8.
 - `docs/cli.md`: new "Runtimes" section (selection rules, per-backend
@@ -1376,7 +1710,9 @@ Parametrize on the selected runtime instead of hard-requiring `container`:
   unchanged.
 - `SECURITY.md`: per-platform boundary statement (§8); `label=disable`
   rationale and the SELinux-enforcing-host limitation (§7.2, MIR-013);
-  rootless-only statement.
+  rootless-only statement; the owner-based host-permission contract
+  (MIR-016); the nested-bwrap limitation with no unmask recommendation
+  (§7.3, MIR-017).
 - `docs/release-checklist.md`: add "tested Podman version" recording and a
   Linux integration run.
 - `completions/jms.bash`: no runtime references — unchanged.
