@@ -75,7 +75,7 @@ acceptance tests.
 | MIR-033 | High | Nested CI execution contract | Open (§11) |
 | MIR-034 | Blocker | Cached-image ABI attestation | Resolved (§§6, 7.4, 12) |
 | MIR-035 | Blocker | Cleanup result protocol | Resolved (§§2, 5) |
-| MIR-036 | Blocker | ABI-probe volume side effects | Open |
+| MIR-036 | Blocker | ABI-probe volume side effects | Resolved (§7.4, §9) |
 | MIR-037 | High | Shell ABI observation | Open |
 | MIR-038 | High | Duplicate image identities | Open |
 | MIR-039 | High | Linux support-scope enforcement | Open |
@@ -149,7 +149,7 @@ acceptance tests.
 
 ### MIR-036 — The ABI probe can create persistent image-declared volumes
 
-- **Status:** Open — blocker
+- **Status:** Resolved 2026-07-29
 - **Affects:** §§2, 7.4, 9, R3.2, R3.3, R3.8, and the probe argv golden
 - **Finding:** `podman create` defaults `--image-volume` to `bind`; for every
   built-in `VOLUME` in an untrusted project image, Podman creates an
@@ -159,17 +159,21 @@ acceptance tests.
   the probe container itself is removed. Podman 5.4 documents both the
   default and `--image-volume=ignore`:
   <https://docs.podman.io/en/v5.4.2/markdown/podman-create.1.html#image-volume-bind-tmpfs-ignore>.
-- **Required resolution:** Make the probe ignore image-declared volumes
-  explicitly (normally `podman create --image-volume=ignore`) and qualify
-  that flag on the minimum supported Podman. Decide whether
-  `podman rm --volumes --force` is also required as defense in depth, and
-  include all side-effect-suppression flags in the golden argv and
-  ambient-configuration tests.
+- **Resolution:** The probe's create argv gains `--image-volume=ignore`
+  (documented on Podman 5.4, the minimum supported version, and qualified
+  as part of the R3.10 tests), and the removal becomes
+  `podman rm --volumes --force` as defense in depth — if a volume were
+  ever created despite the flag, removal takes it too. Both flags are
+  pinned in the probe argv golden, and an ambient-configuration test
+  proves `containers.conf` cannot restore image-volume creation. Recorded
+  in §7.4 and §9; tests in R3.10.
 - **Done when:** An integration fixture whose Containerfile declares one or
-  more `VOLUME`s leaves the exact pre-probe volume set unchanged after both a
-  successful attestation and a forced attestation failure. Unit/golden tests
-  pin the create/remove argv and prove ambient `containers.conf` cannot
-  restore image-volume creation.
+  more `VOLUME`s (tier B, §9) leaves the exact pre-probe volume set
+  unchanged after both a successful attestation and a forced attestation
+  failure. Unit/golden tests (`test_abi_probe_argv_golden`,
+  `test_abi_probe_ambient_image_volume_config`, R3.10) pin the
+  create/remove argv and prove ambient `containers.conf` cannot restore
+  image-volume creation.
 
 ### MIR-037 — The shell probe is both “strictly parsed” and discarded
 
@@ -589,7 +593,8 @@ executions); removal classification (`stop_container`/`remove_container`/
 `remove_image` fed success, qualified absence, wrong-exit-status
 not-found text, invalid UTF-8, and hard failure — MIR-035, R5.9); and
 golden argv comparisons for build, every launch variant, and the probe
-argv triplet (fixed injected probe name). A seam test patches
+argv set including its volume-suppression flags (fixed injected probe
+name). A seam test patches
 `runtime_run` and asserts no backend operation reaches `subprocess` any
 other way.
 
@@ -1053,13 +1058,23 @@ the image without executing any image-controlled code, so the observation
 cannot be forged and has no side effects inside the image:
 
 ```sh
-podman create --pull=never --name jms-abi-<hex> \
+podman create --pull=never --image-volume=ignore --name jms-abi-<hex> \
   --label jms.container=abi-probe --entrypoint /bin/true <image>
 podman cp jms-abi-<hex>:/etc/passwd -     # tar stream, parsed in memory
 podman cp jms-abi-<hex>:/etc/group -      # tar stream, parsed in memory
 podman cp jms-abi-<hex>:/bin/bash -       # existence proof; bytes discarded
-podman rm --force jms-abi-<hex>           # always, in a finally
+podman rm --volumes --force jms-abi-<hex> # always, in a finally
 ```
+
+`--image-volume=ignore` is load-bearing (MIR-036): `podman create`
+defaults `--image-volume` to `bind`, which materializes an anonymous named
+volume for every `VOLUME` an untrusted project image declares — persistent
+host storage the plain `rm --force` would not remove. The explicit flag
+suppresses that (documented on Podman 5.4, the minimum version), beats any
+ambient `containers.conf` setting, and `rm --volumes --force` removes any
+anonymous volume as defense in depth should one exist anyway. Both flags
+are pinned by the probe argv golden and the ambient-configuration test
+(R3.10).
 
 The container is **never started**; `podman cp` reads from container
 storage directly, which works rootless. Every invocation crosses the
@@ -1276,7 +1291,11 @@ not pay for the example-image builds:
   filesystems have, respectively, the correct `isolation` user, a wrong
   UID, a wrong GID, a missing user, a wrong home, and a missing shell.
   Only the correct image builds successfully; each divergent one fails
-  its `jms build` with the §7.4 contract message. Both tiers also assert
+  its `jms build` with the §7.4 contract message. Tier B also runs the
+  **probe volume fixture** (MIR-036): a Containerfile declaring one or
+  more `VOLUME`s, asserting the exact pre-probe volume set is unchanged
+  after both a successful attestation and a forced attestation failure.
+  Both tiers also assert
   after their jms invocations that no `jms.container=abi-probe` container
   remains in `podman ps --all` (probe-removal check, distinct from the
   mount-based leak sweep).
@@ -1403,7 +1422,7 @@ only for non-enforceable wording, never for a behavioral claim).
 | ID | § | Claim | Tier | Test |
 | --- | --- | --- | --- | --- |
 | R3.1 | 3 | `isolation` UID/GID pinned to 1000; `ISOLATION_UID` constant and Containerfile line agree | unit | `test_isolation_uid_constant_matches_containerfile` (reads the Containerfile) |
-| R3.2 | 3 | no ABI label on any build; `verify_image_abi` probe argv (create/cp×3/rm) pinned on Podman; apple/container runs zero probe processes | golden + conformance | `test_abi_probe_argv_golden` (fixed injected probe name) and the no-op/no-process conformance case |
+| R3.2 | 3 | no ABI label on any build; `verify_image_abi` probe argv (`create --pull=never --image-volume=ignore` / cp×3 / `rm --volumes --force`) pinned on Podman; apple/container runs zero probe processes | golden + conformance | `test_abi_probe_argv_golden` (fixed injected probe name) and the no-op/no-process conformance case |
 | R3.3 | 3 | Podman builds attest the built image's `isolation` user: wrong UID, wrong GID, missing user, duplicate user, wrong home, missing shell, malformed passwd/group, and probe-subprocess failure each fail the build closed naming the contract | unit | `test_verify_image_abi_matrix` over §7.4 tar-stream fixtures |
 | R3.4 | 3 | rebuilt base image behaves as designed on macOS | macOS-int | rebuild-and-verify run of the full integration script |
 | R3.5 | 3 | Podman `local_name()` strips `localhost/` so tag-prefix ownership checks work unmodified | conformance | `local_name` cases in the conformance suite |
@@ -1411,6 +1430,7 @@ only for non-enforceable wording, never for a behavioral claim).
 | R3.7 | 3 | `FROM jmscontainers-base:latest` resolves locally under `--pull=missing` with no registry contact when present; base absent fails fast and non-interactively with the missing-base hint; a clean-store standalone project fetches its external base | int-A + int-B | FROM-resolution check via jms under external network isolation; clean-store standalone build (tier B) |
 | R3.8 | 3 | probe container removed on success and on failure; orphaned `jms.container=abi-probe` containers selected by `clean` and purge; no image can preseed the probe value | conformance | probe-lifecycle cases in `test_verify_image_abi_matrix`; `abi-probe` rows in `test_cleanup_provenance_predicate` (R5.8) |
 | R3.9 | 7.4 | `cmd_launch` attests the resolved image before `launch_plan()`: a divergent cached project image, a divergent cached base image, and a failed-fresh-build-then-retry never reach `run_argv()` or create shell/agent-state directories; a valid cached image passes; apple/container launches run zero probe processes | unit + conformance | `test_launch_attests_resolved_image` |
+| R3.10 | 7.4 | probe suppresses image-declared volumes: `--image-volume=ignore` and `rm --volumes --force` pinned; ambient `containers.conf` cannot restore image-volume creation; a `VOLUME`-declaring image leaves the volume set unchanged after success and forced failure | golden + unit + int-B | `test_abi_probe_argv_golden`, `test_abi_probe_ambient_image_volume_config`, tier-B probe volume fixture |
 | R4.1 | 4 | version first-line parsing: both formats, distro suffix truncation, malformed/non-numeric rejected, invalid UTF-8 fails closed | conformance | version-line fixtures |
 | R4.2 | 4 | apple/container exact `min == max` pin and `JMS_RUNTIME_ACCEPT` unchanged | unit | existing `test_version_gate`, `test_runtime_accept_pin_admits_one_exact_newer_version` |
 | R4.3 | 4 | Podman floor (5, 4, 0); silent within major 5; one-line warning on major ≥ 6; `JMS_RUNTIME_ACCEPT` ignored on Podman | unit | `test_podman_version_floor_and_untested_major_warning` |
