@@ -106,7 +106,7 @@ target rather than first-push acceptance material.
 | MIR-024 | Blocker | Container cleanup provenance | Open |
 | MIR-025 | Blocker | apple/container image identity schema | Open |
 | MIR-026 | Blocker | macOS build-argv compatibility | Resolved (design) |
-| MIR-027 | High | Debian prerequisite diagnostics | Open |
+| MIR-027 | High | Debian prerequisite diagnostics | Resolved (design) |
 | MIR-028 | High | Subordinate-ID sizing | Open |
 | MIR-029 | Blocker | Project base-image pull semantics | Open |
 | MIR-030 | High | Linux architecture support | Open |
@@ -1163,7 +1163,26 @@ and resolved before backend enablement.
 
 ### MIR-027 — The Debian-targeted setup hint names the wrong package family
 
-- **Status:** Open — high
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** Every Podman diagnostic targets the qualified Debian 13
+  contract, and the two recovery paths are distinct:
+  - **CLI missing** (`FileNotFoundError` from `runtime_run()`):
+    `PodmanBackend.install_hint` becomes the full qualified command —
+    "install the qualified package set: `sudo apt install podman uidmap
+    passt dbus-user-session fuse-overlayfs coreutils`" — verbatim the
+    README's install command (MIR-015), replacing the distro-neutral
+    `apt install podman` example.
+  - **Missing/undersized ID maps** (the `podman info` check): the hint
+    names `uidmap` (the Debian package providing
+    `newuidmap`/`newgidmap`) and `/etc/subuid`/`/etc/subgid`, and notes
+    that Debian's `adduser` provisions ranges for new users.
+    `shadow-utils` (the Fedora package name) is dropped from the hint
+    until a Fedora host is qualified (MIR-013/015).
+  Distro-neutral wording survives only where genuinely distro-neutral
+  (e.g. "see podman(1)"). §§2 and 4 are updated; a golden diagnostic
+  test (new table row R4.7) pins both hints verbatim against the
+  README's install command. Acceptance per **Done when** lands with the
+  implementation.
 - **Affects:** MIR-008, MIR-015, and §§2, 4, and 10
 - **Finding:** The qualified Debian 13 install command correctly names
   `uidmap` for `newuidmap`/`newgidmap`, while §4's promised missing-subuid
@@ -1386,7 +1405,9 @@ class ContainerBackend:            # apple/container (macOS)
 class PodmanBackend:               # podman (Linux, rootless)
     name = "podman"
     exe = "podman"
-    install_hint = "install it with your distribution's package manager (e.g. apt install podman)"
+    install_hint = ("install the qualified package set: sudo apt install "
+                    "podman uidmap passt dbus-user-session fuse-overlayfs "
+                    "coreutils")     # verbatim the README command (MIR-027)
     version_min = (5, 4, 0)        # Debian 13's packaged Podman; see §4 and MIR-015
     version_max = None             # min-only; see §4
 ```
@@ -1764,13 +1785,16 @@ first real launch.
 
 On failure, surface Podman's stderr verbatim plus a hint keyed to the
 check that failed — remote connection configured, rootful invocation,
-missing/undersized `/etc/subuid`–`/etc/subgid` ranges (the shadow-utils
-hint below), or storage misconfiguration — never one universal diagnosis:
+missing/undersized `/etc/subuid`–`/etc/subgid` ranges (the uidmap hint
+below, MIR-027), or storage misconfiguration — never one universal
+diagnosis:
 
 ```
 rootless podman is not usable: <stderr>
-hint: rootless podman needs shadow-utils (newuidmap/newgidmap) and an
-entry for your user in /etc/subuid and /etc/subgid; see podman(1).
+hint: rootless podman needs an entry of at least 65536 ids for your user
+in /etc/subuid and /etc/subgid; on Debian the uidmap package provides
+newuidmap/newgidmap and adduser provisions ranges for new users; see
+podman(1).
 ```
 
 This converts each common Linux support issue into a self-explanatory
@@ -2248,6 +2272,7 @@ for non-enforceable wording, never for a behavioral claim).
 | R4.4 | 4 | `ensure_started()` validates `podman info` JSON: remote, rootful, missing/undersized ID maps, absent graph driver, invalid JSON each fail with their own hint and verbatim stderr; healthy engine passes | unit + int-A | `test_podman_readiness_matrix` over MIR-008 fixtures; tier-A preflight on the fresh CI user |
 | R4.5 | 4 | `approve()` runs before `runtime_ready()` on both backends; grant-then-preflight-failure leaves a valid grant | unit | `test_consent_precedes_runtime_readiness` (MIR-003 matrix: accepted, declined, non-interactive failure, missing runtime, unusable rootless Podman) |
 | R4.6 | 4 | `canon()` fails with the coreutils hint when `/bin/realpath` is missing, on both platforms, before any prompt, store write, or runtime process | unit | `test_canon_missing_realpath_diagnostic` (MIR-023 matrix: `build`, `launch`, `inspect`, `init`, store-only trust forms) |
+| R4.7 | 4 | Podman diagnostics name the Debian 13 contract: the CLI-missing hint is the full qualified apt command, the ID-map hint names `uidmap` and `/etc/subuid`/`/etc/subgid`, and both agree verbatim with the README | unit | `test_podman_diagnostics_match_debian_contract` (MIR-027) |
 | R5.1 | 5 | `image_exists` tri-state: 0 true, 1 false, other exit hard failure with stderr | conformance | existing `test_image_exists_distinguishes_absence_from_failure`, parametrized |
 | R5.2 | 5 | `image_facts()` strict fixture-backed normalizer; dangling skipped by rule; malformed ownership-relevant field aborts | unit | `test_podman_image_facts_normalizer` over 4.9.3/5.4.2 fixtures + malformed variants (MIR-006) |
 | R5.3 | 5 | `created` is Unix epoch seconds on both backends; ordering never compares backend-local shapes | conformance | mixed-timestamp retention-ordering cases (MIR-018) |
