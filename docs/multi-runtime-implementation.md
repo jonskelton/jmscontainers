@@ -110,7 +110,7 @@ target rather than first-push acceptance material.
 | MIR-028 | High | Subordinate-ID sizing | Resolved (design) |
 | MIR-029 | Blocker | Project base-image pull semantics | Open |
 | MIR-030 | High | Linux architecture support | Resolved (design) |
-| MIR-031 | Blocker | Selection-versus-consent ordering | Open |
+| MIR-031 | Blocker | Selection-versus-consent ordering | Resolved (design) |
 | MIR-032 | High | Cleanup partial-failure semantics | Open |
 | MIR-033 | High | Nested CI execution contract | Open |
 
@@ -1298,7 +1298,32 @@ and resolved before backend enablement.
 
 ### MIR-031 — Runtime selection is both before and after consent
 
-- **Status:** Open — blocker
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** Selection and readiness are split into two ordered steps
+  with different side-effect classes, and both prior decisions survive
+  intact:
+  1. **Selection is side-effect-free and precedes consent.** Every
+     runtime-touching command calls `runtime()` as its first action,
+     before `resolve_operand()`/`approve()`. `select_runtime()` reads
+     only `JMS_RUNTIME`, `sys.platform`, `geteuid()`, and the
+     `JMS_PODMAN_PREVIEW` gate (§11); it starts no process, prompts
+     nothing, and writes nothing. Every selection failure — invalid
+     `JMS_RUNTIME`, forced cross-platform combination, unsupported
+     platform, Linux euid 0, and the disabled preview gate — therefore
+     exits 2 before any prompt or trust-store write, satisfying MIR-002
+     as written.
+  2. **Readiness stays after consent.** `approve()` then
+     `runtime_ready()`, exactly as decided in MIR-003; only
+     process-touching failures (missing CLI, version, unhealthy engine)
+     can follow a durable grant.
+  `trust revoke --purge-images` calls `runtime()` before mutating the
+  store, so a selection failure leaves the store untouched; a
+  *readiness* failure still lands after revocation and keeps today's
+  "trust was revoked, but image purge failed" split. Laziness (MIR-001)
+  is unaffected: pure commands still never call `runtime()`. §§2 and 4
+  are updated, and R4.5's matrix gains the selection-failure rows
+  (asserting zero prompts, store writes, and process calls). Acceptance
+  per **Done when** lands with the implementation.
 - **Affects:** MIR-001, MIR-002, MIR-003, and §§2, 4, 9, and 11
 - **Finding:** MIR-002 requires invalid/forced platform-backend combinations
   to fail before any trust prompt. MIR-003 preserves the current
@@ -1452,9 +1477,14 @@ rejected with exit 2 at selection time — which, per MIR-001, happens only
 when a command actually needs the runtime, so the rejection can never block
 a pure command:
 
-> **Implementation blocked by MIR-031:** the selector below does not yet have
-> a call site before project consent, so the claimed selection-error ordering
-> is not implementable as currently sequenced.
+Selection has a defined call site before consent (MIR-031): every
+runtime-touching command calls `runtime()` as its first action, before
+`resolve_operand()` or `approve()`. Selection is side-effect-free — it reads
+only `JMS_RUNTIME`, the platform, the euid, and the preview gate (§11),
+starting no process and writing nothing — so every rejection in the table
+below happens before any trust prompt or store write, while process-touching
+readiness stays after consent (§4, MIR-003). `trust revoke --purge-images`
+likewise selects before mutating the store.
 
 | Platform | Backend | Status |
 | --- | --- | --- |
@@ -1839,7 +1869,9 @@ contacts the runtime. Readiness failures are therefore reported *after
 consent and before any build*. A durable trust grant recorded immediately
 before a preflight failure is accepted: it records consent to the project
 definition, nothing has been built or run, and the grant remains valid for a
-retry once the host is fixed.
+retry once the host is fixed. Side-effect-free backend *selection* happens
+even earlier, before consent (§2, MIR-031), so only process-touching
+readiness failures can follow a durable grant.
 
 ---
 
@@ -2302,7 +2334,7 @@ for non-enforceable wording, never for a behavioral claim).
 | R4.2 | 4 | apple/container exact `min == max` pin and `JMS_RUNTIME_ACCEPT` unchanged | unit | existing `test_version_gate`, `test_runtime_accept_pin_admits_one_exact_newer_version` |
 | R4.3 | 4 | Podman floor (5, 4, 0); silent within major 5; one-line warning on major ≥ 6; `JMS_RUNTIME_ACCEPT` ignored on Podman | unit | `test_podman_version_floor_and_untested_major_warning` |
 | R4.4 | 4 | `ensure_started()` validates `podman info` JSON: remote, rootful, malformed/insufficient ID maps (coverage of `[0, 65536)`, MIR-028), absent graph driver, invalid JSON each fail with their own hint and verbatim stderr; healthy engine passes | unit + int-A | `test_podman_readiness_matrix` over MIR-008 fixtures plus MIR-028 boundary fixtures (coverage through 65535 passes, through 65534 fails, per map independently; malformed entries fail distinctly); tier-A preflight on the fresh CI user |
-| R4.5 | 4 | `approve()` runs before `runtime_ready()` on both backends; grant-then-preflight-failure leaves a valid grant | unit | `test_consent_precedes_runtime_readiness` (MIR-003 matrix: accepted, declined, non-interactive failure, missing runtime, unusable rootless Podman) |
+| R4.5 | 4 | side-effect-free `runtime()` selection precedes consent; `approve()` runs before `runtime_ready()` on both backends; grant-then-preflight-failure leaves a valid grant | unit | `test_consent_precedes_runtime_readiness` (MIR-003 matrix: accepted, declined, non-interactive failure, missing runtime, unusable rootless Podman) plus selection-failure rows asserting no prompt, store write, or process call (MIR-031) |
 | R4.6 | 4 | `canon()` fails with the coreutils hint when `/bin/realpath` is missing, on both platforms, before any prompt, store write, or runtime process | unit | `test_canon_missing_realpath_diagnostic` (MIR-023 matrix: `build`, `launch`, `inspect`, `init`, store-only trust forms) |
 | R4.7 | 4 | Podman diagnostics name the Debian 13 contract: the CLI-missing hint is the full qualified apt command, the ID-map hint names `uidmap` and `/etc/subuid`/`/etc/subgid`, and both agree verbatim with the README | unit | `test_podman_diagnostics_match_debian_contract` (MIR-027) |
 | R5.1 | 5 | `image_exists` tri-state: 0 true, 1 false, other exit hard failure with stderr | conformance | existing `test_image_exists_distinguishes_absence_from_failure`, parametrized |
