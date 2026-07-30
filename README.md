@@ -1,7 +1,9 @@
 # jmscontainers
 
 Throwaway containers for running **claude-code**, **codex**, and **opencode**
-in full-permission ("yolo") mode — without handing them your Mac.
+in full-permission ("yolo") mode — without handing them your machine.
+
+On an Apple Silicon Mac:
 
 ```sh
 brew install container python   # Apple's container runtime + Python 3.11+
@@ -11,10 +13,15 @@ cd ~/anywhere/myproject         # any checkout, wherever you keep it
 jms launch                      # you're in — the project is mounted at /work
 ```
 
-Needs an Apple Silicon Mac on macOS 15+ and Python 3.11+ (the Command Line
-Tools' `python3` is too old, hence the Homebrew one). The runtime wants
-`container system start` once per boot, but jms starts it for you if it
-isn't running.
+On Debian 13:
+
+```sh
+sudo apt install podman uidmap passt dbus-user-session fuse-overlayfs coreutils
+make install
+jms build --base
+cd ~/anywhere/myproject
+jms launch
+```
 
 Two things to know before you type anything in there:
 
@@ -25,18 +32,73 @@ Two things to know before you type anything in there:
   A cloned repo's `.jmscontainer/` is fingerprinted, and you approve that exact
   fingerprint before it builds — see [How trust works](#how-trust-works). The
   rest of the repo's code runs normally inside the container once you're in;
-  the VM boundary, not a review gate, is what contains it.
+  the container boundary — a lightweight VM on macOS, a user namespace on
+  Linux — not a review gate, is what contains it. The two boundaries are not
+  equivalent; see [SECURITY.md](SECURITY.md).
 
-Stack: `macOS → container (lightweight VM per container) → Fedora → bash → claude-code`
+Stack:
+
+- macOS: `macOS → container (lightweight VM per container) → Fedora → bash → claude-code`
+- Linux: `Linux → rootless podman (user namespace) → Fedora → bash → claude-code`
+
+## Platform support
+
+jms runs on an **Apple Silicon Mac** (macOS 15+, apple/container pinned to
+the qualified release) **or** on **Debian 13 (amd64) with local rootless
+Podman ≥ 5.4**, plus Python 3.11+ on both (macOS Command Line Tools'
+`python3` is too old, hence the Homebrew one). On macOS the runtime wants
+`container system start` once per boot, but jms starts it for you if it
+isn't running.
+
+The Linux install command above is load-bearing, not belt-and-braces: on
+Debian 13, `uidmap`, `passt`, and `dbus-user-session` are only *Recommends*
+of `podman`, so a Recommends-disabled minimal install silently lacks them.
+Rootless Podman needs subordinate ID ranges (at least 65536 ids) in
+`/etc/subuid` and `/etc/subgid`; Debian's `adduser` provisions them for new
+users automatically.
+
+What jms **refuses** to run on is exactly: platforms other than Linux and
+macOS, uid 0 on Linux (rootless Podman is the only qualified Linux mode),
+and remote Podman services (detected via `podman info`, since a remote
+engine breaks local path semantics). Everything else outside the qualified
+matrix — other distributions, arm64, SELinux-enforcing hosts — is
+**unqualified but allowed**: jms performs no distribution or architecture
+detection and prints no warning. Recent Fedora and Ubuntu, arm64, and
+SELinux-enforcing hosts are mid-term qualification targets.
+
+Known Linux limitations, documented rather than detected:
+
+- **NFS or distributed home directories are unsupported**: rootless Podman
+  storage under `~/.local/share/containers` is known-broken on NFS. jms does
+  not detect this (heuristics false-positive too easily); the failure
+  surfaces at the first build or launch — or at `podman info` when storage
+  initialization fails outright — with Podman's own stderr.
+- **Project access must be owner-based**: supported project trees, extra
+  mounts, and shell/credential state are those readable and writable through
+  your own UID and primary GID. Access that exists only via supplementary
+  groups, ACL grants, or setgid directories does not survive the user-ns
+  mapping and is unsupported for now.
+- **Image refs starting with `jmscontainers-` are reserved**: jms treats
+  every local image name matching that prefix (after stripping `localhost/`)
+  as its own user-visible state — manually tagging an image into that
+  namespace hands the alias to jms cleanup. Concurrent mutation of the image
+  store while `jms clean` runs is likewise unsupported: jms does not lock or
+  re-check between enumerating and untagging, so a ref retagged mid-cleanup
+  can be untagged from the wrong image.
+- **Nested sandboxes**: bubblewrap's full sandbox (the Codex bwrap path)
+  fails inside rootless Podman on the masked `/proc`; run agents without
+  their inner sandbox — they are already inside jms's boundary. jms never
+  weakens container defaults to work around this.
 
 ## Why jmscontainers?
 
 A project may commit a `.jmscontainer/Containerfile`, much like a Dev
 Container. Unlike a Dev Container, a cloned project never gets to execute its
 definition until you approve it, and mounting agent credentials is a separate,
-explicit approval. It's built for ephemeral agent sessions in `apple/container`
-VMs, not long-lived Docker-backed editor environments — and the image format
-stays an ordinary Containerfile, no proprietary DSL.
+explicit approval. It's built for ephemeral agent sessions — in
+`apple/container` VMs on macOS, in rootless Podman user namespaces on
+Linux — not long-lived Docker-backed editor environments, and the image
+format stays an ordinary Containerfile, no proprietary DSL.
 
 ## Everyday commands
 
@@ -245,16 +307,24 @@ so exit and launch a new container after an update.
 
 ```sh
 make test              # unit tests plus shell lint, no runtime required
-make integration       # builds, inspects, launches, and cleans the examples
+make integration       # real-runtime tiers: base contracts (a), examples (b)
 ```
 
+`scripts/integration.sh` takes one positional tier argument — `a` (fast,
+base image and launch contracts), `b` (expensive, example images; assumes
+tier A's base already exists), or `all` (the default). The Linux launch
+contracts and the egress-denied FROM-resolution check need `sudo` for a
+harness-owned nftables rule; the qualified release run uses a fresh
+non-1000 user over ssh (see the [release checklist](docs/release-checklist.md)).
+
 (`make install` symlinks `~/.local/bin/jms` to this checkout's `bin/jms` and
-installs Bash completion under `~/.local/share/bash-completion`. macOS does
-not put `~/.local/bin` on `PATH` by default; add it in your shell profile if
-`jms` isn't found.)
+installs Bash completion under `~/.local/share/bash-completion`. Most Linux
+distributions put `~/.local/bin` on `PATH` by default; macOS does not — add
+it in your shell profile if `jms` isn't found.)
 
 Pull-request CI runs `make test` on Ubuntu (Python 3.11 and 3.14) and on
-macOS; neither leg needs the container runtime. Real-runtime checks are
+macOS; neither leg needs a container runtime (the Ubuntu legs exercise the
+Podman fake, not a real engine). Real-runtime checks are
 deliberately opt-in; releases follow the
 [release checklist](docs/release-checklist.md) and are recorded in
 [CHANGELOG.md](CHANGELOG.md). Contribution guidance is in

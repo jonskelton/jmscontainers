@@ -28,7 +28,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 BASE_REPOSITORY = "jmscontainers-base"
 BASE = BASE_REPOSITORY + ":latest"
 UTC_SECONDS = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
@@ -671,7 +671,13 @@ def canon(path: str | bytes) -> bytes:
     raw = os.fsencode(path)
     if not raw.startswith(b"/"):
         fail("path must be absolute: " + quote(raw))
-    proc = subprocess.run([b"/bin/realpath", raw], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        proc = subprocess.run([b"/bin/realpath", raw], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        # Shared code below the runtime seam: both platforms get the same
+        # diagnostic, and pure commands never select a backend because of it.
+        fail("cannot canonicalize paths: /bin/realpath not found; "
+             "install coreutils (Debian: sudo apt install coreutils)")
     if proc.returncode or not proc.stdout or not proc.stdout.endswith(b"\n"):
         fail("cannot canonicalize " + quote(raw) + ": " + quote(proc.stderr))
     result = proc.stdout[:-1]

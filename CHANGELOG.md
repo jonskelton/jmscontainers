@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.1.0 — 2026-07-30
+
+Linux support: jms now runs on Debian 13 (amd64) with local rootless
+Podman ≥ 5.4, alongside the existing apple/container backend on Apple
+Silicon Macs. The trust model, fingerprinting, consent flow, manifest
+schema, and project discovery are shared and identical on both platforms;
+only the runtime layer is per-backend.
+
+- **Rootless Podman backend.** Selected automatically on Linux (no override
+  switch). Launches pin the user-namespace mapping explicitly
+  (`--userns=keep-id:uid=1000,gid=1000`, or `--userns=host` under
+  `--root`) and pass `--user` numerically, so image content can never
+  choose the runtime UID; `/work` writes land on the host owned by the
+  invoking user. `--hostname container` and
+  `--security-opt label=disable` are always passed. Refused outright:
+  uid 0 on Linux, remote Podman services, and non-Linux/non-macOS
+  platforms. Other distributions, arm64, and SELinux-enforcing hosts are
+  unqualified but allowed. See the new per-platform boundary statement in
+  SECURITY.md — the Linux boundary is kernel isolation, not a VM.
+- **apple/container pin moves to 1.2.0** (the only version Homebrew
+  ships). `JMS_RUNTIME_ACCEPT` remains apple/container-only; the Podman
+  backend is qualified min-only and accepts newer versions silently.
+- **Cleanup reports aggregated failures.** `clean` and
+  `trust revoke --purge-images` attempt every scheduled removal, report
+  each failure, and exit 1 instead of aborting mid-list; background image
+  retention warns and never fails a successful build or launch. Container
+  ownership now requires the `jms.container=launch` provenance marker in
+  addition to the project label, so containers started manually from
+  jms-built images are never selected. Podman image untags pass
+  `--no-prune`, so removing a project image never sweeps up dangling
+  parents.
+- **Base image pins the isolation UID/GID to 1000** (previously implicit),
+  and `examples/clean-slate` moves to a fully qualified external base
+  reference.
+- **Integration harness split into tiers** (`scripts/integration.sh
+  a|b|all`): tier A asserts the launch contracts on the base image
+  (ownership, UID mapping, sudo, hostname, exit propagation, read-only
+  shell state, ambient-config conflicts, nested-bwrap probes, and
+  FROM-resolution under egress denial); tier B runs the example cycle,
+  auth-mount and manifest-env parity checks, and the image survivor-set
+  run. Both tiers end in a strict three-outcome leak sweep.
+
 ## 1.0.0 — 2026-07-29
 
 Initial release.

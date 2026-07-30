@@ -30,6 +30,32 @@ nonempty UTF-8 without NUL. `launch` and `inspect` take the workdir either
 positionally or as `--workdir`, never both. `build --base` and `clean --all`
 cannot be combined with `--workdir`. `--pull` is valid only with `--base`.
 
+## Runtimes
+
+jms selects its container runtime from the platform, lazily on first use
+and with no override switch: macOS selects **apple/container**, Linux
+selects **local rootless Podman**. Selection is side-effect-free and
+precedes every consent prompt or trust-store write, so a selection refusal
+(exit 2) never leaves partial state. What is refused is exactly:
+platforms other than Linux and macOS, uid 0 on Linux, and remote Podman
+services (`host.serviceIsRemote`, checked at readiness). Any other local
+rootless Linux configuration is unqualified but allowed, with no warning.
+
+Qualification policy differs deliberately per runtime:
+
+- **apple/container** is pinned to one exact qualified version (a
+  single-channel Homebrew install); `JMS_RUNTIME_ACCEPT` can admit one
+  newer version for one invocation.
+- **Podman** has a minimum only (≥ 5.4, Debian 13's packaged version);
+  anything at or above the floor is accepted silently, and
+  `JMS_RUNTIME_ACCEPT` has no effect on this backend. Readiness validates
+  `podman info`: local service, rootless mode, subordinate ID coverage of
+  at least 65536 ids per map, and readable storage metadata.
+
+Commands that never touch the runtime — `--version`, `inspect`, `init`,
+`trust list`, `trust revoke` without `--purge-images`, `trust prune` —
+work with no runtime installed, on unsupported platforms, and under uid 0.
+
 ## Project discovery
 
 jms looks for a `.jmscontainer/` directory at the workdir and then upward,
@@ -83,7 +109,8 @@ onto the refreshed base.
 ## launch
 
 `launch` discovers the nearest definition, applies the consent gate, builds
-(or reuses) the project image, and replaces itself with `container run --rm`.
+(or reuses) the project image, and replaces itself with the runtime's
+`run --rm` invocation.
 Without a definition it launches the shared base. Arguments after `--` are
 appended to the selected entry argv. `--root` runs as root instead of the
 `isolation` user, which moves the agent-state and shell-config mount targets
@@ -156,11 +183,19 @@ nested project will shadow the outer one.
 `--all`); `--images` also removes the project's images (plus the shared base
 under `--all`). `--dry-run` reports the selection without mutating.
 
-Ownership is decided by the `jms.project` label jms applies to every container
-it creates — never by a `jms-` name prefix, which anything can claim. Without
+Container ownership requires two labels jms applies to every container it
+creates: the `jms.project` scope label **and** the `jms.container=launch`
+provenance marker — never a `jms-` name prefix, which anything can claim.
+Image labels inherit onto containers, so a container you start manually from
+a jms-built image carries `jms.project` but only the neutral
+`jms.container=image` value, and is never selected. Removal failures are
+aggregated: `clean` attempts every scheduled removal, reports each failure,
+and exits 1, rather than aborting mid-list. Without
 `--images`, `clean` performs no image operations at all; it never prunes
-images it does not own, under any scope. Run `container image prune` yourself
-if you want the runtime's global sweep.
+images it does not own, under any scope (image untags on Podman pass
+`--no-prune`, so removing a project image never sweeps up dangling
+parents). Run your runtime's own `image prune` yourself if you want a
+global sweep.
 
 ## Environment variables
 
@@ -178,11 +213,13 @@ if you want the runtime's global sweep.
   boolean `--trust` flag never grants credential access; combined with
   `--auth` it still asks the credential question on a TTY and fails closed
   without one.
-- `JMS_RUNTIME_ACCEPT`: accept one exact `container` version newer than the
-  newest runtime this jms release is qualified against, for one invocation,
-  with a "not qualified" warning (e.g. `JMS_RUNTIME_ACCEPT=1.2.0`). Use it to
-  keep working (including `jms clean`) after Homebrew upgrades `container`
-  before a matching jms release ships.
+- `JMS_RUNTIME_ACCEPT` (apple/container only): accept one exact `container`
+  version newer than the newest runtime this jms release is qualified
+  against, for one invocation, with a "not qualified" warning (e.g.
+  `JMS_RUNTIME_ACCEPT=1.3.0`). Use it to keep working (including
+  `jms clean`) after Homebrew upgrades `container` before a matching jms
+  release ships. The Podman backend is min-only qualified and ignores this
+  variable.
 
 ## Exit codes
 

@@ -831,7 +831,7 @@ class CliSurfaceTests(unittest.TestCase):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout), self.assertRaises(SystemExit):
             JMS.parse_cli(["--version"])
-        self.assertEqual(stdout.getvalue().strip(), "1.0.0")
+        self.assertEqual(stdout.getvalue().strip(), "1.1.0")
 
 
 class BuildTests(unittest.TestCase):
@@ -1775,6 +1775,59 @@ class LazinessTests(unittest.TestCase):
                 JMS.cmd_trust(JMS.parse_cli(["trust", "prune"]))
 
 
+class OrderingAndCanonTests(unittest.TestCase):
+    """R4.5/R4.6: consent precedes readiness; canon's coreutils diagnostic."""
+
+    def test_consent_precedes_runtime_readiness(self):
+        with sandbox() as home:
+            root = make_project(home)
+            order = []
+            def approve(*args, **kwargs):
+                order.append("approve")
+                raise JMS.TrustError("declined")
+            with mock.patch.object(JMS, "approve", approve), \
+                 mock.patch.object(JMS, "runtime_ready",
+                                   lambda: order.append("ready")):
+                with self.assertRaises(JMS.TrustError):
+                    JMS.cmd_build(JMS.parse_cli(["build", "-w", str(root)]))
+            # A declined consent never contacts the runtime.
+            self.assertEqual(order, ["approve"])
+            order.clear()
+            def approve_ok(*args, **kwargs):
+                order.append("approve")
+                return True, False
+            with mock.patch.object(JMS, "approve", approve_ok), \
+                 mock.patch.object(JMS, "runtime_ready",
+                                   side_effect=lambda: order.append("ready")), \
+                 mock.patch.object(JMS, "build_project", lambda *a: ("t:1", False)), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                JMS.cmd_build(JMS.parse_cli(["build", "-w", str(root)]))
+            self.assertEqual(order, ["approve", "ready"])
+
+    def test_grant_survives_a_readiness_failure(self):
+        with sandbox() as home:
+            root = make_project(home)
+            tf = fingerprint_of(root)
+            with contextlib.redirect_stdout(io.StringIO()), quiet():
+                JMS.cmd_trust(JMS.parse_cli(["trust", str(root), "--fingerprint", tf]))
+            with mock.patch.object(JMS, "runtime_ready",
+                                   side_effect=JMS.JMSException("engine down")):
+                with self.assertRaisesRegex(JMS.JMSException, "engine down"):
+                    JMS.cmd_build(JMS.parse_cli(["build", "-w", str(root)]))
+            # The grant records consent to a definition, not runtime state.
+            self.assertEqual(len(JMS.read_store()["projects"]), 1)
+
+    def test_canon_missing_realpath_diagnostic(self):
+        def missing(argv, **kwargs):
+            raise FileNotFoundError(argv[0])
+        with mock.patch.object(subprocess, "run", missing):
+            with self.assertRaisesRegex(JMS.JMSException,
+                                        "cannot canonicalize paths") as caught:
+                JMS.canon(b"/somewhere")
+        self.assertIn("coreutils", str(caught.exception))
+        self.assertNotIsInstance(caught.exception, JMS.UsageError)
+
+
 class PodmanReadinessTests(unittest.TestCase):
     """R4.3/R4.4/R4.7: version floor and full podman-info validation."""
 
@@ -1886,9 +1939,14 @@ class PodmanReadinessTests(unittest.TestCase):
     def test_podman_diagnostics_match_debian_contract(self):
         # R4.7: the CLI-missing hint is the one full qualified apt command,
         # and the ID-map hint names the uidmap package and both files.
+        apt_command = ("sudo apt install podman uidmap passt dbus-user-session "
+                       "fuse-overlayfs coreutils")
         self.assertEqual(JMS.PodmanBackend.install_hint,
-                         "install the qualified package set: sudo apt install "
-                         "podman uidmap passt dbus-user-session fuse-overlayfs coreutils")
+                         "install the qualified package set: " + apt_command)
+        readme = (pathlib.Path(JMS.__file__).parents[1] / "README.md").read_text()
+        self.assertIn(apt_command, readme)          # verbatim agreement (R4.7)
+        self.assertIn("/etc/subuid", readme)
+        self.assertIn("adduser", readme)
         singleton = [{"container_id": 0, "host_id": 1000, "size": 1}]
         with self.assertRaises(JMS.JMSException) as caught:
             self.ensure(self.info(lambda p: self.maps(p).update(uidmap=singleton)))
