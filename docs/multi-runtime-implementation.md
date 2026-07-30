@@ -25,10 +25,10 @@ same Fedora image.
 > and the resolved review-gate issue log (MIR-001…MIR-032) has been folded
 > into the body. The full issue log, decision history, and qualification
 > narratives live in git history (the pre-slim revision of this file).
-> MIR-033 remains open in §11; the follow-up repository review recorded
-> MIR-034…MIR-039 in the pre-implementation register below, all six of
-> which are now resolved in place (decisions in the affected sections,
-> IDs and findings retained in the register).
+> MIR-033…MIR-039 are tracked in the pre-implementation register below;
+> all seven are now resolved in place (decisions in the affected
+> sections, IDs and findings retained in the register — MIR-033's
+> executable CI contract lands in §9).
 
 ## Scope for 1.1.0
 
@@ -82,13 +82,51 @@ acceptance tests.
 
 | ID | Severity | Area | Status |
 | --- | --- | --- | --- |
-| MIR-033 | High | Nested CI execution contract | Open (§11) |
+| MIR-033 | High | Nested CI execution contract | Resolved (§§9, 11) |
 | MIR-034 | Blocker | Cached-image ABI attestation | Resolved (§§6, 7.4, 12) |
 | MIR-035 | Blocker | Cleanup result protocol | Resolved (§§2, 5) |
 | MIR-036 | Blocker | ABI-probe volume side effects | Resolved (§7.4, §9) |
 | MIR-037 | High | Shell ABI observation | Resolved (§7.4) |
 | MIR-038 | High | Duplicate image identities | Resolved (§5) |
 | MIR-039 | High | Linux support-scope enforcement | Resolved (Scope, §§2, 9, 10, 12) |
+
+### MIR-033 — The nested CI job lacks an executable outer-harness contract
+
+- **Status:** Resolved 2026-07-29
+- **Affects:** §9's CI section, §11 implementation phase 2
+- **Finding:** The `integration-linux` job was decided in outline only.
+  The repository's nested qualification requires an outer `--privileged`
+  container, `/dev/fuse`, subordinate-ID setup, a fresh non-root user,
+  and cgroup/event-log overrides; a GitHub Actions job-level container
+  cannot express that by implication, and a host `docker run`/Podman
+  harness has different mounts, signal handling, cancellation, and
+  cleanup — none of which were written down.
+- **Resolution:** The executable contract now lives in §9 ("The nested
+  job's executable contract"). Decided: the runner's preinstalled
+  **rootful Docker** launches the throwaway `debian:13` container via an
+  explicit `docker run --privileged --device /dev/fuse` step, never a
+  job-level `container:`. Rootful Docker is load-bearing, not
+  convenience: it exposes the full host ID space inside the container,
+  so the fresh CI user gets a standard 65536-ID subordinate range and
+  passes jms's §4 `[0, 65536)` coverage check — the local
+  rootless-Podman harness (`qualify-podman-nested-ubuntu2404.sh`) cannot
+  do this, because its outer namespace spans only 65536 IDs and forces a
+  shrunken 63000-ID range. The inner root script follows the README's
+  Debian install verbatim, creates the non-1000 user, verifies (never
+  assumes) every rootless prerequisite, and runs both integration tiers
+  with no caching of any kind. Cleanup is an `always()` `docker rm -f`
+  on the named container plus the ephemeral runner VM. The artifact
+  records versions, `podman info`, architecture, and a generated
+  divergence list against a real Debian 13 workstation. Already decided
+  and unchanged: `workflow_dispatch` + weekly `schedule`, not a required
+  PR check for 1.1.0, promotion after 4 consecutive green scheduled
+  runs.
+- **Done when:** The workflow job matches the §9 contract point for
+  point (explicit outer invocation, verification steps, timeout,
+  least-privilege `permissions`, per-ref concurrency cancellation, the
+  named artifact set with retention, and no cache steps), and one
+  `workflow_dispatch` run is green end-to-end. Promotion still requires
+  the 4 consecutive green scheduled runs, evaluated post-release.
 
 ### MIR-034 — Cached images bypass the isolation-user ABI attestation
 
@@ -1539,26 +1577,116 @@ the unit-test plan above.
 
 ### CI (`.github/workflows/test.yml`)
 
-> **Open:** the nested Debian job is not executable from this description
-> until its outer privileged harness, cleanup, cache/network policy,
-> artifacts, and retention are fixed — see §11.
-
 - Existing matrix (`make test` on Ubuntu 3.11/3.14 + macOS) unchanged; it
   now also exercises the Podman fake on the Ubuntu legs automatically.
-- Add an `integration-linux` job: pinned `ubuntu-24.04` runner,
-  integration executed inside a `debian:13` container with Debian's
-  packaged rootless Podman 5.4 (nested — the first-push userland on the
-  runner's kernel; the accepted caveat is that the kernel is Ubuntu's, so
-  a non-nested confirmation on real Debian 13 is a manual
-  release-checklist step, §10). Triggered by `workflow_dispatch` plus a
-  weekly `schedule`, with an explicit timeout, least-privilege
-  `permissions`, per-ref concurrency cancellation, setup steps that
-  *verify* (not assume) rootless prerequisites inside the Debian
-  container, and `podman info`, version, and `uname -m` output uploaded as
-  an artifact with no secrets. It is not a required PR check for 1.1.0;
+- Add an `integration-linux` job per the executable contract below
+  (MIR-033): pinned `ubuntu-24.04` runner, both integration tiers
+  executed inside a `debian:13` container with Debian's packaged
+  rootless Podman 5.4 (nested — the first-push userland on the runner's
+  kernel; the accepted caveat is that the kernel is Ubuntu's, so a
+  non-nested confirmation on real Debian 13 is a manual
+  release-checklist step, §10). It is not a required PR check for 1.1.0;
   promotion requires 4 consecutive green scheduled runs, evaluated after
   release. macOS integration remains manual (no nested virtualization on
   GH macOS runners).
+
+#### The nested job's executable contract (MIR-033)
+
+**Job shape.** `runs-on: ubuntu-24.04` (pinned, never `-latest`),
+`timeout-minutes: 75`, `permissions: contents: read`, triggered by
+`workflow_dispatch` plus a weekly `schedule`, with per-ref concurrency
+cancellation (`concurrency: group: integration-linux-${{ github.ref }},
+cancel-in-progress: true`). No secrets enter the job: the read-only
+default token is never exported to the container, and no secret-bearing
+env is set.
+
+**Outer invocation.** The runner's preinstalled rootful Docker launches
+the throwaway container from an explicit step — never a job-level
+`container:`, so the device/mount contract, naming, and cleanup are
+stated in the workflow rather than implied by the runner:
+
+```sh
+docker run --name jms-integration --init \
+  --privileged --device /dev/fuse \
+  -v "$GITHUB_WORKSPACE:/src:ro" -v "$RUNNER_TEMP/out:/out" \
+  debian:13 bash /src/scripts/ci-debian-nested.sh
+```
+
+`--privileged` plus `/dev/fuse` is the same device contract the local
+nested harness uses. Rootful Docker as the outer engine is load-bearing:
+the container sees the full host ID space, so the inner CI user can hold
+a standard 65536-ID subordinate range and jms's §4 coverage check of
+`[0, 65536)` passes unmodified — impossible under a rootless outer
+engine, whose 65536-ID namespace forced the local harness's shrunken
+`2000:63000` range. `--init` provides a reaping pid 1 that forwards
+SIGTERM, so a `docker stop` gives the inner EXIT traps (including the
+leak sweep) a chance to run. The source tree is mounted read-only at
+`/src`; the inner script copies it into the CI user's home, and every
+write lands in the container, the copy, or `/out`. The step's exit
+status is the inner script's.
+
+**Inner setup (`scripts/ci-debian-nested.sh`), as root.** Installs the
+README's qualified package set verbatim — `apt-get install podman uidmap
+passt dbus-user-session fuse-overlayfs coreutils` — plus the test-only
+extras (`python3`, `make`, `git`), then creates the fresh non-root user
+`ci` with UID 1001 (non-1000, per the tier-A ownership requirement) and
+writes `ci:100000:65536` to `/etc/subuid` and `/etc/subgid` explicitly
+(the job asserts the entries rather than trusting `useradd`
+auto-allocation). Before handing off, it **verifies** every rootless
+prerequisite and fails the job with its own diagnostic if any is
+missing: package presence with versions logged, setuid `newuidmap`/
+`newgidmap`, `/dev/fuse` usable, `uname -m` = `x86_64` (the amd64
+qualification), and — running as `ci` — `podman info --format json`
+reporting `rootless=true`, `serviceIsRemote=false`, full `[0, 65536)`
+ID-map coverage, and a graph driver. A harness failure is therefore
+distinguishable from a product failure before jms ever runs.
+
+**Engine plumbing inside the container.** The `ci` user gets
+`XDG_RUNTIME_DIR=/tmp/xdg` and a `containers.conf` containing exactly
+`cgroup_manager = "cgroupfs"` and `events_logger = "file"` — the plain
+container has no systemd user session for Podman to delegate to. As in
+the local harness, these overrides are engine plumbing only and never
+touch userns, security, or network settings under test; both values are
+named in the divergence record below.
+
+**Execution.** As `ci`, the job runs tier A then tier B of
+`scripts/integration.sh` from the writable copy of the source tree.
+
+**Cache and network policy.** No caching of any kind: no `actions/cache`,
+no registry mirror, no volume or store reuse — every run starts from an
+empty container store and fresh apt state, so the clean-store acceptance
+checks (FROM resolution, the standalone external-base build) hold by
+construction and no cache-invalidation rules exist to specify. Outbound
+network uses the runner's default egress (apt, `registry.fedoraproject.org`,
+and the example downloads need it); the integration script's own
+network-isolation wrappers (§9 FROM-resolution check) provide the
+offline assertions.
+
+**Cancellation and cleanup.** On cancellation or timeout the runner
+kills the `docker run` client; the named container may briefly outlive
+it, so a final `if: always()` step runs `docker rm -f jms-integration`.
+Nothing the run creates exists outside the throwaway container,
+`$RUNNER_TEMP`, and the ephemeral runner VM, so no cleanup path can leak
+beyond the job. The integration script's EXIT-trap sweep still governs
+in-container cleanup on ordinary failures.
+
+**Artifacts.** An `actions/upload-artifact` step with `if: always()` and
+`retention-days: 90` (covers the 4-run promotion window) uploads from
+`$RUNNER_TEMP/out`: `podman --version` and `podman info --format json`
+output, `uname -m`/`uname -r`, `/etc/os-release`, the integration log
+and leak-sweep output, and `divergences.txt`. No secrets can appear:
+none are present in the job.
+
+**Divergence record.** `divergences.txt`, generated by the inner script
+each run, names what differs from a real Debian 13 workstation so the
+release checklist (§10) can weigh the nested evidence: the Ubuntu host
+kernel (captured `uname -r`), the rootful-Docker outer boundary,
+`cgroup_manager=cgroupfs` and `events_logger=file` in place of a
+workstation's systemd/journald user session, the absence of a systemd
+user manager (`dbus-user-session` installed but inert), and the storage
+driver and network backend actually reported by `podman info`. The
+manual clean-host walkthrough on real Debian 13 (§10) remains the
+release-blocking confirmation for exactly these dimensions.
 
 ---
 
@@ -1630,30 +1758,27 @@ enablement is needed.
    Containerfile (§3) and rebuild-and-verify on macOS.
 2. **Linux integration.** Parametrize `scripts/integration.sh`; add the
    ownership, FROM-resolution, ABI-divergence, and probe-removal
-   assertions; add the CI job once its outer harness is specified (open
-   question below). Fix whatever reality disagrees with (most likely:
-   short-name FROM resolution details, seccomp interactions with the
-   agent CLIs).
+   assertions; write `scripts/ci-debian-nested.sh` and the
+   `integration-linux` job per §9's executable contract (MIR-033). Fix
+   whatever reality disagrees with (most likely: short-name FROM
+   resolution details, seccomp interactions with the agent CLIs).
 3. **Docs + release.** Land §§8 and 10 in full — SECURITY.md, README, CLI
    docs, installation docs, changelog — then release 1.1.0 per the
    release checklist, recording the tested Podman version (Debian 13's
    packaged 5.4.x).
 
-### Open question: the nested CI job's executable contract
+### Resolved: the nested CI job's executable contract (MIR-033)
 
-The `integration-linux` job (§9) is decided in outline but not executable
-yet. The repository's existing nested qualification requires an outer
-`--privileged` container, `/dev/fuse`, subordinate-ID setup, a fresh
-non-root user, and cgroup/event-log overrides; a GitHub Actions job-level
-container cannot express that by implication, and a host `docker
-run`/Podman harness has different mounts, signal handling, cancellation,
-and cleanup. Before the job lands, write down: the exact outer privileged
-invocation and device/mount contract, fresh-user setup, runtime
-storage/cgroup/network configuration, cancellation cleanup, artifact
-paths/retention, and cache policy — and record which settings differ from
-a real Debian workstation in the release artifact. Decided already: not a
-required PR check for 1.1.0; promotion after 4 consecutive green scheduled
-runs, evaluated post-release.
+Formerly this section's open question. The full contract — outer
+privileged invocation and device/mount contract, fresh-user and
+subordinate-ID setup, prerequisite verification, engine plumbing,
+tiers, cache/network policy, cancellation cleanup, artifacts with
+retention, and the per-run divergence record against a real Debian
+workstation — is specified in §9 ("The nested job's executable
+contract"), with the decision rationale retained in the MIR-033
+register entry (§0). Decided already and unchanged: not a required PR
+check for 1.1.0; promotion after 4 consecutive green scheduled runs,
+evaluated post-release.
 
 ## 12. Explicit non-goals
 
