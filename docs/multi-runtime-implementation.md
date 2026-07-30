@@ -109,7 +109,7 @@ target rather than first-push acceptance material.
 | MIR-027 | High | Debian prerequisite diagnostics | Resolved (design) |
 | MIR-028 | High | Subordinate-ID sizing | Resolved (design) |
 | MIR-029 | Blocker | Project base-image pull semantics | Open |
-| MIR-030 | High | Linux architecture support | Open |
+| MIR-030 | High | Linux architecture support | Resolved (design) |
 | MIR-031 | Blocker | Selection-versus-consent ordering | Open |
 | MIR-032 | High | Cleanup partial-failure semantics | Open |
 | MIR-033 | High | Nested CI execution contract | Open |
@@ -1267,7 +1267,20 @@ and resolved before backend enablement.
 
 ### MIR-030 — “Debian 13” leaves the supported CPU architecture unbounded
 
-- **Status:** Open — high
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** The 1.1.0 Linux architecture set is **amd64 (x86_64)
+  only**, making the Linux statement as explicit as the Apple Silicon
+  one. Evidence base: every 2026-07-29 qualification run (the Debian 13
+  host and the nested Ubuntu 24.04 captures) executed on x86_64, and the
+  pinned `ubuntu-24.04` CI runner is amd64. arm64 becomes a named
+  **mid-term target** promoted alongside the Fedora/Ubuntu hosts
+  (MIR-015); the base image's npm-installed agent CLIs and example
+  downloads get their arm64 audit at promotion time, not now. The README
+  support line becomes "Debian 13 (amd64) with rootless Podman ≥ 5.4",
+  and both the release checklist and the CI diagnostic artifact record
+  `uname -m` and the image architecture so the published claim stays
+  tied to what was actually run. §§9, 10, and 12 are updated. Acceptance
+  per **Done when** lands with the implementation.
 - **Affects:** MIR-014, MIR-015, and §§9, 10, and 12
 - **Finding:** The macOS support statement is explicitly Apple Silicon, but
   the Linux statement names only the distribution. The proposed GitHub job
@@ -2339,8 +2352,9 @@ listed under those issues and the unit-test plan above.
   first-push userland on the runner's kernel), triggered by
   `workflow_dispatch` plus a weekly `schedule`, with an explicit timeout,
   least-privilege permissions, per-ref concurrency cancellation, verified
-  (not assumed) rootless prerequisites, and `podman info`/version output
-  uploaded as an artifact. Keep it out of required PR checks until the
+  (not assumed) rootless prerequisites, and `podman info`, version, and
+  `uname -m` output uploaded as an artifact (the architecture record per
+  MIR-030). Keep it out of required PR checks until the
   documented stability criterion is met (MIR-020). The non-nested
   confirmation on real Debian 13 is a manual release-checklist step
   (§10). macOS integration remains manual (no nested virtualization on
@@ -2351,8 +2365,10 @@ listed under those issues and the unit-test plan above.
 ## 10. Documentation and packaging checklist
 
 - `README.md`: platform section becomes "Apple Silicon Mac (apple/container)
-  **or** Debian 13 with rootless Podman ≥ 5.4", naming recent Fedora and
-  Ubuntu as mid-term targets that are out of scope for 1.1.0 (MIR-015),
+  **or** Debian 13 (amd64) with rootless Podman ≥ 5.4" (architecture set
+  per MIR-030), naming recent Fedora and
+  Ubuntu — and the arm64 architecture — as mid-term targets that are out
+  of scope for 1.1.0 (MIR-015, MIR-030),
   SELinux-enforcing hosts as unqualified (MIR-013), and
   supplementary-group/ACL-only project access as unsupported (MIR-016),
   and NFS/distributed home directories as unsupported (MIR-015);
@@ -2374,11 +2390,12 @@ listed under those issues and the unit-test plan above.
   (MIR-016); the NFS/distributed-home limitation (MIR-015); the
   nested-bwrap limitation with no unmask recommendation
   (§7.3, MIR-017).
-- `docs/release-checklist.md`: add "tested Podman version" recording, a
+- `docs/release-checklist.md`: add "tested Podman version" and
+  architecture (`uname -m`, MIR-030) recording, a
   Linux integration run, and the clean-host install walkthrough (MIR-015):
   a fresh Debian 13 VM plus a newly created user follows the README
   install instructions verbatim each release, recording date, Podman
-  version, and outcome.
+  version, architecture, and outcome.
 - `completions/jms.bash`: no runtime references — unchanged.
 - `Makefile`: unchanged (`make install` already works on Linux;
   `~/.local/bin` is on PATH by default on most distros — soften the
@@ -2441,6 +2458,10 @@ clear "Linux support is not yet released" error.
 - **SELinux-enforcing hosts (for 1.1.0).** Desired, deferred with the
   Fedora host target given the small enforcing-mode workstation population
   (MIR-013). A documented limitation — not detected or refused.
+- **Linux architectures other than amd64 (for 1.1.0).** arm64 is a
+  mid-term target promoted alongside the Fedora/Ubuntu hosts; the base
+  image's npm tools and example downloads get their arm64 audit at
+  promotion time (MIR-030).
 - **NFS/distributed home directories.** Rootless Podman storage under
   `~/.local/share/containers` is known-broken on NFS; unsupported and
   documented, not detected (MIR-015). A qualified `storage.conf`
