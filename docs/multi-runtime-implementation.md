@@ -73,7 +73,7 @@ acceptance tests.
 | ID | Severity | Area | Status |
 | --- | --- | --- | --- |
 | MIR-033 | High | Nested CI execution contract | Open (§11) |
-| MIR-034 | Blocker | Cached-image ABI attestation | Open |
+| MIR-034 | Blocker | Cached-image ABI attestation | Resolved (§§6, 7.4, 12) |
 | MIR-035 | Blocker | Cleanup result protocol | Open |
 | MIR-036 | Blocker | ABI-probe volume side effects | Open |
 | MIR-037 | High | Shell ABI observation | Open |
@@ -82,7 +82,7 @@ acceptance tests.
 
 ### MIR-034 — Cached images bypass the isolation-user ABI attestation
 
-- **Status:** Open — blocker
+- **Status:** Resolved 2026-07-29
 - **Affects:** §§2, 3, 6, 7.4, 9, 11, R3.3, and the launch-time
   re-verification non-goal in §12
 - **Finding:** The current text runs `verify_image_abi()` only after a build
@@ -95,20 +95,23 @@ acceptance tests.
   established by the specified call sites. This is a regression from the
   pre-slim MIR-022 decision, which checked the resolved image on every
   Podman launch before `launch_plan()`.
-- **Required resolution:** Restore a fail-closed check for cached and fresh
-  images uniformly. The simplest contract is: keep the immediate post-build
-  check so `jms build` reports a divergent image, and have `cmd_launch` call
-  `verify_image_abi(image)` after `build_project()`/`ensure_base()` resolves
-  the image but before `launch_plan()` creates state directories. If a
-  different verified cache is chosen, specify its unforgeable evidence,
-  invalidation and failed-build/tag cleanup semantics; deleting a failed tag
-  alone is insufficient unless a failed deletion cannot enable the next
-  cache hit.
-- **Done when:** Tests cover a divergent pre-existing project image, a
-  divergent pre-existing base image, and a fresh build whose attestation
-  fails followed by a second invocation. None may reach `run_argv()` or
-  create shell/agent-state directories. A valid cached image passes, and the
-  apple/container backend still performs zero probe processes.
+- **Resolution:** Adopted the simple contract. The immediate post-build
+  check stays, so `jms build` reports a divergent image at build time, and
+  `cmd_launch` calls `verify_image_abi(image)` after
+  `build_project()`/`ensure_base()` resolves the image but before
+  `launch_plan()` creates state directories. Every Podman launch therefore
+  attests exactly the image it is about to run — cached, freshly built, or
+  mutated out of band — restoring the pre-slim MIR-022 property. No
+  verified cache or failed-tag cleanup machinery is introduced: a divergent
+  image may keep its tag, but it can never launch. The §12 non-goal becomes
+  "attestation caching", and the §7.4 rejected-alternatives list is updated
+  accordingly. Recorded in §§6, 7.4, 12; tests in R3.9.
+- **Done when:** Tests (R3.9, `test_launch_attests_resolved_image`) cover a
+  divergent pre-existing project image, a divergent pre-existing base
+  image, and a fresh build whose attestation fails followed by a second
+  invocation. None may reach `run_argv()` or create shell/agent-state
+  directories. A valid cached image passes, and the apple/container backend
+  still performs zero probe processes.
 
 ### MIR-035 — Cleanup cannot classify removal results through the protocol
 
@@ -482,7 +485,7 @@ monkeypatch intercepts every execution on both backends:
 | `image_exists` | `(image: str) -> bool` | apple/container: exit 0 vs. the exact `Error: image not found: <ref>` stderr line; Podman: `image exists` exit 0/1, anything else a hard failure (§5) |
 | `image_facts` | `() -> list[ImageFact]` | per-backend strict, fixture-backed, fail-closed normalizer (§5) |
 | `ps` | `() -> list[ContainerFact]` | per-backend strict, fail-closed normalizer (§5); id/label validation (string, NUL-free, dict) shared |
-| `verify_image_abi` | `(image: str) -> None` | Podman: never-started create/cp/rm probe attesting a just-built image's `isolation` user against the ABI (§7.4), fail-closed; apple/container: no-op running no process |
+| `verify_image_abi` | `(image: str) -> None` | Podman: never-started create/cp/rm probe attesting an image's `isolation` user against the ABI, run after every build and again on every launch's resolved image (§7.4, MIR-034), fail-closed; apple/container: no-op running no process |
 
 #### Free-function surface and monkeypatch seams
 
@@ -876,7 +879,10 @@ context = `.jmscontainer/`, the pre-build fingerprint re-check in
 they actually perform, `build_project()` and `ensure_base()` call
 `verify_image_abi()` on the result (a Podman-only probe, no-op on macOS —
 §7.4), so an image whose Containerfile breaks the `isolation` user is
-rejected at build time, before it can ever be launched. The v2 context
+rejected at build time. Both functions have an image-exists fast path, so
+this build-time check alone cannot cover cached images; `cmd_launch`
+therefore re-attests the resolved image before `launch_plan()` (§7.4,
+MIR-034), and the cache fast path can never bypass attestation. The v2 context
 rule ("COPY/ADD sources must live inside `.jmscontainer/`") is enforced by
 both builders since the context directory is identical; the integration
 escape test (§9) verifies the Podman error path still trips
@@ -1037,16 +1043,22 @@ divergent observation, and the hint: images that alter the `isolation`
 user are unsupported. A failure is never downgraded to a skip or a
 warning.
 
-**When it runs.** `build_project()` and `ensure_base()` call
-`verify_image_abi()` immediately after any build they actually perform
-(§6). Since jms performs every build of every image it launches, every
-image in the store that jms will launch has been attested once, at the
-moment its Containerfile could have broken the ABI. There is no
-launch-time re-check: an image mutated outside jms (e.g. `podman commit`
-over a jms tag) is out of contract and fails at launch with the runtime's
-own diagnostics — a documented limitation, accepted to keep launches at
-zero extra process cost. The per-build cost is five short `podman`
-invocations against local storage.
+**When it runs (MIR-034).** Twice, fail-closed both times. First,
+`build_project()` and `ensure_base()` call `verify_image_abi()`
+immediately after any build they actually perform (§6), so `jms build`
+reports a divergent Containerfile at the moment it could have broken the
+ABI. Second — because both functions have an image-exists fast path that
+skips building, and a failed post-build attestation leaves the tag in
+place — `cmd_launch` calls `verify_image_abi(image)` on the resolved
+image after `build_project()`/`ensure_base()` returns and before
+`launch_plan()` creates any state directory. Every launch therefore
+attests exactly the image it is about to run: cached images, images whose
+earlier attestation failed, and images mutated outside jms (e.g.
+`podman commit` over a jms tag) all fail closed before anything is
+mounted or created. No verified cache is kept — attestation costs five
+short `podman` invocations against local storage per build or launch, and
+a cache would need unforgeable evidence and invalidation rules for no
+measurable win.
 
 **Probe lifecycle.** Removal runs in a `finally` with `check=False`; if it
 fails, the backend prints one warning line on stderr (an error-contract
@@ -1065,9 +1077,10 @@ cache — Podman cannot re-label without a second build, and a Containerfile
 `LABEL` could forge it; (b) running `id`/`getent` in a container —
 executes image-controlled binaries, so output is forgeable and the run has
 side effects; (c) `podman image mount` — needs `podman unshare` gymnastics
-rootless, for no added fidelity; (d) launch-time attestation — five extra
-processes on every launch to defend only against out-of-band store
-mutation, which is out of contract anyway.
+rootless, for no added fidelity; (d) a verified attestation cache keyed on
+image ID — needs unforgeable evidence, invalidation rules, and failed-tag
+cleanup semantics; rejected in favor of re-attesting on every launch
+(MIR-034).
 
 ### Resulting Podman argv shape
 
@@ -1361,6 +1374,7 @@ only for non-enforceable wording, never for a behavioral claim).
 | R3.6 | 3 | `image_exists` matches the `localhost/`-prefixed stored name | int-A | base built then `image_exists` true via a `jms build` no-op path; unit exit-code cases in R5.1 |
 | R3.7 | 3 | `FROM jmscontainers-base:latest` resolves locally under `--pull=missing` with no registry contact when present; base absent fails fast and non-interactively with the missing-base hint; a clean-store standalone project fetches its external base | int-A + int-B | FROM-resolution check via jms under external network isolation; clean-store standalone build (tier B) |
 | R3.8 | 3 | probe container removed on success and on failure; orphaned `jms.container=abi-probe` containers selected by `clean` and purge; no image can preseed the probe value | conformance | probe-lifecycle cases in `test_verify_image_abi_matrix`; `abi-probe` rows in `test_cleanup_provenance_predicate` (R5.8) |
+| R3.9 | 7.4 | `cmd_launch` attests the resolved image before `launch_plan()`: a divergent cached project image, a divergent cached base image, and a failed-fresh-build-then-retry never reach `run_argv()` or create shell/agent-state directories; a valid cached image passes; apple/container launches run zero probe processes | unit + conformance | `test_launch_attests_resolved_image` |
 | R4.1 | 4 | version first-line parsing: both formats, distro suffix truncation, malformed/non-numeric rejected, invalid UTF-8 fails closed | conformance | version-line fixtures |
 | R4.2 | 4 | apple/container exact `min == max` pin and `JMS_RUNTIME_ACCEPT` unchanged | unit | existing `test_version_gate`, `test_runtime_accept_pin_admits_one_exact_newer_version` |
 | R4.3 | 4 | Podman floor (5, 4, 0); silent within major 5; one-line warning on major ≥ 6; `JMS_RUNTIME_ACCEPT` ignored on Podman | unit | `test_podman_version_floor_and_untested_major_warning` |
@@ -1541,6 +1555,6 @@ runs, evaluated post-release.
   on both platforms builds the base twice. Fingerprint-derived tags make
   this transparent.
 - **Weakening container defaults for nested bwrap** (§7.3).
-- **Launch-time ABI re-verification.** Builds are attested (§7.4);
-  images mutated outside jms are out of contract and fail with the
-  runtime's own diagnostics.
+- **Attestation caching.** Every Podman build and launch re-attests the
+  image (§7.4, MIR-034); no verified-attestation cache, evidence scheme,
+  or failed-tag cleanup machinery is maintained.
