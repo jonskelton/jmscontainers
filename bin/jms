@@ -161,8 +161,8 @@ class ContainerBackend:
     name = "container"
     exe = "container"
     install_hint = "install it with: brew install container"
-    version_min = (1, 1, 0)              # exact pin: min == max
-    version_max = (1, 1, 0)
+    version_min = (1, 2, 0)              # exact pin: min == max
+    version_max = (1, 2, 0)
 
     # -- Class A: pure serializers and parsers (no I/O of any kind) --
 

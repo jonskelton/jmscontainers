@@ -110,7 +110,7 @@ class FakeRuntime:
                  stdout=None, stderr=None, replace=False):
         self.calls.append({"argv": list(argv), "replace": replace})
         if argv[:2] == ["container", "--version"]:
-            return self.result(stdout=b"container CLI version 1.1.0 (build: release)\n")
+            return self.result(stdout=b"container CLI version 1.2.0 (build: release)\n")
         if argv[:3] == ["container", "system", "status"]:
             return self.result()
         if argv[:3] == ["container", "image", "inspect"]:
@@ -888,31 +888,31 @@ class RuntimeGateTests(unittest.TestCase):
             JMS.runtime_ready()
 
     def test_version_gate(self):
-        self.probe(b"container CLI version 1.1.0 (build: release, commit: x)\n")
+        self.probe(b"container CLI version 1.2.0 (build: release, commit: x)\n")
         with self.assertRaisesRegex(JMS.JMSException, "too old"):
-            self.probe(b"container CLI version 1.0.9\n")
+            self.probe(b"container CLI version 1.1.9\n")
         with self.assertRaisesRegex(JMS.JMSException, "newer than the newest runtime"):
-            self.probe(b"container CLI version 1.2.0\n")
+            self.probe(b"container CLI version 1.3.0\n")
         with self.assertRaisesRegex(JMS.JMSException, "cannot parse"):
             self.probe(b"something else\n")
         with self.assertRaisesRegex(JMS.JMSException, "cannot parse"):
-            self.probe(b"container CLI version 1.1.0\n", returncode=1)
+            self.probe(b"container CLI version 1.2.0\n", returncode=1)
 
     def test_runtime_accept_pin_admits_one_exact_newer_version(self):
-        newer = b"container CLI version 1.2.0\n"
-        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.2.0"}):
+        newer = b"container CLI version 1.3.0\n"
+        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.3.0"}):
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
                 self.probe(newer)
             self.assertIn("not qualified", stderr.getvalue())
             self.assertIn("JMS_RUNTIME_ACCEPT", stderr.getvalue())
-        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.3.0"}):
+        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.4.0"}):
             with self.assertRaisesRegex(JMS.JMSException, "newer than the newest runtime"):
                 self.probe(newer)
-        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.0.9"}):
+        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.1.9"}):
             with self.assertRaisesRegex(JMS.JMSException, "too old"):
-                self.probe(b"container CLI version 1.0.9\n")
-        with self.assertRaisesRegex(JMS.JMSException, "JMS_RUNTIME_ACCEPT=1.2.0"):
+                self.probe(b"container CLI version 1.1.9\n")
+        with self.assertRaisesRegex(JMS.JMSException, "JMS_RUNTIME_ACCEPT=1.3.0"):
             self.probe(newer)
 
     def test_runtime_json_rejects_invalid_payloads(self):
