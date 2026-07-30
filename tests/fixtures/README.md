@@ -48,21 +48,8 @@ driver, captured 2026-07-29.
 | `podman-5.4.2-images.json` | `podman images --format json` | Raw 5.4.2 shape: uppercase `Id`, `Names` array, integer `Created`, RFC3339 `CreatedAt`, top-level `Labels`, `RepoTags` may be null (MIR-006). |
 | `podman-5.4.2-ps.json` | `podman ps --all --format json` | One running container (labelled `jms.project=testpid`, bind mount) and one exited. Full 64-char `Id`; image labels inherit onto container `Labels`; `Mounts` lists target paths only — no sources (MIR-007). |
 
-## Podman 4.9.3 (matrix-minimum capture)
-
-Provenance: Podman 4.9.3 (Ubuntu 24.04 archive build), rootless as an
-unprivileged user, overlay storage driver, netavark, crun, captured
-2026-07-29. **Nested-capture caveat:** the Ubuntu 24.04 environment ran as a
-container under rootless Podman 5.4.2 on Debian 13 (kernel 6.12), not on
-bare metal. JSON output shapes are a client/library property and unaffected;
-kernel-adjacent results (userns mappings, bwrap behavior) matched the 5.4.2
-bare-metal evidence exactly but should be re-confirmed by the Ubuntu 24.04
-CI integration job before release.
-
-| File | Command | Notes |
-| --- | --- | --- |
-| `podman-4.9.3-info.json` | `podman info --format json` | Same field set and casing as 5.4.2: `host.serviceIsRemote`, `host.security.rootless`, `host.idMappings`, `host.ociRuntime.name`, `host.networkBackend`, `store.graphDriverName` all present (MIR-008). |
-| `podman-4.9.3-images.json` | `podman images --all --format json` | Same raw shape as 5.4.2: uppercase `Id`, `Names` array, integer `Created`, `CreatedAt` string, top-level `Labels`. Includes three dangling records: `Names` and `RepoTags` are JSON null on them (MIR-006). |
-| `podman-4.9.3-ps.json` | `podman ps --all --format json` | Running labelled + exited containers; auto-removed (`--rm`) container absent. Full 64-char `Id`, top-level `Labels` with image-label inheritance. `Mounts` is target paths only (`["/work"]`) — the 5.4.2 no-sources finding holds on 4.9.3 too (MIR-007). |
-| `podman-4.9.3-inspect-mounts.json` | `podman inspect <ctr> --format json` | `.Mounts` carries `Source` + `Destination` for the bind mount — the inspect-based leak-sweep contract works on 4.9.3 (MIR-007). |
-| `podman-4.9.3-qualification-results.txt` | qualification harness | Full check log: 48 passes, 0 failures, covering MIR-006/007/008 shapes, the MIR-009 `--userns` matrix (incl. `PODMAN_USERNS` and `containers.conf` conflict runs), MIR-011 short-name matrix (3 `registries.conf` variants × base present/absent), MIR-013 `label=disable`, and the MIR-017 bwrap reproduction. |
+A Podman 4.9.3 (Ubuntu 24.04) capture set previously lived here as
+pre-qualification for a possible Ubuntu promotion; it was deleted in the
+2026-07-30 proposal slim (see the doc's Provenance note) and survives in
+git history. Fixtures for that target are recaptured if and when it is
+actually qualified.

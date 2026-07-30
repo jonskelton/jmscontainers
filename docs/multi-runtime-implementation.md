@@ -56,10 +56,9 @@ same Fedora image.
   are named mid-term qualification targets, out of scope for the first
   push (§12).
 - The Podman 4.9.3 fixtures and qualification runs previously checked in
-  under `tests/fixtures/` are removed (delete alongside the
-  implementation): pre-paying for a possible Ubuntu 24.04 promotion
-  serves no current user. Fixtures for that target are recaptured if and
-  when it is actually qualified.
+  under `tests/fixtures/` are deleted: pre-paying for a possible
+  Ubuntu 24.04 promotion serves no current user. Fixtures for that
+  target are recaptured if and when it is actually qualified.
 
 ## Shared invariants
 
