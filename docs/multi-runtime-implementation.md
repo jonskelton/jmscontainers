@@ -240,9 +240,15 @@ acceptance tests the implementation must land before release.
   `Created`, top-level `Labels` map — plus an RFC3339 `CreatedAt` string,
   `Digest`, and `RepoTags` that can be `null`. This confirms the manual's
   lowercase example does not describe 5.4.2's raw output, i.e. the shape
-  variance concern is real, not hypothetical. Still open: a captured 4.9.x
-  fixture from the matrix minimum (Ubuntu 24.04), the contract decision
-  (jms-owned projection vs. fixture-versioned normalizer), and the strict
+  variance concern is real, not hypothetical.
+- **Progress (matrix-minimum qualification, 2026-07-29, Podman 4.9.3
+  rootless, Ubuntu 24.04 — nested capture, see `tests/fixtures/README.md`):**
+  `tests/fixtures/podman-4.9.3-images.json` shows the identical raw shape —
+  uppercase `Id`, `Names` array, integer `Created`, top-level `Labels` —
+  and adds dangling-image coverage: dangling records carry JSON null for
+  both `Names` and `RepoTags`. Both ends of the version range now agree, so
+  a single normalizer can serve 4.9–5.4. Still open: the contract decision
+  (jms-owned projection vs. fixture-versioned normalizer) and the strict
   handling rules for `<none>`/null names, digests, and malformed records.
 - **Affects:** §§5 and 9
 - **Finding:** The proposal assumes `Id`, `Names`, integer `Created`, and
@@ -276,9 +282,18 @@ acceptance tests the implementation must land before release.
   of *target* paths (e.g. `["/work"]`) — it carries no source information,
   so the proposed integration leak sweep cannot identify jms mounts from
   `ps` JSON at all and must use `podman inspect` (or a Go-template
-  projection of `.Mounts`) instead; §9 is updated accordingly. Still open:
-  a 4.9.x fixture, auto-removed/malformed-record coverage, and the inspect
-  based leak-sweep contract.
+  projection of `.Mounts`) instead; §9 is updated accordingly.
+- **Progress (matrix-minimum qualification, 2026-07-29, Podman 4.9.3
+  rootless, Ubuntu 24.04 — nested capture, see `tests/fixtures/README.md`):**
+  `tests/fixtures/podman-4.9.3-ps.json` matches the 5.4.2 shape — full
+  64-char `Id`, top-level `Labels` with image-label inheritance — and the
+  no-sources `Mounts` finding holds on 4.9.3 too (`["/work"]`).
+  Auto-removed coverage is captured: a `--rm` container does not appear in
+  `ps --all`. `tests/fixtures/podman-4.9.3-inspect-mounts.json` confirms
+  `podman inspect` exposes `Source`/`Destination`, so the inspect-based
+  sweep works across the whole version range. Still open:
+  malformed-record handling and writing the inspect-based leak-sweep
+  contract into §9 as a testable spec.
 - **Affects:** §§5 and 9
 - **Finding:** The design assumes raw `podman ps --format json` records contain
   `Id`, top-level `Labels`, and an integration-usable `Mounts` field with a
@@ -305,7 +320,14 @@ acceptance tests the implementation must land before release.
   (present, showing the invoking-user + subordinate-range entries),
   `host.ociRuntime.name`, `host.networkBackend`, and
   `store.graphDriverName`. So the probe *can* validate rootless state,
-  remoteness, and ID mappings from one invocation, not just storage. Still
+  remoteness, and ID mappings from one invocation, not just storage.
+- **Progress (matrix-minimum qualification, 2026-07-29, Podman 4.9.3
+  rootless, Ubuntu 24.04 — nested capture, see `tests/fixtures/README.md`):**
+  `tests/fixtures/podman-4.9.3-info.json` shows every probe-relevant field
+  present with identical casing on 4.9.3 (`host.serviceIsRemote`,
+  `host.security.rootless`, `host.idMappings.uidmap`/`gidmap`,
+  `host.ociRuntime.name`, `host.networkBackend`,
+  `store.graphDriverName`), so one parser covers the version range. Still
   open: the readiness scope decision (which of these fields are checked,
   and whether a cached create/run probe is included), failure-mode fixtures
   (rootful, remote, missing/undersized ID maps, storage/OCI/network
@@ -368,8 +390,14 @@ acceptance tests the implementation must land before release.
     directions, with a no-flag control run confirming the conf setting
     does take effect when nothing is passed — satisfying the
     `containers.conf` half of **Done when** on 5.4.2.
-  - Not yet covered (acceptance work): the same runs on Ubuntu 24.04's
-    Podman 4.9.x as CI integration tests.
+  - 2026-07-29 addendum: the full matrix above (both `--userns` variants,
+    `/work` ownership, `--user isolation` resolution, `PODMAN_USERNS` and
+    `containers.conf` conflicts in both directions plus the no-flag
+    control) passed identically on Podman 4.9.3 rootless under Ubuntu
+    24.04 — as a nested container capture, not bare metal (see
+    `tests/fixtures/podman-4.9.3-qualification-results.txt`).
+  - Not yet covered (acceptance work): the same runs on a real (non-nested)
+    Ubuntu 24.04 host as CI integration tests.
 - **Affects:** §7.1
 - **Finding:** Podman documents that the default user namespace can be changed
   by `PODMAN_USERNS` or `containers.conf`; only in the absence of those
@@ -428,9 +456,14 @@ acceptance tests the implementation must land before release.
   identically under three `registries.conf` variants injected via
   `CONTAINERS_REGISTRIES_CONF`: no unqualified-search registries (this
   host's default), permissive short-name mode with search registries, and
-  enforcing short-name mode with search registries. Remaining acceptance
-  work per **Done when**: the same matrix on Podman 4.9.x, and a
-  network-isolation proof in CI rather than a scratch run.
+  enforcing short-name mode with search registries. 2026-07-29 addendum:
+  the identical six-cell matrix (three `registries.conf` variants × base
+  present/absent, `--pull=never --network=none`, non-interactive) passed
+  on Podman 4.9.3 rootless under Ubuntu 24.04 (nested capture; see
+  `tests/fixtures/podman-4.9.3-qualification-results.txt`), including the
+  fast `image not known` exit-125 failure with the base absent. Remaining
+  acceptance work per **Done when**: a network-isolation proof in CI on a
+  real Ubuntu 24.04 runner rather than a scratch run.
 - **Affects:** §§3, 6, 9, and 10
 - **Finding:** The entire project build path depends on
   `FROM jmscontainers-base:latest` resolving to
@@ -479,10 +512,13 @@ acceptance tests the implementation must land before release.
 - **Progress:** the non-SELinux half of **Done when** is observed locally:
   every qualification run on 2026-07-29 (Podman 5.4.2 rootless, Debian 13,
   an AppArmor host) passed `--security-opt label=disable` and the flag was
-  accepted as a no-op. Still open: the security decision record comparing
-  alternatives, the SELinux-enforcing-host integration test (needs a Fedora
-  or similar host; not reproducible on this machine), and the 4.9.x
-  acceptance run.
+  accepted as a no-op. 2026-07-29 addendum: the flag is likewise accepted
+  as a no-op on Podman 4.9.3 rootless under Ubuntu 24.04 (nested capture) —
+  every run in the 4.9.3 qualification pass used it, satisfying the
+  minimum-version half of **Done when** pending re-confirmation on a real
+  runner. Still open: the security decision record comparing alternatives
+  and the SELinux-enforcing-host integration test (needs a Fedora or
+  similar host; not reproducible on this machine).
 - **Affects:** §§7.2, 8, and 9
 - **Finding:** The assertion that SELinux separation "adds little" is not
   established. `label=disable` avoids relabeling host trees but also removes a
@@ -566,7 +602,11 @@ acceptance tests the implementation must land before release.
   permitted`, caused by Podman's masked `/proc` paths, not by seccomp or
   userns creation. Adding `--security-opt unmask=ALL` to the *container*
   launch makes the same bwrap invocation succeed; a control run without it
-  reproduces the failure. §7.3 is updated with this reproduction. Still
+  reproduces the failure. §7.3 is updated with this reproduction.
+  2026-07-29 addendum: the same three-way reproduction (unshare-user works;
+  full sandbox fails on masked `/proc`; `unmask=ALL` makes it succeed)
+  holds on Podman 4.9.3 rootless under Ubuntu 24.04 (nested capture, so
+  kernel-adjacent — re-confirm on a real runner). Still
   open: testing the actual shipped Claude/Codex/OpenCode launchers, whether
   a narrower unmask (e.g. `unmask=/proc/*`) suffices, and the decision on
   whether any workaround is documented given its security consequence
