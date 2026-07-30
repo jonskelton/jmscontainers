@@ -86,7 +86,7 @@ target rather than first-push acceptance material.
 | MIR-004 | Blocker | Backend interface | Resolved (design) |
 | MIR-005 | Blocker | Compatibility contract | Resolved (design) |
 | MIR-006 | Blocker | Podman image schema | Resolved (design) |
-| MIR-007 | Blocker | Podman container schema | Open (partially addressed) |
+| MIR-007 | Blocker | Podman container schema | Resolved (design) |
 | MIR-008 | Blocker | Rootless readiness | Resolved (design) |
 | MIR-009 | Blocker | Deterministic user namespaces | Resolved (design) |
 | MIR-010 | Blocker | Isolation-user ABI | Resolved (design) |
@@ -314,7 +314,23 @@ acceptance tests the implementation must land before release.
 
 ### MIR-007 — Podman `ps` and integration mount schemas are unqualified
 
-- **Status:** Open (partially addressed 2026-07-29)
+- **Status:** Resolved (design) — 2026-07-29
+- **Decision:** Two schemas, two owners, both strict and fail-closed.
+  Inside jms, the backend `ps()` normalizer accepts exactly the shape
+  proven by the checked-in 4.9.3/5.4.2 `ps` fixtures — full 64-character
+  `Id`, top-level `Labels` map — and, per the shared error contract
+  (§2/MIR-006), a malformed value in any ownership-relevant field aborts
+  the whole operation rather than being skipped; the `Mounts` field is
+  never consumed by jms at all. In the integration harness, the leak
+  sweep is specified in §9's "Leak-sweep contract" as a testable spec: a
+  two-step `podman ps --all --format json` → per-ID `podman inspect`
+  walk (because `ps` JSON carries mount *targets* only — the load-bearing
+  negative finding below), with a strict parse of both outputs, a single
+  tolerated race ("no such container" between the two steps), and three
+  mutually exclusive outcomes (clean / leak / sweep failure) where any
+  inability to complete fails the run rather than reporting clean.
+  Malformed-record fixtures and tests over them are acceptance work per
+  **Done when**.
 - **Progress (local qualification, Podman 5.4.2 rootless, Debian 13):**
   a real `podman ps --all --format json` fixture with running, stopped, and
   labelled containers is checked in as
@@ -335,9 +351,10 @@ acceptance tests the implementation must land before release.
   Auto-removed coverage is captured: a `--rm` container does not appear in
   `ps --all`. `tests/fixtures/podman-4.9.3-inspect-mounts.json` confirms
   `podman inspect` exposes `Source`/`Destination`, so the inspect-based
-  sweep works across the whole version range. Still open:
-  malformed-record handling and writing the inspect-based leak-sweep
-  contract into §9 as a testable spec.
+  sweep works across the whole version range. Malformed-record handling
+  and the leak-sweep contract are now decided above and written into §9;
+  the malformed fixtures and the tests over them are acceptance work per
+  **Done when**.
 - **Affects:** §§5 and 9
 - **Finding:** The design assumes raw `podman ps --format json` records contain
   `Id`, top-level `Labels`, and an integration-usable `Mounts` field with a
@@ -1661,10 +1678,11 @@ Parametrize on the selected runtime instead of hard-requiring `container`:
 - Resolve the runtime the same way jms does (`JMS_RUNTIME`, then platform).
 - The two direct `container …` invocations become runtime-conditional: the
   bwrap smoke test uses `podman run` on Linux, and the final
-  leaked-container sweep lists IDs via `podman ps -a --format json` and
-  reads mount sources via `podman inspect` — on 5.4.2 the `ps` JSON
-  `Mounts` field is only a list of target paths with no sources (MIR-007),
-  so `ps` alone cannot identify jms mounts.
+  leaked-container sweep follows the "Leak-sweep contract" below — on
+  Podman it lists IDs via `podman ps --all --format json` and reads mount
+  sources via `podman inspect`, because on both 4.9.3 and 5.4.2 the `ps`
+  JSON `Mounts` field is only a list of target paths with no sources
+  (MIR-007), so `ps` alone cannot identify jms mounts.
 - Add one Linux-only assertion after the first project launch: create a file
   in `/work` from inside the container (`--bin /bin/sh -- -c 'touch …'`) and
   verify host ownership equals the invoking user — this is the `keep-id`
@@ -1674,6 +1692,80 @@ Parametrize on the selected runtime instead of hard-requiring `container`:
   base present and a fast, non-interactive `image not known` failure
   (exit 125) with it absent — the deterministic form of the earlier
   "offline-ish" check, qualified locally per MIR-011.
+
+### Leak-sweep contract (resolves MIR-007)
+
+The final integration step asserts that no test container survived the run.
+This subsection is the testable specification of that step; the parsing and
+predicate logic lives in one `python3` snippet per backend so the same code
+can be exercised as a unit test against the checked-in fixtures.
+
+**Leak predicate.** Let `WORK` be the canonicalized (`realpath`) path of the
+run's temporary workspace. jms canonicalizes every mount source through
+`canon()` before launch, so the source recorded in engine metadata is
+already canonical; the comparison is therefore an exact string test with no
+compare-time normalization: a container **leaks** iff any of its mount
+entries has a string source equal to `WORK` or beginning with `WORK + "/"`.
+No globbing, no case folding, no symlink resolution at compare time.
+
+**Enumeration on Podman — two steps, both parsed strictly.** The `ps` JSON
+`Mounts` field carries target paths only (the MIR-007 negative finding,
+proven on 4.9.3 and 5.4.2), so sources must come from `inspect`:
+
+1. `podman ps --all --format json`. The output must be a JSON array (empty
+   means no containers and the sweep passes). Every element must be a map
+   whose `Id` is a 64-character lowercase-hex string
+   (`tests/fixtures/podman-4.9.3-ps.json`,
+   `tests/fixtures/podman-5.4.2-ps.json`). Anything else — non-array top
+   level, non-map element, missing/truncated/non-string `Id` — aborts the
+   sweep as a **sweep failure** (below). A malformed record is never
+   skipped: a skipped record could hide a leak.
+2. For each ID, `podman inspect --type container --format json <id>`,
+   passing the ID exactly as returned. The output must be a
+   single-element JSON array whose element is a map; its `Mounts` field
+   must be an array (absent or non-array aborts); every mount entry must
+   be a map whose `Source` and `Destination` are strings
+   (`tests/fixtures/podman-4.9.3-inspect-mounts.json`). Non-conforming
+   output aborts as a sweep failure. Entries are evaluated against the
+   leak predicate regardless of their `Type` — a leak is a leak however
+   it was mounted.
+
+**The single tolerated race.** A container may exit and be removed between
+steps 1 and 2 (jms launches pass `--rm`). If `inspect` fails and its stderr
+identifies the container as unknown (Podman's "no such container" / "no
+such object" diagnostics), that ID is treated as gone: a vanished container
+holds no mounts and is not a leak. Any other `inspect` failure — nonzero
+exit with different stderr, unparseable output — aborts as a sweep failure.
+This is the only failure the sweep tolerates.
+
+**Three mutually exclusive outcomes.**
+
+| Outcome | Exit | Output contract |
+| --- | --- | --- |
+| Clean | 0 | nothing required |
+| Leak found | nonzero | names every leaking container ID and each offending mount source |
+| Sweep failure | nonzero | a diagnostic distinct from the leak message, quoting what failed to parse or execute |
+
+A sweep that cannot complete must fail the integration run — fail closed —
+and must never be conflated with "leak found", so a schema drift in a future
+Podman shows up as its own signal rather than as a phantom leak.
+
+**apple/container is unchanged.** `container list --all --format json`
+already embeds `configuration.mounts[].source`, so macOS stays single-pass,
+applying the same leak predicate and the same three-outcome contract to
+that schema.
+
+**Coverage note.** The 4.9.3 evidence shows auto-removed containers never
+appear in `ps --all`, so the sweep observes exactly the leak classes
+cleanup is responsible for: containers still running and containers that
+failed before removal. This matches the apple/container sweep's semantics.
+
+**Acceptance (the MIR-007 Done when).** The per-backend sweep snippet runs
+as a unit test over the checked-in `ps` and `inspect` fixtures plus
+malformed variants (non-array top level, truncated `Id`, missing `Mounts`,
+non-string `Source`), asserting each of the three outcomes and the
+tolerated-race path; the integration run then exercises the clean path for
+real on both backends.
 
 ### CI (`.github/workflows/test.yml`)
 
