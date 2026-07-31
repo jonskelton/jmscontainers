@@ -1314,27 +1314,34 @@ other way.
 
 ---
 
-## 3. Base image: one Containerfile, two runtimes
+## 3. Project-image user ABI: one identity, two runtimes
 
-The existing Fedora `Containerfile` builds unchanged under Podman/Buildah.
-Two small hardening edits make it deterministic across backends:
+Every conforming project image, whether it inherits the repository base or is
+standalone, provides an `isolation` account at UID/GID `1000:1000`, with
+`/home/isolation` and `/bin/bash` in passwd, an existing writable home owned
+by `1000:1000`, and passwordless sudo. Repository-owned images name the group
+`isolation` and end with `USER isolation`. This is an image-author contract;
+jms does not inspect or repair it at runtime.
 
-1. **Pin the `isolation` UID/GID.** Rootless Podman's `--userns=keep-id`
-   mapping (§7) must name the container-side UID, so it cannot be left to
-   `useradd`'s "first free UID" default (which *is* 1000 on a fresh Fedora
-   image, but implicitly):
+The existing Fedora base `Containerfile` builds unchanged under
+Podman/Buildah. Its identity, and the standalone clean-slate example's
+identity, must be deterministic across backends:
+
+1. **Pin the `isolation` UID/GID in every project image.** Rootless Podman's
+   `--userns=keep-id` mapping (§7) must name the container-side UID, so it
+   cannot be left to `useradd`'s "first free UID" default:
 
    ```dockerfile
    RUN groupadd -g 1000 isolation && \
        useradd -m -s /bin/bash -u 1000 -g 1000 isolation && ...
    ```
 
-   Keep `1000` in one place — an `ISOLATION_UID = 1000` constant in
-   `bin/jms` and this line — and note the pairing in a comment on both
-   sides. The constant feeds the `keep-id` mapping and the numeric
-   `--user` value (§7.1); because the user is passed numerically, the
-   image's own `/etc/passwd` never influences which UID the process runs
-   as, and no image attestation exists (§7.4).
+   Keep the runtime values explicit as `ISOLATION_UID = 1000` and
+   `ISOLATION_GID = 1000` in `bin/jms`, and test those constants against
+   both repository-owned Containerfiles. The constants feed the `keep-id`
+   mapping and numeric `--user` value (§7.1); because the user is passed
+   numerically, image content cannot influence which UID/GID the process
+   runs as, and no image attestation exists (§7.4).
 
 2. **Update the virtiofs comment** (`Containerfile` line 26) to describe
    both backends: virtiofs squashes UIDs on macOS; on Linux, `keep-id`
@@ -1809,19 +1816,22 @@ those conflicts.)
 attestation subsystem (MIR-034/036/037): `--user 1000:1000` by default
 and `--user 0:0` under `--root`, both derived by the serializer from
 `LaunchPlan.user`, the single user-mode authority (§2, MIR-046), and the
-`ISOLATION_UID` constant family (§3). Passed by name, `--user isolation` would resolve
+`ISOLATION_UID`/`ISOLATION_GID` constants (§3). Passed by name,
+`--user isolation` would resolve
 through the image's own `/etc/passwd`, letting a project Containerfile
 decide which UID the process runs as — the entire surface the deleted
 ABI probe existed to defend (§7.4). Passed numerically, the runtime UID
-is fixed by jms's own argv regardless of image content. Accepted
-consequences: `$HOME` and the login shell still resolve from the image's
-passwd entry, so an image that breaks its `isolation` entry misdirects
-only its own in-container environment, inside a boundary the user has
-already consented to; a numeric `--user` grants no supplementary groups
+is fixed by jms's own argv regardless of image content. The corresponding
+account metadata remains the image author's responsibility: an image whose
+`isolation` passwd entry does not resolve UID/GID `1000:1000`,
+`/home/isolation`, and `/bin/bash`, or whose home and sudo policy do not
+satisfy §3, is nonconforming and unsupported. A numeric `--user` grants no
+supplementary groups
 (consistent with the declined `keep-groups` below); and an image without
 a usable `/bin/bash` fails at launch with the runtime's own error.
-apple/container keeps `--user isolation` / `--user root` unchanged —
-virtiofs squashing makes the container-side UID non-load-bearing on
+apple/container keeps `--user isolation` / `--user root` unchanged — the
+shared ABI ensures that name resolves to the same identity, while virtiofs
+squashing makes the numeric value non-load-bearing for host ownership on
 macOS.
 
 Note `sudo` inside the container (the `isolation` user's passwordless
@@ -1895,10 +1905,12 @@ deleted, not implemented: the Podman backend passes `--user 1000:1000`
 by construction (§7.1) and image content cannot influence the runtime
 UID at all.
 
-What remains image-controlled resolves only the container's own
-environment (`$HOME`, login shell) inside the consented boundary, and a
-missing or broken `/bin/bash` entrypoint fails at launch with the
-runtime's own error. jms therefore never inspects an image filesystem,
+Numeric `--user` enforces the runtime identity independently of image
+content. The documented project-image ABI makes the corresponding account
+name, passwd home and shell, home existence/ownership/writability, and sudo
+policy the image author's responsibility. A mismatch is a nonconforming
+image, and a missing or broken `/bin/bash` entrypoint can fail at launch with
+the runtime's own error. jms therefore never inspects an image filesystem,
 and `verify_image_abi` does not exist on any backend.
 
 **Rejected alternatives, recorded:** (a) the attestation probe itself —
@@ -2097,7 +2109,8 @@ launch-contract assertions do not pay for the example-image builds:
   agent state directories), and the R5.4 survivor-set graph run
   (MIR-042/047): build a graph containing selected and unselected
   parents plus jms and non-jms aliases, remove one scheduled ref, and
-  assert the exact survivor set.
+  assert the exact survivor set. Its clean-store standalone-image run also
+  verifies the complete §3 ABI and host ownership of a `/work` write.
 
 Both tiers end in the leak sweep, and cleanup plus the sweep run from the
 EXIT trap, so a failure in any step still sweeps and reports — a partial
@@ -2226,12 +2239,13 @@ only for non-enforceable wording, never for a behavioral claim).
 
 | ID | § | Claim | Tier | Test |
 | --- | --- | --- | --- | --- |
-| R3.1 | 3 | `isolation` UID/GID pinned to 1000; `ISOLATION_UID` constant and Containerfile line agree | unit | `test_isolation_uid_constant_matches_containerfile` (reads the Containerfile) |
+| R3.1 | 3 | every repository-owned image pins `isolation` to UID/GID 1000; `ISOLATION_UID` and `ISOLATION_GID` agree with both Containerfiles | unit | `test_isolation_identity_constants_match_containerfiles` |
 | R3.2 | 3, 7.1 | image content cannot influence the runtime UID: Podman launch argv passes numeric `--user` on both variants and no jms code path inspects an image filesystem | golden + conformance | launch argv goldens (R7.1); conformance case asserting no backend exposes an image-inspection operation |
 | R3.4 | 3 | rebuilt base image behaves as designed on macOS | macOS-int | rebuild-and-verify run of the full integration script |
 | R3.5 | 3 | Podman `local_name()` strips `localhost/` so tag-prefix ownership checks work unmodified | conformance | `local_name` cases in the conformance suite |
 | R3.6 | 3 | `image_exists` matches the `localhost/`-prefixed stored name | int-A | base built then `image_exists` true via a `jms build` no-op path; unit exit-code cases in R5.1 |
 | R3.7 | 3 | `FROM jmscontainers-base:latest` resolves locally under `--pull=missing` with no registry contact when present; base absent fails non-interactively with the conditional missing-base hint (no speed claim — MIR-055); a clean-store standalone project fetches its external base | unit + int-A + int-B | FROM-resolution check via jms under the harness egress denial; clean-store standalone build (tier B); unit test pinning the conditional hint wording |
+| R3.9 | 3, 7.1 | a standalone image launched through jms resolves the numeric process and named account to `1000:1000`, declares `/home/isolation` and `/bin/bash`, has a writable `1000:1000` home, supports passwordless sudo, and writes `/work` files with invoking-host ownership | int-B + macOS-int | clean-store standalone ABI launch assertions (tier B on Podman); clean-slate example launch in the macOS integration run |
 | R4.1 | 4 | version first-line parsing: both formats, distro suffix truncation, malformed/non-numeric rejected, invalid UTF-8 fails closed | conformance | version-line fixtures |
 | R4.2 | 4 | apple/container exact `min == max` pin and `JMS_RUNTIME_ACCEPT` unchanged | unit | existing `test_version_gate`, `test_runtime_accept_pin_admits_one_exact_newer_version` |
 | R4.3 | 4 | Podman floor (5, 4, 0); anything at or above the floor accepted silently, no warning machinery; `JMS_RUNTIME_ACCEPT` ignored on Podman | unit | `test_podman_version_floor` |
@@ -2416,8 +2430,10 @@ enablement is needed.
 - **Image-content attestation.** jms never inspects an image's
   filesystem: the numeric `--user` (§7.1) makes the runtime UID
   independent of image content, superseding the earlier probe design
-  (MIR-034/036/037). What an image can still misdirect is its own
-  in-container environment, inside the consented boundary.
+  (MIR-034/036/037). Account name, home, shell, ownership, and sudo state
+  remain the image author's responsibility under the documented ABI; a
+  mismatch makes the image nonconforming rather than changing the runtime
+  identity.
 - **Automated Linux integration in CI (for 1.1.0).** The nested
   `integration-linux` job is dropped (MIR-033, superseded), and no local
   nested harness is specified or gating (MIR-049); the real-host

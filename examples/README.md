@@ -22,7 +22,8 @@ scratch, for instance after refreshing the shared base with
 - `rust/` layers the standard image with the Rust toolchain (plus rustfmt,
   clippy, and rust-analyzer), since the base image no longer bundles it.
 - `clean-slate/` demonstrates a standalone Fedora image. It creates the
-  required `isolation` user itself.
+  required `isolation` user itself and pins the project-image user ABI to
+  UID/GID `1000:1000`.
 
 These examples are intentionally illustrative. Review and adapt package
 versions, network use, and host mounts before approving them.

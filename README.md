@@ -194,12 +194,52 @@ full versioned schema is in
 [examples](examples/) for Go and Rust toolchains, Odin/reverse-engineering,
 data-science, and a minimal clean-slate image.
 
-Worth knowing: the runtime user must exist and have a home directory and
-`/bin/bash`. `jms` always replaces the image `ENTRYPOINT` and does not append
-`CMD`; use `[run].entry` in the manifest or `jms launch --bin ...` to choose
-the command. And never put credentials in a Containerfile, manifest, or
-build-context files — those inputs can be fingerprinted, copied into build
-layers, and retained by the runtime.
+### Project image user ABI
+
+Every project image launched in the default mode must provide:
+
+- a user named `isolation` with UID 1000 and primary GID 1000;
+- a passwd entry with home `/home/isolation` and shell `/bin/bash`;
+- an existing, writable `/home/isolation` owned by `1000:1000`; and
+- passwordless sudo (`sudo -n true` must succeed).
+
+The group with GID 1000 should be named `isolation`; repository-owned images
+use that name. Images should finish with `USER isolation` for a safe default
+outside jms, although jms always selects the runtime user explicitly.
+
+Images based on `jmscontainers-base:latest` inherit this contract. A
+standalone Fedora image can create the account deterministically with:
+
+```Dockerfile
+RUN dnf -y install bash sudo && dnf clean all && \
+    groupadd --gid 1000 isolation && \
+    useradd --create-home --shell /bin/bash \
+            --uid 1000 --gid 1000 isolation && \
+    printf 'isolation ALL=(ALL) NOPASSWD: ALL\n' \
+        > /etc/sudoers.d/isolation && \
+    chmod 0440 /etc/sudoers.d/isolation
+USER isolation
+```
+
+The numeric identity is required because rootless Podman maps the invoking
+host user to container identity `1000:1000` and launches with numeric
+`--user 1000:1000`. This keeps `/work` and persistent-state writes owned by
+the host user without allowing image content to choose the runtime identity.
+The build above intentionally fails if either ID is already occupied; choose
+a compatible base instead of silently reusing or modifying an unrelated
+account.
+
+jms does not inspect or repair image account data before launch. A standalone
+image that omits or mismatches this ABI is unsupported and may fail with a
+runtime or in-container diagnostic. In particular, standalone definitions
+created for 1.0 that relied on automatically allocated IDs must pin
+`isolation` to `1000:1000` for cross-runtime use.
+
+jms always replaces the image `ENTRYPOINT` and does not append `CMD`; use
+`[run].entry` in the manifest or `jms launch --bin ...` to choose the command.
+Never put credentials in a Containerfile, manifest, or build-context files —
+those inputs can be fingerprinted, copied into build layers, and retained by
+the runtime.
 
 ## How trust works
 

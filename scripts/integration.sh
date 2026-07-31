@@ -8,7 +8,8 @@
 #            probes, FROM-resolution under egress denial, failure cleanup.
 #   Tier B -- expensive, example images: per-example build/inspect/launch/
 #            clean cycle, context-escape, auth mounts, manifest env parity,
-#            survivor-set graph run, clean-store standalone external base.
+#            survivor-set graph run, clean-store standalone external base
+#            and complete project-image user ABI.
 #
 # Exit codes: 0 pass; 1 test failure or leak; 2 sweep failure; 3 harness
 # failure (egress-denial install/remove problems, unsupported platform).
@@ -295,6 +296,28 @@ tier_b() {
         cp -R "$root/examples/clean-slate" "$work/clean-store"
         jms build --trust --no-auth -w "$work/clean-store" \
             || fail "standalone project failed to fetch its fully qualified base"
+
+        # Standalone image user ABI (R3.9): numeric runtime selection,
+        # account metadata, home ownership, sudo, and keep-id host ownership
+        # must all describe the same identity.
+        launch_out "$work/clean-store" --bin /bin/sh -- -c '
+            test "$(id -u)" = 1000 &&
+            test "$(id -g)" = 1000 &&
+            test "$(id -un)" = isolation &&
+            test "$(id -u isolation)" = 1000 &&
+            test "$(id -g isolation)" = 1000 &&
+            test "$(getent passwd isolation | cut -d: -f6)" = /home/isolation &&
+            test "$(getent passwd isolation | cut -d: -f7)" = /bin/bash &&
+            test -d /home/isolation &&
+            test -w /home/isolation &&
+            test "$(stat -c %u:%g /home/isolation)" = 1000:1000 &&
+            sudo -n true &&
+            touch /work/standalone-abi-probe
+        ' || fail "standalone image does not satisfy the isolation user ABI"
+        owner=$(stat -c %u:%g "$work/clean-store/standalone-abi-probe")
+        expected_owner="$(id -u):$(id -g)"
+        [ "$owner" = "$expected_owner" ] \
+            || fail "standalone /work write owned by $owner, not invoking user $expected_owner"
         jms clean --images -w "$work/clean-store"
     fi
     echo "== tier B passed =="

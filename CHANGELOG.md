@@ -31,9 +31,15 @@ only the runtime layer is per-backend.
   jms-built images are never selected. Podman image untags pass
   `--no-prune`, so removing a project image never sweeps up dangling
   parents.
-- **Base image pins the isolation UID/GID to 1000** (previously implicit),
-  and `examples/clean-slate` moves to a fully qualified external base
-  reference.
+- **Project images now have an explicit user ABI.** The `isolation` account
+  must be UID/GID `1000:1000`, use `/home/isolation` and `/bin/bash`, own a
+  writable home, and have passwordless sudo. The base image already satisfies
+  this contract; `examples/clean-slate` now pins it explicitly and moves to a
+  fully qualified external base reference. Standalone images created for 1.0
+  that relied on distribution-assigned IDs must pin the account to
+  `1000:1000` before using the Linux backend. This retains 1.1.0 because the
+  numeric identity was already required by Linux's explicit rootless Podman
+  mapping, though it was not previously documented.
 - **Integration harness split into tiers** (`scripts/integration.sh
   a|b|all`): tier A asserts the launch contracts on the base image
   (ownership, UID mapping, sudo, hostname, exit propagation, read-only

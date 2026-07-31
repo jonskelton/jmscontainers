@@ -33,11 +33,12 @@ BASE_REPOSITORY = "jmscontainers-base"
 BASE = BASE_REPOSITORY + ":latest"
 UTC_SECONDS = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
 KEEP_IMAGES = 2
-# Container-side UID/GID of the `isolation` user, pinned in the base image's
-# Containerfile (groupadd -g/useradd -u must agree with this constant).  It
-# feeds Podman's keep-id mapping and numeric --user, so image content can
-# never influence which UID the container process runs as.
+# Container-side UID/GID of the `isolation` user, pinned in every conforming
+# project image (repository-owned Containerfiles and these constants must
+# agree).  They feed Podman's keep-id mapping and numeric --user, so image
+# content can never influence which identity the container process runs as.
 ISOLATION_UID = 1000
+ISOLATION_GID = 1000
 CONTEXT_NOTE = ("note: the build context is .jmscontainer/ only; "
                 "COPY/ADD sources must live inside it (see README)")
 MISSING_BASE_NOTE = ("note: the shared base image " + BASE + " is not present; "
@@ -494,8 +495,8 @@ class PodmanBackend:
         # runtime UID; --userns is explicit so ambient PODMAN_USERNS or
         # containers.conf values cannot alter the mapping (MIR-034/040).
         if plan.user == "isolation":
-            user = "%d:%d" % (ISOLATION_UID, ISOLATION_UID)
-            userns = "--userns=keep-id:uid=%d,gid=%d" % (ISOLATION_UID, ISOLATION_UID)
+            user = "%d:%d" % (ISOLATION_UID, ISOLATION_GID)
+            userns = "--userns=keep-id:uid=%d,gid=%d" % (ISOLATION_UID, ISOLATION_GID)
         else:
             user = "0:0"
             userns = "--userns=host"

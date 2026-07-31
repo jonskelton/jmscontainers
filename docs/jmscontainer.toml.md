@@ -55,7 +55,8 @@ A `target` is an absolute, normalized container path: no trailing slash, no
 empty or `.`/`..` component, and no `,`, `=`, or NUL (the runtime's mount
 grammar cannot carry the first two). It must sit under one of four prefixes:
 
-- `/home/isolation/` — the default runtime user's home
+- `/home/isolation/` — the home fixed by the
+  [project-image user ABI](../README.md#project-image-user-abi)
 - `/opt/`
 - `/mnt/`
 - `/srv/`

@@ -1,0 +1,185 @@
+# 1.1.0 release-critical issues
+
+Review target: `main...multi-runtime` at `4cc30d2`
+Reviewed: 2026-07-30
+Merge disposition: **not ready**
+
+This register contains only issues that must be resolved or explicitly closed
+with qualification evidence before 1.1.0 is merged for release.
+
+Status values:
+
+- **Open** — a code, documentation, or test change is required.
+- **Awaiting qualification** — the implementation may be complete, but a
+  required real-host gate has not been recorded.
+- **Closed** — the resolution and its validation evidence are recorded here.
+
+## RC-001 — Standalone images have an undeclared `1000:1000` runtime ABI
+
+- **Severity:** Blocker
+- **Status:** Awaiting qualification
+- **Affected:** `bin/jms:493-503`, `README.md:197-199`,
+  `examples/clean-slate/.jmscontainer/Containerfile:5-8`
+
+### Finding
+
+The Podman backend always launches the default user as numeric
+`--user 1000:1000` and maps the invoking host user to that numeric identity.
+Only the repository base image pins `isolation` to UID/GID 1000. The public
+project-image contract says merely that the runtime user must exist and have a
+home directory and `/bin/bash`, and the standalone example creates
+`isolation` without explicit UID/GID values.
+
+Consequently, a valid standalone definition whose `isolation` account is not
+exactly `1000:1000` runs as the wrong account (or as an account absent from
+`/etc/passwd`) on Linux. Its login-shell home, passwordless-sudo rule, and
+mounted state paths can then disagree with the actual process identity. The
+same image is selected by account name on macOS, so this also violates the
+claim that the project contract is shared across backends.
+
+### Required resolution
+
+Choose and implement one contract:
+
+1. Support arbitrary `isolation` UID/GID values consistently across both
+   backends; or
+2. Make `1000:1000` an explicit project-image ABI everywhere it is described,
+   pin the standalone example with `groupadd -g 1000` and
+   `useradd -u 1000 -g 1000`, and add a real-runtime assertion that the
+   standalone example resolves `isolation` to `1000:1000`, has the expected
+   home, and retains passwordless sudo.
+
+### Close when
+
+- The README, example, implementation record, and behavior state one
+  consistent image-user contract.
+- Unit coverage pins the chosen contract.
+- The standalone image passes the Linux real-runtime launch assertions.
+
+### Implementation status
+
+The repository now declares the fixed `isolation` `1000:1000` ABI, pins both
+repository-owned Containerfiles to the runtime UID/GID constants, and adds
+the complete standalone launch assertions to integration tier B. `make test`
+passes. RC-001 remains open pending a green `scripts/integration.sh all` run
+on the qualified fresh non-1000 Debian/Podman host.
+
+## RC-002 — The documented SELinux support state contradicts the release scope
+
+- **Severity:** Blocker
+- **Status:** Open
+- **Affected:** `SECURITY.md:79-80`, `README.md:60-67`,
+  `docs/cli.md:39-42`, `CHANGELOG.md:17-21`,
+  `docs/multi-runtime-implementation.md:334-362`
+
+### Finding
+
+The resolved MIR-039 contract says every local rootless Linux configuration
+other than the three explicit refusals is **unqualified but allowed**, and its
+done condition requires README, SECURITY.md, CLI docs, and release material to
+use that vocabulary consistently. README, CLI docs, the changelog, and the
+implementation record do so. SECURITY.md instead says SELinux-enforcing hosts
+are “unqualified and unsupported.”
+
+The release checklist makes this cross-document security-boundary review
+release-blocking. Users cannot tell whether SELinux enforcement is an allowed,
+unqualified configuration or an unsupported configuration.
+
+### Required resolution
+
+Use one support classification in SECURITY.md, README, CLI docs, changelog,
+and the implementation record. If MIR-039 remains authoritative, SECURITY.md
+must say “unqualified but allowed” and may separately describe the absence of
+qualification/support guarantees. If “unsupported” is intended as the product
+policy, revise MIR-039 and every public support statement together.
+
+### Close when
+
+- All support documents use one unambiguous classification.
+- A documentation test or review assertion prevents the vocabulary from
+  diverging again.
+
+## RC-003 — Required apple/container cleanup-safety acceptance is absent
+
+- **Severity:** Blocker
+- **Status:** Open
+- **Affected:** `scripts/integration.sh:268-299`,
+  `docs/release-checklist.md:15-23`,
+  `docs/multi-runtime-implementation.md:2245,2250`
+
+### Finding
+
+The release checklist requires the first 1.1.0 macOS qualification to prove
+that deleting one jms-owned image ref does not delete an alias outside the
+reserved namespace or cascade into unselected images. It also requires the
+vanished-mid-removal race test. The requirements table assigns the
+survivor-set graph to both real runtimes.
+
+The only survivor-set implementation is inside
+`if [ "$runtime" = podman ]`; no equivalent apple/container acceptance or
+executable manual procedure exists. The removal-race test likewise has no
+executable procedure or recorded result. Unit fakes cannot establish the
+real engine's delete-by-ref behavior. Until this is proven, `jms clean
+--images` and background retention may remove non-jms aliases on macOS.
+
+### Required resolution
+
+- Add an apple/container survivor-set acceptance to the integration harness,
+  or check in exact executable manual steps with expected survivor identities.
+- Add exact steps for the vanished-mid-removal race.
+- Run both against apple/container 1.2.0 and record the results.
+- If delete-by-ref cascades, change the cleanup design before qualification.
+
+### Close when
+
+- A recorded apple/container 1.2.0 run proves the external alias and every
+  unselected image survive.
+- A recorded race run proves cleanup converges when a selected resource
+  vanishes during removal.
+
+## RC-004 — Mandatory real-host release qualification is not recorded
+
+- **Severity:** Blocker
+- **Status:** Awaiting qualification
+- **Affected:** `docs/release-checklist.md:15-36`, `CHANGELOG.md:3-43`
+
+### Finding
+
+The branch contains fixtures and fake-runtime/unit coverage, but no evidence
+for the mandatory release-host gates:
+
+- full integration on macOS with apple/container 1.2.0;
+- both integration tiers on a fresh Debian 13 amd64 host under a non-1000
+  user and primary group;
+- the clean-host Debian install walkthrough; and
+- the tested Podman/runtime matrix dimensions required in the release notes.
+
+The 1.1.0 changelog does not record the Podman version, kernel, cgroup
+manager, OCI runtime, storage driver, network backend, architecture, or
+walkthrough outcome.
+
+### Required resolution
+
+Run the checklist exactly as written after RC-001 through RC-003 are fixed,
+then record:
+
+- commit under test and date;
+- platform/runtime versions and all required matrix dimensions;
+- integration tier outcomes;
+- clean-host install outcome; and
+- any qualification exceptions.
+
+### Close when
+
+- macOS and Debian real-host gates are green on the final candidate commit.
+- The required matrix and walkthrough evidence is present in the release
+  notes or linked from this register.
+
+## Verification log
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `make test` | Pass | 188 tests on Python 3.13.5 |
+| `git diff --check main...HEAD` | Pass | No whitespace errors |
+| Real Podman integration | Not run | Sandbox makes `/run/user/1000/libpod` read-only; this would not satisfy the required fresh non-1000 host gate in any case |
+| apple/container integration | Not run | No macOS runtime available in the review environment |

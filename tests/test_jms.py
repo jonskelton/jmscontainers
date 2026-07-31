@@ -1996,14 +1996,22 @@ class MountGrammarTests(unittest.TestCase):
 
 
 class IsolationUidPinTests(unittest.TestCase):
-    """R3.1: ISOLATION_UID and the base Containerfile agree on the pin."""
+    """R3.1: runtime constants and repository image definitions agree."""
 
-    def test_isolation_uid_constant_matches_containerfile(self):
-        containerfile = (pathlib.Path(JMS.__file__).parents[1] / "Containerfile").read_text()
+    def test_isolation_identity_constants_match_containerfiles(self):
+        root = pathlib.Path(JMS.__file__).parents[1]
+        base = (root / "Containerfile").read_text()
+        standalone = (
+            root / "examples" / "clean-slate" / ".jmscontainer" / "Containerfile"
+        ).read_text()
         uid = JMS.ISOLATION_UID
+        gid = JMS.ISOLATION_GID
         self.assertEqual(uid, 1000)
-        self.assertIn("groupadd -g %d isolation" % uid, containerfile)
-        self.assertIn("useradd -m -s /bin/bash -u %d -g %d isolation" % (uid, uid), containerfile)
+        self.assertEqual(gid, 1000)
+        self.assertIn("groupadd -g %d isolation" % gid, base)
+        self.assertIn("useradd -m -s /bin/bash -u %d -g %d isolation" % (uid, gid), base)
+        self.assertIn("groupadd --gid %d isolation" % gid, standalone)
+        self.assertIn("--uid %d --gid %d isolation" % (uid, gid), standalone)
 
 
 class MissingBaseHintTests(unittest.TestCase):
