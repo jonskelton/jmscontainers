@@ -241,7 +241,7 @@ convention.
   matching — the borrowed inspect-image string proved unproven for the
   removal verbs.
 - **Done when:** Cross-backend conformance tests
-  (`test_removal_result_classification`, R5.9) feed success, absence, and
+  (`RemovalClassificationTests`, R5.9) feed success, absence, and
   hard failure into container and image removals; absence classifies as
   `removed` on both backends. Command tests prove attempt-all ordering
   and aggregated terminal-safe diagnostics without backend branches or
@@ -547,6 +547,11 @@ convention.
   fixture files. A normalizer lands only after its fixtures do — this is
   the ordering rule in §11 phase 2 (resequenced by MIR-054 so no
   normalizer work precedes capture). Recorded in §§5, 11.
+  **Amended 2026-07-30 (fixture capture):** the `<none>`-named variant is
+  dropped from the capture list — real 5.4.2 JSON spells danglings as
+  `"Names": null` and never emits a `<none>` name (recorded in
+  `tests/fixtures/README`), so `<none>` filtering stays a synthetic case
+  in test code, consistent with the done-when list below.
 - **Done when:** Fixture provenance is reproducible from one documented
   command; Podman images cover named, multi-named, unlabeled, and dangling
   records; Podman and apple/container container fixtures cover inherited
@@ -1270,8 +1275,11 @@ authority:
   they are never silently skipped (§5). Podman dangling images are skipped
   by rule, not by error.
 - No backend method calls `sys.exit`, prompts, or prints, with exactly
-  one exception: `ensure_started()` may print daemon-start progress on
-  stdout (apple/container's "starting container runtime...").
+  two exceptions: `ensure_started()` may print daemon-start progress on
+  stdout (apple/container's "starting container runtime..."), and
+  apple/container's `validate_version()` prints its existing
+  `JMS_RUNTIME_ACCEPT` warning to stderr (§4, R4.2 — unchanged 1.0.0
+  behavior).
 - Exit codes are unchanged: runtime failures raise `JMSException` (exit 1);
   selection/usage failures raise `UsageError` (exit 2).
 
@@ -1530,8 +1538,10 @@ Fixture provenance (MIR-044): every fixture file has a one-command
 reproducible capture recipe recorded in `tests/fixtures/README`, executed
 on the qualified engine versions, and must preserve whole records for
 every accepted schema variant its normalizer branches on — for Podman
-images: named, multi-named, unlabeled, jms-labelled, dangling, and
-`<none>`-named records; for Podman `ps`: inherited image labels, the
+images: named, multi-named, unlabeled, jms-labelled, and dangling records
+(real 5.4.2 JSON spells danglings as `"Names": null` and never emits a
+`<none>` name — pinned at capture time, so `<none>` filtering stays a
+synthetic case in test code); for Podman `ps`: inherited image labels, the
 `jms.container=launch` override, marker absence, and running/exited
 states; plus the Podman `inspect` mounts fixture the leak sweep requires
 and the apple/container 1.2.0 equivalents. Synthetic malformed cases live
@@ -2235,9 +2245,9 @@ only for non-enforceable wording, never for a behavioral claim).
 | R5.4 | 5 | retention counts distinct image IDs; deletion untags per jms-owned ref with `--no-prune` on Podman (MIR-042); an alias outside the reserved namespace survives (MIR-047); label **and** tag-prefix ownership per ref | conformance + int-B + macOS-int | multi-tag, duplicate ID, inherited labels, base-with-children, partial deletion failure; survivor-set graph run on both real runtimes (tier B on Podman, the macOS integration run on apple/container) |
 | R5.5 | 5 | `ps()` strict normalizer: full 64-char `Id`, top-level `Labels` with null/absent normalizing to `{}` (MIR-053); malformed record aborts | unit | `test_podman_ps_normalizer` over `ps` fixtures + malformed variants, including null, absent, and non-map `Labels` |
 | R5.6 | 5 | stop may fail, forced delete authoritative, on both backends: a `failed` stop result never skips `remove_container` | unit | existing `test_stop_failure_does_not_abort_deletion` under both fakes |
-| R5.7 | 5 | schedule/execute split with per-call-site policy (MIR-048): warn-only GC (including enumeration failures), exit-1 aggregation for `clean`/purge, revocation durable through every purge failure; attempt-all, vanished resources tolerated as success, second run converges | conformance | `test_cleanup_partial_failure_semantics` (readiness, enumeration, and every stop/remove/untag position injected, every caller, both backends) |
+| R5.7 | 5 | schedule/execute split with per-call-site policy (MIR-048): warn-only GC (including enumeration failures), exit-1 aggregation for `clean`/purge, revocation durable through every purge failure; attempt-all, vanished resources tolerated as success, second run converges | conformance | `CleanupPartialFailureTests` (readiness, enumeration, and every stop/remove/untag position injected, every caller, both backends) |
 | R5.8 | 5 | cleanup ownership requires `jms.project` **and** `jms.container=launch`; builds stamp the neutral value overriding any preseeded label; inherited-label, manual, and marker-absent containers never selected; dry-run and real cleanup select the same IDs | conformance + golden | `test_cleanup_provenance_predicate` (jms-launched, manual-from-jms-image, unrelated `jms-` name, malicious preseed, marker-absent) plus build/launch argv goldens pinning both label stamps on both backends |
-| R5.9 | 2, 5 | removal operations return normalized `RemovalResult`s: success and absence → `removed` (Podman via `--ignore` at the engine, apple/container via post-failure existence recheck on all three operations, stop included — MIR-043/052); a failed stop superseded by a successful remove is dropped; a recheck that itself fails leaves `failed` with the original diagnostic plus an appended recheck-failure note and never raises (MIR-052); any other failure → `failed` with non-empty terminal-safe `detail` (stderr → stdout → fixed placeholder); command code never sees a `CompletedProcess`, raw stderr, or a backend branch | conformance + macOS-int | `test_removal_result_classification` (all three operations, both backends; absent-stop → `removed`; recheck-present stays `failed`; injected recheck failures; empty-output and stdout-only cases); manual macOS race test proving idempotent cleanup under a vanished-mid-removal resource (MIR-043) |
+| R5.9 | 2, 5 | removal operations return normalized `RemovalResult`s: success and absence → `removed` (Podman via `--ignore` at the engine, apple/container via post-failure existence recheck on all three operations, stop included — MIR-043/052); a failed stop superseded by a successful remove is dropped; a recheck that itself fails leaves `failed` with the original diagnostic plus an appended recheck-failure note and never raises (MIR-052); any other failure → `failed` with non-empty terminal-safe `detail` (stderr → stdout → fixed placeholder); command code never sees a `CompletedProcess`, raw stderr, or a backend branch | conformance + macOS-int | `RemovalClassificationTests` (all three operations, both backends; absent-stop → `removed`; recheck-present stays `failed`; injected recheck failures; empty-output and stdout-only cases); manual macOS race test proving idempotent cleanup under a vanished-mid-removal resource (MIR-043) |
 | R5.10 | 5 | shared id/ref/label validation aborts on violations under both backends; apple/container grouping: reordered duplicates, repeated refs, and mixed dangling/named records for one ID yield the identical `ImageFact`, conflicting `created` or label data aborts; a duplicate Podman `Id` aborts as malformed | conformance | `test_image_fact_accumulator` |
 | R6.1 | 6 | per-backend build argv: label flag spelling, `--pull=always` base-with-pull, `--pull=missing` project builds | golden | `test_build_argv_golden` per backend |
 | R6.2 | 6 | v2 context-escape failure still trips `CONTEXT_NOTE` under Podman | int-B | existing escape test, parametrized |
