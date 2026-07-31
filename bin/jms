@@ -313,7 +313,7 @@ class ContainerBackend:
             return False
         fail("container image inspect failed for " + quote(image) + ": " + quote(proc.stderr))
 
-    def parse_creation_date(self, value, source):
+    def _parse_creation_date(self, value, source):
         # Strict ISO-8601 with an explicit UTC offset; naive, unparseable, or
         # out-of-range dates abort (MIR-045).
         if not isinstance(value, str):
@@ -349,8 +349,8 @@ class ContainerBackend:
             digest = descriptor.get("digest") if isinstance(descriptor, dict) else None
             if not valid_hex64(ident) or digest != "sha256:" + ident:
                 fail(source + " returned an image record whose id does not match its descriptor digest")
-            created = self.parse_creation_date(configuration.get("creationDate"), source)
-            labels = normalized_labels(self.raw_labels(record, source), source)
+            created = self._parse_creation_date(configuration.get("creationDate"), source)
+            labels = normalized_labels(self._raw_labels(record, source), source)
             ref = configuration.get("name")
             refs = []
             if ref is not None and ref != "":
@@ -364,7 +364,7 @@ class ContainerBackend:
         return [(ident, tuple(sorted(entry["refs"])), entry["created"], entry["labels"])
                 for ident, entry in sorted(grouped.items()) if entry["refs"]]
 
-    def raw_labels(self, record, source):
+    def _raw_labels(self, record, source):
         variants = record.get("variants")
         if variants is None or variants == []:
             return None
@@ -404,23 +404,23 @@ class ContainerBackend:
         proc = runtime_run([self.exe, "stop", container_id], check=False)
         if proc.returncode == 0:
             return RemovalResult("removed")
-        return self.removal_recheck(proc, lambda: not any(
+        return self._removal_recheck(proc, lambda: not any(
             fact["id"] == container_id for fact in self.ps()))
 
     def remove_container(self, container_id):
         proc = runtime_run([self.exe, "delete", "--force", container_id], check=False)
         if proc.returncode == 0:
             return RemovalResult("removed")
-        return self.removal_recheck(proc, lambda: not any(
+        return self._removal_recheck(proc, lambda: not any(
             fact["id"] == container_id for fact in self.ps()))
 
     def remove_image(self, ref):
         proc = runtime_run([self.exe, "image", "delete", ref], check=False)
         if proc.returncode == 0:
             return RemovalResult("removed")
-        return self.removal_recheck(proc, lambda: not self.image_exists(ref))
+        return self._removal_recheck(proc, lambda: not self.image_exists(ref))
 
-    def removal_recheck(self, proc, absent):
+    def _removal_recheck(self, proc, absent):
         # Post-failure existence recheck: absence classifies as removed with
         # no dependence on the CLI's error text (MIR-043).  The recheck runs
         # inside the non-raising envelope: its own failure leaves the outcome
@@ -650,18 +650,18 @@ class PodmanBackend:
     # an untag from cascading into dangling parents (MIR-042).
 
     def stop_container(self, container_id):
-        return self.removal_outcome(
+        return self._removal_outcome(
             runtime_run([self.exe, "stop", "--ignore", container_id], check=False))
 
     def remove_container(self, container_id):
-        return self.removal_outcome(
+        return self._removal_outcome(
             runtime_run([self.exe, "rm", "--ignore", "--force", container_id], check=False))
 
     def remove_image(self, ref):
-        return self.removal_outcome(
+        return self._removal_outcome(
             runtime_run([self.exe, "image", "rm", "--ignore", "--no-prune", ref], check=False))
 
-    def removal_outcome(self, proc):
+    def _removal_outcome(self, proc):
         if proc.returncode == 0:
             return RemovalResult("removed")
         return RemovalResult("failed", removal_detail(proc))

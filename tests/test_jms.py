@@ -2435,6 +2435,38 @@ class SeamTests(unittest.TestCase):
         self.assertTrue(all(argv[0] in ("container", "podman") for argv in calls))
         self.assertGreaterEqual(len(calls), 10)
 
+    # The complete protocol surface (§2): five class attributes plus the
+    # Class A and Class B method tables, and nothing else.
+    PROTOCOL_SURFACE = frozenset({
+        "name", "exe", "install_hint", "version_min", "version_max",
+        "version_argv", "parse_version", "local_name", "mount_argument",
+        "build_argv", "run_argv",
+        "validate_version", "ensure_started", "image_exists", "image_facts",
+        "ps", "stop_container", "remove_container", "remove_image",
+    })
+
+    def test_no_backend_exposes_an_image_inspection_operation(self):
+        # R3.2 (conformance half): the public surface of each backend is
+        # exactly the protocol -- in particular, no verify_image_abi and no
+        # operation that reads an image's filesystem exists on any backend.
+        for backend in (JMS.ContainerBackend(), JMS.PodmanBackend()):
+            public = {attr for attr in dir(backend) if not attr.startswith("_")}
+            self.assertEqual(public, set(self.PROTOCOL_SURFACE))
+
+    def test_commands_never_branch_on_the_backend_identity(self):
+        # §2 prohibition: no command function reads runtime().name,
+        # isinstance-checks a backend, or branches on sys.platform for
+        # runtime behavior.  sys.platform may appear only inside
+        # select_runtime(); backend classes are never isinstance-checked.
+        source = pathlib.Path(JMS.__file__).read_text()
+        self.assertNotIn("runtime().name", source)
+        self.assertNotIn("isinstance(backend", source)
+        for match in re.finditer(r"[^\n]*sys\.platform[^\n]*", source):
+            line_start = source.rfind("\ndef ", 0, match.start())
+            head = source[line_start + 1:source.index("\n", line_start + 1)]
+            self.assertEqual(head, "def select_runtime():",
+                             "sys.platform outside select_runtime(): " + match.group(0))
+
 
 class LeakSweepTests(unittest.TestCase):
     """R7.13: sweep snippet over the checked-in fixtures; three outcomes."""
