@@ -1,7 +1,7 @@
 # 1.1.0 release-critical issues
 
-Review target: `main...multi-runtime` at `4cc30d2`
-Reviewed: 2026-07-30
+Review target: `main...multi-runtime` at `c5157cd`
+Reviewed: 2026-07-30; updated 2026-07-31 after a live macOS validation pass
 Merge disposition: **not ready**
 
 This register contains only issues that must be resolved or explicitly closed
@@ -175,11 +175,78 @@ then record:
 - The required matrix and walkthrough evidence is present in the release
   notes or linked from this register.
 
+### Implementation status
+
+2026-07-31, macOS half: `scripts/integration.sh all` ran at `c5157cd` against
+apple/container 1.2.0 with zero assertion failures through tier A and tier B
+up to the credential-mount step, which requires an interactive terminal
+(`--trust --auth` prompts by design) and fails non-interactively with
+"credential access is required but prompting is unavailable". The
+credential-mount assertion itself was validated out-of-band via the audited
+`JMS_TRUST_FINGERPRINT` pin: the agent-state write landed in
+`~/.local/share/jmscontainers/agents/claude/`, owned by the invoking user,
+with `CLAUDE_CONFIG_DIR` visible inside. The recorded macOS gate still
+requires one full interactive `scripts/integration.sh all` run on the final
+candidate commit. The Debian gates remain not run.
+
+## RC-005 — `make test` fails wherever shellcheck is installed
+
+- **Severity:** Blocker
+- **Status:** Open
+- **Affected:** `scripts/integration.sh:44,255,260,303`, `Makefile:19-27`
+
+### Finding
+
+The `test` target runs shellcheck over `scripts/integration.sh` when the tool
+is present and treats any nonzero exit as failure. The current script trips
+one SC2034 warning (`sweep_status_file` is assigned at line 44 and never
+used) and six info-level SC2016/SC2015 notes, so `make test` — a required
+release-checklist gate — is red on any host with shellcheck installed,
+including the macOS validation host. The 2026-07-30 verification log recorded
+`make test` as passing because the review environment lacked shellcheck.
+
+### Required resolution
+
+Remove the dead `sweep_status_file` assignment (or use it), and either fix or
+explicitly annotate the SC2016/SC2015 sites so shellcheck exits zero.
+
+### Close when
+
+- `make test` passes on a host with shellcheck installed.
+
+## RC-006 — Cold-launch stdout carried the built image ref
+
+- **Severity:** Blocker
+- **Status:** Closed
+- **Affected:** `bin/jms:1349-1356`
+
+### Finding
+
+`run_build` invoked the runtime with `capture=False`, so the build subprocess
+inherited jms's stdout. Both engines print the built image ref on stdout
+(apple/container prints the tag; Podman prints the image ID), so a cold
+`jms launch` — which builds implicitly — prefixed the container's stdout with
+the ref line, corrupting any `$(jms launch ...)` capture. Warm launches were
+unaffected. Caught live by the tier B manifest env parity assertion on macOS
+with apple/container 1.2.0; the Podman path shared the defect, meaning the
+assertion could only have passed on a Linux host with the project image
+already warm.
+
+### Resolution
+
+Fixed in `c5157cd`: `run_build` now routes the build subprocess's stdout to
+stderr, keeping jms's stdout reserved for the container during launch.
+Validated on macOS: a cold-launch `$(jms launch ... -c 'echo "$JMS_ITEST"')`
+capture yields exactly the manifest value, and the 188-test unit suite
+passes. The Linux side is covered by the RC-004 qualification rerun.
+
 ## Verification log
 
 | Check | Result | Notes |
 | --- | --- | --- |
-| `make test` | Pass | 188 tests on Python 3.13.5 |
+| `make test` | Pass | 188 tests on Python 3.13.5; review environment lacked shellcheck (see RC-005) |
 | `git diff --check main...HEAD` | Pass | No whitespace errors |
 | Real Podman integration | Not run | Sandbox makes `/run/user/1000/libpod` read-only; this would not satisfy the required fresh non-1000 host gate in any case |
 | apple/container integration | Not run | No macOS runtime available in the review environment |
+| Unit suite at `c5157cd` (2026-07-31) | Pass | 188 tests on macOS |
+| apple/container integration at `c5157cd` (2026-07-31) | Pass to the interactive gate | container 1.2.0; tiers A and B green through the credential-mount prompt, which needs a tty (see RC-004 implementation status); found and fixed RC-006 en route |
