@@ -34,7 +34,10 @@ supported platforms, and the difference matters:
 
 - **macOS (apple/container):** each container runs in its own lightweight
   virtual machine. The boundary is hardware-virtualized.
-- **Linux (rootless Podman):** the boundary is a user namespace plus
+- **Linux (rootless Podman):** rootless Podman is the only supported Linux
+  mode — jms refuses to run as uid 0, because rootful operation would
+  silently remove the user-namespace boundary described here. The boundary
+  is a user namespace plus
   Podman's seccomp filter and capability drops *as configured on the host* —
   kernel isolation, not hardware-virtualized isolation. This is a
   meaningfully weaker boundary than the macOS VM against kernel exploits.
@@ -79,6 +82,11 @@ The precise Linux claims:
   mounts, and shell/credential state must be reachable through the invoking
   user's own UID and primary GID. Supplementary-group, ACL-only, and setgid
   access is a documented limitation, with no preflight detection.
+- NFS and other distributed home directories are unsupported: rootless
+  Podman's container storage under `~/.local/share/containers` is
+  known-broken on such filesystems. jms does not detect this — the failure
+  surfaces at the first build or launch (or at `podman info` when storage
+  initialization fails outright) with Podman's own stderr.
 - Nested sandboxes: bubblewrap's full sandbox fails inside rootless Podman
   on the masked `/proc`. jms never passes `--security-opt unmask` and does
   not weaken container defaults to accommodate an inner sandbox; agents run
