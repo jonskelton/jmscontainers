@@ -1349,8 +1349,10 @@ def run_build(context: bytes | str, tag: str, args, labels: dict[str, str] | Non
                              pull=getattr(args, "pull", False), project=project)
     try:
         # stdin from /dev/null: no engine prompt (short-name or otherwise)
-        # can ever hang a build (MIR-041).
-        runtime_run(cmd, capture=False, stdin=subprocess.DEVNULL)
+        # can ever hang a build (MIR-041).  Build output goes to stderr:
+        # jms's stdout belongs to the container during an implicit-build
+        # launch, and both engines print the built image ref on stdout.
+        runtime_run(cmd, capture=False, stdin=subprocess.DEVNULL, stdout=sys.stderr)
     except JMSException:
         if project:
             print(CONTEXT_NOTE, file=sys.stderr)
