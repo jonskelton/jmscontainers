@@ -1591,11 +1591,11 @@ def launch_plan(workdir: bytes, data, args, image: str, auth: bool) -> LaunchPla
         mounts.append((extra_mount["source"], extra_mount["target"], extra_mount["readonly"]))
     shell_source, shell_target = shell_state_mount(user)
     ensure_shell_state_directory()
-    mounts.append((str(shell_source), shell_target, True))
+    mounts.append((os.fsencode(shell_source), shell_target, True))
     if mount_auth:
         for source, target in agent_state_mounts(user):
             ensure_agent_state_directory(source)
-            mounts.append((str(source), target, False))
+            mounts.append((os.fsencode(source), target, False))
     return LaunchPlan(name=name, user=user, tty=sys.stdin.isatty(),
                       workdir=container_workdir, entrypoint=entry[0], image=image,
                       labels=(("jms.project", pid), ("jms.container", "launch")),
