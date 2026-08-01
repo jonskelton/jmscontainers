@@ -3,7 +3,8 @@
 Review target: `main...multi-runtime` at `c5157cd`
 Reviewed: 2026-07-30; updated 2026-07-31 after a live macOS validation
 pass, then again 2026-07-31 closing RC-002/RC-005 and landing the RC-003
-procedures
+procedures, then again 2026-07-31 recording the macOS RC-003 acceptance
+runs and the RC-004 macOS gate at `b144a27`
 Merge disposition: **not ready**
 
 This register contains only issues that must be resolved or explicitly closed
@@ -119,7 +120,7 @@ mutation-tested against the old SECURITY.md wording and fails on it. The
 ## RC-003 — Required apple/container cleanup-safety acceptance is absent
 
 - **Severity:** Blocker
-- **Status:** Awaiting qualification
+- **Status:** Closed
 - **Affected:** `scripts/integration.sh:268-299`,
   `docs/release-checklist.md:15-23`,
   `docs/multi-runtime-implementation.md:2245,2250`
@@ -177,6 +178,22 @@ the real engine yet.
 
 Closing still requires the recorded apple/container 1.2.0 runs of both.
 
+### Resolution
+
+2026-07-31: both recorded acceptance runs are green against apple/container
+1.2.0 at `b144a27` on the macOS qualification host. The survivor-set
+acceptance ran inside the full interactive `scripts/integration.sh all`
+pass (tier B): after `jms clean --images`, the manual alias
+`itest-survivor-alias:keep` survived on the same image identity, no
+`jmscontainers-*` ref survived on it, and the unselected base image still
+inspects — delete-by-ref did **not** cascade. The manual
+vanished-mid-removal race test followed the release-checklist appendix
+exactly (ten external-delete iterations racing `jms clean --images`):
+every cleanup exited 0 whichever process deleted the image first, no
+iteration reported a failed removal for the vanished ref, no
+`jmscontainers-jms-race` ref remained after the loop, and the final
+convergence clean exited 0.
+
 ## RC-004 — Mandatory real-host release qualification is not recorded
 
 - **Severity:** Blocker
@@ -228,6 +245,23 @@ credential-mount assertion itself was validated out-of-band via the audited
 with `CLAUDE_CONFIG_DIR` visible inside. The recorded macOS gate still
 requires one full interactive `scripts/integration.sh all` run on the final
 candidate commit. The Debian gates remain not run.
+
+2026-07-31, macOS gate recorded: one full interactive
+`scripts/integration.sh all` run at `b144a27` against apple/container 1.2.0
+is green through both tiers, including the answered credential prompt (the
+tier B auth-mount assertion passed live) and the RC-003 survivor-set
+acceptance. The gate flushed out one real defect en route, fixed in
+`b144a27`: apple/container's attached `run --interactive` exits leaving
+`O_NONBLOCK` on the shared terminal description, which turned the next
+consent read into an instant default-No EOF and silently launched without
+the credential mounts; `consent_input` now restores blocking mode on a tty
+stdin before reading (unit regression test added). Note the Darwin tier A
+path early-returns before the `== tier A passed ==` echo, so the recorded
+log ends with `== tier B passed ==` and `integration tier(s) 'all' passed
+on container`. The Debian gates (RC-001, the Linux integration tiers, the
+clean-host install walkthrough, and the release-notes matrix) remain the
+blocker; if they force a code change, this macOS run must be repeated at
+the new candidate commit.
 
 ## RC-005 — `make test` fails wherever shellcheck is installed
 
@@ -302,3 +336,6 @@ passes. The Linux side is covered by the RC-004 qualification rerun.
 | apple/container integration | Not run | No macOS runtime available in the review environment |
 | Unit suite at `c5157cd` (2026-07-31) | Pass | 188 tests on macOS |
 | apple/container integration at `c5157cd` (2026-07-31) | Pass to the interactive gate | container 1.2.0; tiers A and B green through the credential-mount prompt, which needs a tty (see RC-004 implementation status); found and fixed RC-006 en route |
+| Unit suite at `b144a27` (2026-07-31) | Pass | 190 tests plus a clean shellcheck leg on macOS |
+| apple/container integration at `b144a27` (2026-07-31) | Pass | container 1.2.0; full interactive run, both tiers green including the answered credential prompt and the RC-003 survivor-set acceptance; found and fixed the consent `O_NONBLOCK` leak en route (see RC-004) |
+| Manual removal-race test at `b144a27` (2026-07-31) | Pass | container 1.2.0; ten-iteration external-delete race per the release-checklist appendix; every cleanup exited 0, no failed removals, converged clean (RC-003) |

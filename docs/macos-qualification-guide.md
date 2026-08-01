@@ -79,8 +79,10 @@ downstream rather than at the prompt.)
 
 Answer the credential prompt when the tier B auth-mount step reaches it.
 
-Expected output ends with `== tier A passed ==`, `== tier B passed ==`, and
-`integration tier(s) 'all' passed on container`. Notes on what tier B now
+Expected output ends with `== tier B passed ==` and
+`integration tier(s) 'all' passed on container`. (The `== tier A passed ==`
+marker is Linux-only: the Darwin tier A path early-returns after the base
+build and bwrap presence check, before the echo.) Notes on what tier B now
 exercises beyond the previous pass:
 
 - **Auth-mount step** (previously blocked on tty): after the prompt, the
