@@ -6,6 +6,7 @@ import io
 import json
 import os
 import pathlib
+import pty
 import re
 import stat
 import subprocess
@@ -653,6 +654,23 @@ class ConsentTests(unittest.TestCase):
              mock.patch.object(sys, "stdin", TTYIO(tty)), \
              mock.patch.object(sys, "stderr", TTYIO(tty)):
             return JMS.approve(root, tf, args, action=action, config=config)
+
+    def test_consent_read_survives_a_leaked_nonblocking_terminal(self):
+        # An attached `container run --interactive` exits with O_NONBLOCK
+        # left on the shared terminal description; the consent read must not
+        # turn that leak into an instant default-No EOF.
+        master, slave = pty.openpty()
+        try:
+            os.set_blocking(slave, False)
+            os.write(master, b"y\n")
+            reader = os.fdopen(slave, "r", closefd=False)
+            with mock.patch.object(sys, "stdin", reader), \
+                 mock.patch.object(sys, "stderr", TTYIO(True)):
+                self.assertEqual(JMS.consent_input("Allow? "), "y")
+            self.assertTrue(os.get_blocking(slave))
+        finally:
+            os.close(master)
+            os.close(slave)
 
     def test_trust_flag_is_one_shot_and_never_writes(self):
         with sandbox() as home:

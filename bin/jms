@@ -1220,6 +1220,12 @@ def print_capability_summary(root: bytes, config: dict) -> None:
 def consent_input(question: str) -> str:
     """Keep the complete prompt on the stderr TTY used by the availability gate."""
     print(question, end="", file=sys.stderr, flush=True)
+    # An attached `container run --interactive` exits with O_NONBLOCK left on
+    # the shared terminal description (observed with apple/container 1.2.0);
+    # an empty non-blocking read would surface as the default-No EOF before
+    # the user can answer, so a consent read restores blocking mode first.
+    if sys.stdin.isatty():
+        os.set_blocking(sys.stdin.fileno(), True)
     try:
         return input()
     except EOFError:

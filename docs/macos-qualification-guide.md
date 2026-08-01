@@ -64,8 +64,18 @@ stop and report rather than proceeding to integration.
 ## Step 2 — full interactive integration run
 
 ```sh
-scripts/integration.sh all 2>&1 | tee /tmp/jms-itest-$(date +%Y%m%d).log
+script -q /tmp/jms-itest-$(date +%Y%m%d).log scripts/integration.sh all
 ```
+
+(`script` records the session while keeping stdin and stderr on the real
+tty. Do not use `2>&1 | tee` — the consent prompt requires stderr to be a
+tty, so piping stderr makes `jms` fail with "prompting is unavailable"
+even in an interactive terminal. The command must be typed in a real
+terminal session: a harness that runs it with detached stdin — e.g. an
+agent's shell tool or Claude Code's `!` prefix — delivers EOF to the
+consent prompt, which `jms` treats as the default No and launches
+**without** the credential mounts, failing the auth-mount assertion
+downstream rather than at the prompt.)
 
 Answer the credential prompt when the tier B auth-mount step reaches it.
 
