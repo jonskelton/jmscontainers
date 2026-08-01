@@ -1,4 +1,6 @@
 #!/bin/sh
+# shellcheck disable=SC2016  # single-quoted $VAR is expanded by the shell
+#                            # inside the container, never by this harness
 # Real-runtime integration tiers (multi-runtime spec §9).
 #
 # Usage: integration.sh [a|b|all]   (default: all)
@@ -41,7 +43,6 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 mkdir -p "$HOME/.cache/odin" "$HOME/.cache/pip" \
     "$HOME/.cache/go-build" "$HOME/go/pkg/mod" "$HOME/.cargo/registry"
 work=$(mktemp -d)
-sweep_status_file="$work/.sweep-status"
 nft_table="jms-integration-$$"
 nft_installed=0
 
@@ -56,12 +57,12 @@ install_egress_denial() {
         exit 3
     fi
     nft_installed=1
-    sudo -n nft "add chain inet $nft_table output { type filter hook output priority 0 ; }" &&
-    sudo -n nft "add rule inet $nft_table output oif lo accept" &&
-    sudo -n nft "add rule inet $nft_table output meta skuid $uid drop" || {
+    if ! sudo -n nft "add chain inet $nft_table output { type filter hook output priority 0 ; }" ||
+       ! sudo -n nft "add rule inet $nft_table output oif lo accept" ||
+       ! sudo -n nft "add rule inet $nft_table output meta skuid $uid drop"; then
         echo "harness failure: could not populate the nftables egress denial" >&2
         exit 3
-    }
+    fi
 }
 
 remove_egress_denial() {
@@ -319,6 +320,52 @@ tier_b() {
         [ "$owner" = "$expected_owner" ] \
             || fail "standalone /work write owned by $owner, not invoking user $expected_owner"
         jms clean --images -w "$work/clean-store"
+    elif [ "$runtime" = container ]; then
+        # Survivor-set graph run (R5.4, MIR-042/047), apple/container half.
+        # This run *determines* the engine's delete-by-ref cascade behavior:
+        # a manual alias outside the reserved namespace and the unselected
+        # base image must survive a jms cleanup. A cascade discovered here is
+        # a qualification failure to resolve before release, not a silently
+        # accepted behavior (MIR-042). The Podman branch's dangling-image
+        # case has no apple equivalent: the apple normalizer excludes
+        # ref-less records from image facts by design (§5).
+        proj="$work/tier-b-survivors"
+        mkdir -p "$proj/.jmscontainer"
+        printf 'FROM jmscontainers-base:latest\nLABEL jms.itest=survivor\n' \
+            > "$proj/.jmscontainer/Containerfile"
+        jms build --trust --no-auth -w "$proj"
+        built=$(container image list --format json | python3 -c '
+import json, sys
+for record in json.load(sys.stdin):
+    variants = record.get("variants") or [{}]
+    config = (variants[0].get("config") or {}).get("config") or {}
+    if (config.get("Labels") or {}).get("jms.itest") == "survivor":
+        print(record["id"] + " " + record["configuration"]["name"])
+        break
+')
+        [ -n "$built" ] || fail "survivor-graph build produced no labeled image"
+        built_id=${built%% *}
+        built_ref=${built#* }
+        container image tag "$built_ref" itest-survivor-alias:keep
+        jms clean --images -w "$proj"
+        survivors=$(container image list --format json | python3 -c '
+import json, sys
+for record in json.load(sys.stdin):
+    if record["id"] == sys.argv[1]:
+        name = (record.get("configuration") or {}).get("name")
+        if name:
+            print(name)
+' "$built_id")
+        case "$survivors" in
+            *itest-survivor-alias:keep*) ;;
+            *) fail "delete-by-ref cascaded: the manual alias outside the reserved namespace did not survive (MIR-042)" ;;
+        esac
+        case "$survivors" in
+            *jmscontainers-*) fail "a jms-owned survivor ref was not removed by the cleanup" ;;
+        esac
+        container image inspect jmscontainers-base:latest >/dev/null \
+            || fail "unselected base image was removed"
+        container image delete itest-survivor-alias:keep >/dev/null
     fi
     echo "== tier B passed =="
 }

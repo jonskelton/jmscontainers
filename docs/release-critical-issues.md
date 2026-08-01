@@ -1,7 +1,9 @@
 # 1.1.0 release-critical issues
 
 Review target: `main...multi-runtime` at `c5157cd`
-Reviewed: 2026-07-30; updated 2026-07-31 after a live macOS validation pass
+Reviewed: 2026-07-30; updated 2026-07-31 after a live macOS validation
+pass, then again 2026-07-31 closing RC-002/RC-005 and landing the RC-003
+procedures
 Merge disposition: **not ready**
 
 This register contains only issues that must be resolved or explicitly closed
@@ -67,7 +69,7 @@ on the qualified fresh non-1000 Debian/Podman host.
 ## RC-002 — The documented SELinux support state contradicts the release scope
 
 - **Severity:** Blocker
-- **Status:** Open
+- **Status:** Closed
 - **Affected:** `SECURITY.md:79-80`, `README.md:60-67`,
   `docs/cli.md:39-42`, `CHANGELOG.md:17-21`,
   `docs/multi-runtime-implementation.md:334-362`
@@ -99,10 +101,25 @@ policy, revise MIR-039 and every public support statement together.
 - A documentation test or review assertion prevents the vocabulary from
   diverging again.
 
+### Resolution
+
+2026-07-31: MIR-039 remains authoritative. SECURITY.md now classifies
+SELinux-enforcing hosts as **unqualified but allowed**, with the absence of
+qualification/support guarantees described separately in the same bullet.
+The two stale sites inside the implementation record itself (§7.2's
+"record it as unsupported for now" instruction and the boundary-statement
+decision copy) were aligned to the same vocabulary. A new unit test
+(`SupportVocabularyTests.test_selinux_classification_is_unqualified_but_allowed`)
+asserts every public support document (README, SECURITY.md, CLI docs,
+changelog) contains "unqualified but allowed" and that no
+SELinux-enforcing paragraph or bullet says "unsupported"; the guard was
+mutation-tested against the old SECURITY.md wording and fails on it. The
+189-test suite passes.
+
 ## RC-003 — Required apple/container cleanup-safety acceptance is absent
 
 - **Severity:** Blocker
-- **Status:** Open
+- **Status:** Awaiting qualification
 - **Affected:** `scripts/integration.sh:268-299`,
   `docs/release-checklist.md:15-23`,
   `docs/multi-runtime-implementation.md:2245,2250`
@@ -136,6 +153,29 @@ real engine's delete-by-ref behavior. Until this is proven, `jms clean
   unselected image survive.
 - A recorded race run proves cleanup converges when a selected resource
   vanishes during removal.
+
+### Implementation status
+
+2026-07-31: both procedures are now checked in; neither has run against
+the real engine yet.
+
+- Integration tier B gained an apple/container survivor-set acceptance
+  mirroring the Podman branch: build a labeled project image, alias it
+  outside the reserved namespace with `container image tag`, run
+  `jms clean --images`, then assert from `container image list --format
+  json` that the alias survives on the same image identity, that no
+  `jmscontainers-*` ref survives on it, and that the unselected base image
+  still inspects. A cascade fails the run with an explicit MIR-042
+  message. The Podman dangling-image case has no apple equivalent by
+  design (the apple normalizer excludes ref-less records). The embedded
+  JSON parsers were validated against the checked-in
+  `apple-container-1.2.0-images.json` fixture shapes.
+- The manual vanished-mid-removal race test now has exact executable
+  steps and pass criteria in the release-checklist appendix (ten-iteration
+  external-delete race, idempotent-convergence criteria, recording
+  requirement).
+
+Closing still requires the recorded apple/container 1.2.0 runs of both.
 
 ## RC-004 — Mandatory real-host release qualification is not recorded
 
@@ -192,7 +232,7 @@ candidate commit. The Debian gates remain not run.
 ## RC-005 — `make test` fails wherever shellcheck is installed
 
 - **Severity:** Blocker
-- **Status:** Open
+- **Status:** Closed
 - **Affected:** `scripts/integration.sh:44,255,260,303`, `Makefile:19-27`
 
 ### Finding
@@ -213,6 +253,18 @@ explicitly annotate the SC2016/SC2015 sites so shellcheck exits zero.
 ### Close when
 
 - `make test` passes on a host with shellcheck installed.
+
+### Resolution
+
+2026-07-31: the dead `sweep_status_file` assignment is removed (SC2034);
+the egress-denial population was restructured from `A && B && C || {…}`
+into an explicit `if ! … || ! … || ! …` chain (SC2015); and the five
+SC2016 notes — all single-quoted `$VAR` strings deliberately expanded by
+the shell inside the container, a systematic idiom in the harness — are
+covered by one justified file-level
+`# shellcheck disable=SC2016` directive. Validated: `make test` passes
+with shellcheck 0.10.0 on PATH (189 unit tests plus a clean shellcheck
+leg over `scripts/integration.sh` and `completions/jms.bash`).
 
 ## RC-006 — Cold-launch stdout carried the built image ref
 

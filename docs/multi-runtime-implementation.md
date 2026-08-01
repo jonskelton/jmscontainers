@@ -1871,14 +1871,17 @@ relabeling host project files is an unacceptable side effect. On
 non-SELinux hosts the flag is a no-op — the first-push target (Debian 13)
 is an AppArmor host, where this is qualified.
 
-SELinux-**enforcing** hosts are out of scope for 1.1.0: support is desired
-and planned alongside Fedora host support, but deferred given the small
-population of workstations running enforcing mode. jms does not detect or
-refuse enforcing hosts — the flag will typically work there, but the
-configuration is unqualified, and README/SECURITY.md record it as
-unsupported for now. The follow-up release's entry criteria: a recorded
-decision comparing `label=disable` with relabeling and non-mutating
-alternatives, plus an SELinux-enforcing-host integration test.
+SELinux-**enforcing** hosts sit outside the 1.1.0 qualification matrix:
+like every other local rootless Linux configuration beyond Debian 13/amd64,
+they are **unqualified but allowed** (MIR-039). jms does not detect or
+refuse enforcing hosts — the flag will typically work there, but no
+qualification or support guarantee is made, and README/SECURITY.md record
+exactly that classification. Enforcing-mode qualification is planned
+alongside Fedora host support, deferred given the small population of
+workstations running enforcing mode. The follow-up release's entry
+criteria: a recorded decision comparing `label=disable` with relabeling
+and non-mutating alternatives, plus an SELinux-enforcing-host integration
+test.
 
 The existing `,`/`=` path rejections in `runtime_path()` keep the Podman
 mount string unambiguous too. NUL/UTF-8 rules are shared.
@@ -2012,9 +2015,9 @@ per-platform statement:
     regardless of boundary type.
   - This is a meaningfully weaker boundary than the macOS VM against
     kernel exploits, and the docs must say so in those words.
-  - SELinux-enforcing hosts are unqualified and unsupported in 1.1.0
-    (§7.2); enforcing-mode support is planned alongside the Fedora host
-    target.
+  - SELinux-enforcing hosts are unqualified but allowed in 1.1.0
+    (§7.2, MIR-039); enforcing-mode qualification is planned alongside
+    the Fedora host target.
 
 Unchanged on both platforms, and worth restating: the credential-mount
 warning ("never claim the VM meaningfully limits exfiltration of mounted

@@ -2014,6 +2014,29 @@ class IsolationUidPinTests(unittest.TestCase):
         self.assertIn("--uid %d --gid %d isolation" % (uid, gid), standalone)
 
 
+class SupportVocabularyTests(unittest.TestCase):
+    """MIR-039 / RC-002: the public support documents share one
+    classification for configurations outside the qualified matrix."""
+
+    PUBLIC_DOCS = ("README.md", "SECURITY.md", "docs/cli.md", "CHANGELOG.md")
+
+    def test_selinux_classification_is_unqualified_but_allowed(self):
+        root = pathlib.Path(JMS.__file__).parents[1]
+        for name in self.PUBLIC_DOCS:
+            text = (root / name).read_text()
+            self.assertIn("unqualified but allowed", text,
+                          "%s lost the MIR-039 support vocabulary" % name)
+            # Blocks are paragraphs or single top-level bullets, so the
+            # SELinux bullet is judged apart from its list neighbors.
+            for block in re.split(r"\n\n|\n(?=- )", text):
+                if "SELinux-enforcing" not in block:
+                    continue
+                self.assertNotIn(
+                    "unsupported", block,
+                    "%s classifies SELinux-enforcing hosts as unsupported; "
+                    "MIR-039 says unqualified but allowed" % name)
+
+
 class MissingBaseHintTests(unittest.TestCase):
     """R3.7 (unit half): conditional wording, keyed to observed absence."""
 
