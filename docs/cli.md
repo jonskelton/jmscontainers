@@ -46,9 +46,14 @@ Qualification policy differs deliberately per runtime:
 - **apple/container** is pinned to one exact qualified version (a
   single-channel Homebrew install); `JMS_RUNTIME_ACCEPT` can admit one
   newer version for one invocation.
-- **Podman** has a minimum only (≥ 5.4, Debian 13's packaged version);
-  anything at or above the floor is accepted silently, and
-  `JMS_RUNTIME_ACCEPT` has no effect on this backend. Readiness validates
+- **Podman** has a minimum only (≥ 5.4, Debian 13's packaged version) and no
+  ceiling: nothing at or above the floor is ever refused, because Podman is
+  OS-packaged and a distribution upgrade must not strand you. Acceptance is
+  silent within the qualified major (5.x, newest qualified 5.4.2); a newer
+  major is still accepted but prints a one-line warning to stderr, since it
+  can change the cleanup, user-namespace, and mount semantics this backend
+  parses strictly. `JMS_RUNTIME_ACCEPT` has no effect on this backend — it
+  neither suppresses the warning nor is needed to proceed. Readiness validates
   `podman info`: local service, rootless mode, subordinate ID coverage of
   at least 65536 ids per map, and readable storage metadata.
 

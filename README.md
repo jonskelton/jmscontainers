@@ -55,6 +55,13 @@ Podman ≥ 5.4**, plus Python 3.11+ on both (macOS Command Line Tools'
 `container system start` once per boot, but jms starts it for you if it
 isn't running.
 
+*Qualified* and *accepted* are not the same claim. **Qualified** means the
+integration tiers were run green on that exact configuration: Debian 13 /
+amd64 / Podman 5.4.2, with the full matrix (kernel, cgroup manager, OCI
+runtime, storage driver, network backend) recorded in the release notes.
+**Accepted** means jms will run: any local rootless Podman ≥ 5.4. A Podman
+major newer than the qualified series is accepted with a one-line warning.
+
 The Linux install command above is load-bearing, not belt-and-braces: on
 Debian 13, `uidmap`, `passt`, and `dbus-user-session` are only *Recommends*
 of `podman`, so a Recommends-disabled minimal install silently lacks them.
@@ -75,6 +82,15 @@ matrix — other distributions, arm64, SELinux-enforcing hosts — is
 **unqualified but allowed**: jms performs no distribution or architecture
 detection and prints no warning. Recent Fedora and Ubuntu, arm64, and
 SELinux-enforcing hosts are mid-term qualification targets.
+
+One Linux prerequisite is worth stating up front: **jms does not enforce a
+Podman sandbox profile.** Its `podman run` argv pins the user-namespace
+mapping and SELinux labeling and accepts the rest of your Podman
+configuration as-is, so jms assumes that configuration adds no privileges,
+host namespaces, devices, mounts, or OCI hooks. On a stock install that is
+true and there is nothing to do. If you have customized `containers.conf`
+or its drop-ins, the container you get is your configuration's, not jms's.
+[SECURITY.md](SECURITY.md) states the full boundary.
 
 Known Linux limitations, documented rather than detected:
 

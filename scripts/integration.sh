@@ -15,6 +15,8 @@
 #
 # Exit codes: 0 pass; 1 test failure or leak; 2 sweep failure; 3 harness
 # failure (egress-denial install/remove problems, unsupported platform).
+# When more than one applies the highest number wins: a harness failure
+# outranks a sweep failure, which outranks a tier failure.
 # This intentionally does not run in PR CI; the qualified Linux run happens
 # on a real Debian 13 amd64 host with a fresh non-root, non-1000 user over
 # ssh (MIR-049/056).
@@ -37,6 +39,28 @@ command -v "$runtime" >/dev/null 2>&1 || {
     echo "integration requires $runtime on this platform" >&2
     exit 1
 }
+
+# Tier A installs a harness-owned nftables egress denial partway through;
+# discovering a missing prerequisite there wastes a base build and leaves the
+# run half-done.  Check it up front -- before mktemp, so nothing is created
+# and the EXIT trap is not yet armed.  Scoped to the selections that actually
+# reach install_egress_denial: tier B never touches nftables, and `b` is a
+# supported standalone invocation that must run on a host without sudo.
+if [ "$runtime" = podman ] && [ "$tier" != b ]; then
+    # The probe is what the harness actually needs, so it is authoritative:
+    # nft lives in /usr/sbin and `command -v` can miss it for a user whose
+    # PATH omits the sbin directories even though `sudo nft` works.  It only
+    # classifies the failure for the hint.
+    if ! sudo -n nft list tables >/dev/null 2>&1; then
+        echo "harness failure: Linux tier A needs passwordless 'sudo nft' for the egress denial" >&2
+        if command -v nft >/dev/null 2>&1 || [ -x /usr/sbin/nft ]; then
+            echo "hint: grant this user NOPASSWD access to /usr/sbin/nft in sudoers" >&2
+        else
+            echo "hint: install nftables first (sudo apt install nftables)" >&2
+        fi
+        exit 3
+    fi
+fi
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -87,12 +111,15 @@ on_exit() {
     sweep_status=0
     python3 "$root/scripts/leak_sweep.py" "$runtime" "$work" || sweep_status=$?
     rm -rf "$work"
+    # Precedence: a harness failure means the run itself is untrustworthy and
+    # the host may still carry the egress-denial table, so it outranks both
+    # the sweep result and the tier status (§9).
+    if [ "$harness_failed" -ne 0 ]; then
+        exit 3
+    fi
     if [ "$sweep_status" -ne 0 ]; then
         echo "leak sweep exited $sweep_status" >&2
         exit "$sweep_status"
-    fi
-    if [ "$harness_failed" -ne 0 ] && [ "$status" -eq 0 ]; then
-        exit 3
     fi
     exit "$status"
 }

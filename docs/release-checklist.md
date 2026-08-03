@@ -35,8 +35,10 @@
   provisions the 65536-id subordinate ranges), non-1000 UID and non-1000
   primary GID, a fresh home on a local filesystem with no prior container
   state, running from a real ssh login session so `pam_systemd` provides
-  `XDG_RUNTIME_DIR` and the user D-Bus session. The harness needs sudo for
-  its nftables egress-denial rule. No nested or CI substitute counts.
+  `XDG_RUNTIME_DIR` and the user D-Bus session. The harness needs the
+  `nftables` package and *passwordless* sudo (`sudo -n nft`) for its
+  egress-denial rule, both checked before it builds anything.
+  No nested or CI substitute counts.
 - Perform the clean-host install walkthrough: a fresh Debian 13 VM plus a
   newly created user follows the README install instructions verbatim,
   recording date, Podman version, architecture, and outcome.

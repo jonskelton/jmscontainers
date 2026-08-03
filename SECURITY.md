@@ -45,8 +45,9 @@ supported platforms, and the difference matters:
   `--security-opt label=disable`, because relabeling (`:z`) would `chcon`
   your real project tree and the shared agent-state directories on the host
   — mutating host state and fighting other tools — while the sandbox's real
-  boundary is the user namespace. On non-SELinux hosts (the qualified
-  Debian 13 target runs AppArmor) the flag is a no-op.
+  boundary is the user namespace. On non-SELinux hosts the flag is a no-op —
+  including the qualified Debian 13 target, where it is a no-op twice over
+  (see the MAC claim below).
 
 The precise Linux claims:
 
@@ -59,6 +60,17 @@ The precise Linux claims:
   that mounts additional data into containers is your own configuration,
   outside jms's claims. jms's argv pins only what it itself relies on: the
   explicit `--userns` mapping and `label=disable`.
+- **No mandatory access control applies on the qualified Linux target.**
+  The qualified Debian 13 capture reports `apparmorEnabled: false`, and
+  containers launched there run with an empty `AppArmorProfile`
+  (`tests/fixtures/podman-5.4.2-info.json`,
+  `tests/fixtures/podman-5.4.2-inspect.json`). Together with the deliberate
+  `label=disable`, that means neither AppArmor nor SELinux confines a jms
+  container on the qualified target: the boundary is the user namespace,
+  seccomp, and capability drops, and nothing else. A host that does apply a
+  MAC profile to rootless Podman is unqualified but allowed, and its profile
+  is ambient configuration in the sense above — jms neither requires nor
+  verifies it.
 - **Trusted: the host kernel and the OCI runtime.** The boundary holds only
   as long as they do; a kernel or runtime exploit can cross the namespace
   boundary and potentially elevate beyond the invoking user. No claim of

@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+- **A build can no longer garbage-collect the image it just produced.**
+  Runtime creation times are whole seconds, so a project build landing in
+  the same second as an earlier one tied in the retention ordering and fell
+  back to image-digest order. The tag `jms build` was about to return —
+  and `jms launch` about to run — could therefore sort into the eviction
+  window and be untagged immediately after being built. Retention now takes
+  the current tag as protected: it is kept regardless of ordering and
+  consumes one of the two retention slots, so the store stays bounded.
+  `jms trust revoke --purge-images` is unaffected and still removes every
+  project image.
+
+- **A newer Podman major is no longer accepted silently.** The floor stays
+  at 5.4 and there is still no ceiling — nothing at or above the floor is
+  refused, since Podman is OS-packaged and a distribution upgrade must not
+  strand you — but a major above the qualified series (5.x, newest
+  qualified 5.4.2) now prints a one-line stderr warning naming the newest
+  qualified version. New majors can change the cleanup, user-namespace, and
+  mount semantics this backend parses strictly. Minor and patch bumps
+  within the qualified major remain silent, and `JMS_RUNTIME_ACCEPT` stays
+  apple/container-only: it neither suppresses the warning nor is required.
+
+- **Documentation corrections.** `SECURITY.md` said the qualified Debian 13
+  target "runs AppArmor"; the checked-in qualification captures report
+  AppArmor unavailable and an empty container `AppArmorProfile`, so no
+  mandatory access control applies to a jms container there at all. That is
+  now stated as its own Linux claim. The README separates *qualified*
+  (tiers green on Debian 13/amd64/Podman 5.4.2) from *accepted* (any local
+  rootless Podman ≥ 5.4), and states as a Linux prerequisite that jms does
+  not enforce a Podman sandbox profile.
+
+- **Integration harness checks its nftables prerequisites up front.**
+  `scripts/integration.sh` now probes `sudo -n nft` before creating any
+  state, so a missing `nftables` package or missing passwordless sudo exits
+  3 with a hint naming which of the two is absent, instead of failing
+  partway through after a base build. The probe covers the `a` and `all`
+  selections only: the egress denial belongs to tier A, and
+  `scripts/integration.sh b` needs no host privileges. The requirement is
+  also named in
+  `CONTRIBUTING.md` and the release checklist, neither of which previously
+  mentioned the package or that the sudo access must be passwordless.
+  Affects the manual qualification run only.
+
+- **Integration harness reports a cleanup failure it used to swallow.**
+  `scripts/integration.sh` sets exit status 3 whenever the nftables
+  egress-denial table survives the EXIT trap, instead of only when the
+  tiers otherwise passed. Previously a tier failure (1) or a leak-sweep
+  failure (2) masked it, so a run that left an egress-blocking rule
+  installed on the host could be classified as an ordinary test failure —
+  contrary to §9, which specifies the harness failure be reported
+  distinctly. Affects the manual Linux/macOS qualification run only; jms
+  itself is unchanged.
+
 - **License simplified to MIT.** 1.0.0 and 1.1.0 were released under
   `MIT OR Apache-2.0`; the dual license is dropped in favor of MIT alone.
   GitHub's license detector only recognizes a single known text, so the

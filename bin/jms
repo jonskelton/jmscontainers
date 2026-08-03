@@ -443,7 +443,11 @@ class PodmanBackend:
     install_hint = ("install the qualified package set: sudo apt install "
                     "podman uidmap passt dbus-user-session fuse-overlayfs coreutils")
     version_min = (5, 4, 0)              # Debian 13's packaged podman
-    version_max = None                   # min-only; qualification lives in the release checklist
+    version_max = None                   # no ceiling: a newer podman warns, never refuses
+    # Backend-private policy datum, deliberately not part of the protocol
+    # surface (§2): the newest podman the integration tiers ran green on.
+    # Bump it with the release that qualifies a new series.
+    _version_qualified = (5, 4, 2)
 
     # -- Class A: pure serializers and parsers (no I/O of any kind) --
 
@@ -523,12 +527,23 @@ class PodmanBackend:
     # -- Class B: executing queries and policy --
 
     def validate_version(self, parsed, first_line):
-        # Min-only policy: any version at or above the floor is accepted
-        # silently, and JMS_RUNTIME_ACCEPT is meaningful only for
-        # apple/container.  Qualification lives in the release checklist.
+        # Min-only policy: nothing at or above the floor is ever refused,
+        # because podman is OS-packaged and a distribution upgrade must not
+        # strand the user.  A new major is still not silent: it changes
+        # cleanup, user-namespace, and mount semantics this backend parses
+        # strictly, so it warns.  Patch and minor bumps within the qualified
+        # major stay quiet.  JMS_RUNTIME_ACCEPT is meaningful only for
+        # apple/container and has no effect here.
         if parsed < self.version_min:
             fail("podman runtime is too old; jms requires podman %s or newer"
                  % ".".join(map(str, self.version_min)))
+        if parsed[0] > self._version_qualified[0]:
+            # stderr only: cold-launch stdout carries the launched program's
+            # output and nothing else (R6/RC-006).
+            print("warning: podman %s is newer than the podman %d.x series jms %s is "
+                  "qualified against (newest qualified: %s); proceeding unqualified"
+                  % (".".join(map(str, parsed)), self._version_qualified[0], __version__,
+                     ".".join(map(str, self._version_qualified))), file=sys.stderr)
 
     def ensure_started(self):
         # Podman is daemonless; validate one `podman info` invocation in full.
@@ -1416,7 +1431,8 @@ def tag_prefix_for(root: bytes, pid: str) -> str:
     return "jmscontainers-%s-%s" % (slug(root.rsplit(b"/", 1)[-1]), pid[:8])
 
 
-def image_removal_schedule(pid: str, tag_prefix: str, *, keep: int) -> list[str]:
+def image_removal_schedule(pid: str, tag_prefix: str, *, keep: int,
+                           protect: str | None = None) -> list[str]:
     """Enumerate and select project image refs; raises on any failure (MIR-048).
 
     Retention counts distinct image identities (a multi-tagged image is one
@@ -1425,6 +1441,14 @@ def image_removal_schedule(pid: str, tag_prefix: str, *, keep: int) -> list[str]
     images, so the ownership label alone is not proof jms built the image;
     each ref must also carry the project's tag prefix (evaluated per ref
     within a fact, on the local_name() normalization -- MIR-047).
+
+    `protect` is a local tag name that must survive regardless of ordering:
+    runtime timestamps are whole seconds, so a build racing an earlier one
+    can tie and be ordered behind it by digest -- which would untag the very
+    image the caller is about to launch.  The protected identity is retained
+    unconditionally and consumes one retention slot, so `keep` still bounds
+    the store.  The purge path (`trust --purge-images`) deliberately passes
+    no protection: revocation must leave nothing behind.
     """
     owned = []
     for ident, refs, created, labels in image_facts():
@@ -1434,6 +1458,16 @@ def image_removal_schedule(pid: str, tag_prefix: str, *, keep: int) -> list[str]
         if selected:
             owned.append((created, selected))
     owned.sort(key=lambda item: item[0], reverse=True)
+    if protect is not None:
+        def held(refs):
+            return any(local_name(ref) == protect for ref in refs)
+        # Retention is per identity, so protecting a ref protects every ref
+        # of the same image.  Ties among the remainder stay digest-ordered:
+        # arbitrary is fine once the caller's own image cannot be chosen.
+        remainder = [item for item in owned if not held(item[1])]
+        if len(remainder) != len(owned):
+            keep = max(keep - 1, 0)
+        owned = remainder
     schedule = []
     for _, refs in owned[keep:]:
         schedule.extend(refs)
@@ -1455,11 +1489,11 @@ def execute_removal_schedule(schedule, report=None):
     return results
 
 
-def gc_project_images(pid: str, tag_prefix: str, *, keep: int):
+def gc_project_images(pid: str, tag_prefix: str, *, keep: int, protect: str | None = None):
     """Background retention: warn-only, never fails the surrounding
     build/launch, including on enumeration failures (MIR-048)."""
     try:
-        schedule = image_removal_schedule(pid, tag_prefix, keep=keep)
+        schedule = image_removal_schedule(pid, tag_prefix, keep=keep, protect=protect)
     except JMSException as exc:
         print("warning: image cleanup skipped: " + terminal_safe_text(str(exc)), file=sys.stderr)
         return
@@ -1483,7 +1517,9 @@ def build_project(data, args):
     print("building " + quote(tag))
     run_build(data["spec"], tag, args,
               {"jms.project": data["pid"], "jms.fingerprint": data["tf"]}, project=True)
-    gc_project_images(data["pid"], data["tag_prefix"], keep=KEEP_IMAGES)
+    # The tag returned here is what cmd_launch() runs; retention must never
+    # untag it, however the store's timestamps happen to sort.
+    gc_project_images(data["pid"], data["tag_prefix"], keep=KEEP_IMAGES, protect=tag)
     return tag, True
 
 

@@ -32,7 +32,9 @@ jobs:
         run: make test
 
   test-macos:
-    # The only supported platform: BSD userland, /bin/realpath, system python3.
+    # Covers what the Linux runners cannot: BSD userland, /bin/realpath,
+    # system python3.  Both platforms are supported; neither job starts a
+    # container runtime, so this proves the serializers and parsers only.
     name: Test (macOS)
     runs-on: macos-latest
     steps:
