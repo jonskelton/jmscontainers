@@ -29,8 +29,8 @@
   mandatory access control applies to a jms container there at all. That is
   now stated as its own Linux claim. The README separates *qualified*
   (tiers green on Debian 13/amd64/Podman 5.4.2) from *accepted* (any local
-  rootless Podman ≥ 5.4), and states as a Linux prerequisite that jms does
-  not enforce a Podman sandbox profile.
+  rootless Podman ≥ 5.4), and the Linux guide states as a prerequisite that
+  jms does not enforce a Podman sandbox profile.
 
 - **Integration harness checks its nftables prerequisites up front.**
   `scripts/integration.sh` now probes `sudo -n nft` before creating any
