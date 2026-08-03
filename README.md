@@ -1,5 +1,9 @@
 # jmscontainers
 
+[![test](https://github.com/jonskelton/jmscontainers/actions/workflows/test.yml/badge.svg)](https://github.com/jonskelton/jmscontainers/actions/workflows/test.yml)
+[![release](https://img.shields.io/github/v/release/jonskelton/jmscontainers)](https://github.com/jonskelton/jmscontainers/releases)
+[![license](https://img.shields.io/github/license/jonskelton/jmscontainers)](LICENSE)
+
 Throwaway containers for running **claude-code**, **codex**, and **opencode**
 in full-permission ("yolo") mode — without handing them your machine.
 
@@ -376,3 +380,7 @@ deliberately opt-in; releases follow the
 [release checklist](docs/release-checklist.md) and are recorded in
 [CHANGELOG.md](CHANGELOG.md). Contribution guidance is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
