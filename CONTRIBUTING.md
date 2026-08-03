@@ -46,6 +46,10 @@ jmscontainers is not a compose/orchestration tool. Services, compose files,
 multi-container networking, and declarative package/build DSLs require a new
 proposal rather than a drive-by feature addition.
 
+Work already identified and deliberately not scheduled is listed in
+[docs/deferred-work.md](docs/deferred-work.md) — check it before proposing
+something large, since the tradeoffs may already be recorded there.
+
 Every call into a container runtime goes through the backend protocol —
 `ContainerBackend` for apple/container, `PodmanBackend` for rootless Podman.
 Do not reach past it to a runtime CLI from shared code: behavior that is not
