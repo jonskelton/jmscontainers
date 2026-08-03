@@ -16,8 +16,9 @@ jms launch                      # you're in — the project is mounted at /work
 On Debian 13:
 
 ```sh
-sudo apt install podman uidmap passt dbus-user-session fuse-overlayfs coreutils
+sudo apt install podman uidmap passt dbus-user-session fuse-overlayfs coreutils make
 make install
+exec "$SHELL" -l                # picks up ~/.local/bin, created by `make install`
 jms build --base
 cd ~/anywhere/myproject
 jms launch
@@ -55,7 +56,12 @@ Debian 13, `uidmap`, `passt`, and `dbus-user-session` are only *Recommends*
 of `podman`, so a Recommends-disabled minimal install silently lacks them.
 Rootless Podman needs subordinate ID ranges (at least 65536 ids) in
 `/etc/subuid` and `/etc/subgid`; Debian's `adduser` provisions them for new
-users automatically.
+users automatically. `make` is listed for the same reason — it is not part
+of a base Debian 13 install, so `make install` would otherwise fail with
+`command not found`. The `exec "$SHELL" -l` line matters too: Debian's
+`~/.profile` adds `~/.local/bin` to `PATH` only if that directory already
+exists at login, and `make install` is what creates it, so the shell that
+ran the install cannot see `jms` without re-execing.
 
 What jms **refuses** to run on is exactly: platforms other than Linux and
 macOS, uid 0 on Linux (rootless Podman is the only qualified Linux mode),
