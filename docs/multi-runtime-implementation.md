@@ -1,6 +1,7 @@
 # Implementation guide: supporting Podman on Linux alongside apple/container
 
-Status: proposal (not yet implemented)
+Status: implemented and shipped in 1.1.0 (2026-08-03); retained as the
+design and requirements record
 Target: jms 1.1.0
 
 **Standing direction:** jms has no install base. Backwards-compatibility

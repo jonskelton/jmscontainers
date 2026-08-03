@@ -251,15 +251,16 @@ the runtime.
 
 The contents of `.jmscontainer/` are untrusted input. The first project
 build, launch, or `jms trust` shows a capability summary and asks two
-separate questions — one for build/run, one for credentials:
+separate questions — one for build/run, one for credentials (jms prints the
+real canonicalized path where `${HOME}` stands in below):
 
 ```
 Project container capabilities:
 - build and run: arbitrary commands with unrestricted network and root via passwordless sudo
-- project mount: "/Users/you/projects/myproject" -> "/work" read-write
+- project mount: "${HOME}/projects/myproject" -> "/work" read-write
 - entry: "/bin/bash" "-l"
 - agent state (credentials and configuration for claude, codex, opencode): read-write mount eligible with a separate grant
-"/Users/you/projects/myproject" defines a custom container (trust fingerprint 3f9c2ab81d04).
+"${HOME}/projects/myproject" defines a custom container (trust fingerprint 3f9c2ab81d04).
 Approving lets it run arbitrary commands at build and run time and mount the project read-write at /work.
 Allow build & run? [y/N] y
 Also mount persistent agent state -- credentials and configuration for claude, codex, and opencode -- with read-write access? [y/N]

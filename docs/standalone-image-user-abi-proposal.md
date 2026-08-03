@@ -1,8 +1,10 @@
 # Proposal: Declare the standalone image user ABI
 
-Status: Proposed
+Status: Accepted and implemented in 1.1.0 (2026-08-03). The ABI is normative
+in [README.md](../README.md#project-image-user-abi); this document is the
+design record behind it.
 Target: 1.1.0 multi-runtime release
-Related issue: RC-001 in `docs/release-critical-issues.md`
+Related issue: RC-001 in `docs/release-critical-issues.md` (closed)
 
 ## Summary
 

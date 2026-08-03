@@ -7,8 +7,16 @@
   on Ubuntu, plus macOS).
 - Reconcile the docs with the behavior actually shipping: `README.md`,
   [SECURITY.md](../SECURITY.md), [docs/cli.md](cli.md),
-  [docs/jmscontainer.toml.md](jmscontainer.toml.md), and
-  `completions/jms.bash`. The SECURITY.md/README review of the per-platform
+  [docs/jmscontainer.toml.md](jmscontainer.toml.md),
+  [CONTRIBUTING.md](../CONTRIBUTING.md), and
+  `completions/jms.bash`. CONTRIBUTING.md is easy to miss because it
+  describes the development workflow rather than the CLI: re-read its
+  development-checks and scope sections whenever the test or integration
+  invocation, the CI matrix, or the backend seam changes. Any design
+  document under `docs/` that this release implements needs its `Status:`
+  header moved off `proposal`/`Proposed` in the same pass, so a shipped
+  release never carries a document claiming the work is unbuilt.
+  The SECURITY.md/README review of the per-platform
   boundary statement (ambient-configuration trust, escape consequences,
   weaker-than-VM wording, reserved namespace and concurrency limitations)
   is release-blocking (R8.4).
