@@ -976,6 +976,50 @@ class BuildTests(unittest.TestCase):
             JMS.gc_project_images(pid, "p", keep=2)
         self.assertEqual(sorted(runtime.deleted), ["p:1", "p:2"])
 
+    def test_protected_tag_survives_an_equal_timestamp_tie(self):
+        pid = "f" * 64
+        # Runtime creation times are whole seconds, so a build landing in the
+        # same second as an earlier one ties and falls back to digest order.
+        # The protected tag is deliberately the one whose digest sorts last:
+        # the case that untagged the caller's own image before `protect`.
+        refs = sorted(["p:1", "p:2", "p:3"], key=fake_hex_id)
+        current = refs[-1]
+        images = {ref: image_record(ref, created="2026-01-01T00:00:00Z",
+                                    labels={"jms.project": pid}) for ref in refs}
+        with self.fake(images=images) as runtime, contextlib.redirect_stdout(io.StringIO()):
+            JMS.gc_project_images(pid, "p", keep=2, protect=current)
+        self.assertNotIn(current, runtime.deleted)
+        self.assertEqual(len(runtime.deleted), 1)
+
+    def test_protection_consumes_a_retention_slot(self):
+        pid = "f" * 64
+        def owned(ref, minute):
+            return image_record(ref, created="2026-01-01T00:%02d:00Z" % minute,
+                                labels={"jms.project": pid})
+        images = {"p:old": owned("p:old", 1), "p:mid": owned("p:mid", 2),
+                  "p:new": owned("p:new", 3)}
+        with self.fake(images=images) as runtime, contextlib.redirect_stdout(io.StringIO()):
+            JMS.gc_project_images(pid, "p", keep=2, protect="p:old")
+        # Still two survivors, not three: protection reorders retention, it
+        # does not widen it.
+        self.assertEqual(runtime.deleted, ["p:mid"])
+
+    def test_build_never_untags_the_image_it_returns(self):
+        with sandbox() as home:
+            root = make_project(home)
+            data = JMS.project_data(JMS.canon(os.fsencode(root)))
+            # Two earlier builds of this project sharing the second the new
+            # build lands in (the fake stamps build #1 at 00:00:01Z).
+            stale = {}
+            for suffix in ("a" * 12, "b" * 12):
+                ref = data["tag_prefix"] + ":" + suffix
+                stale[ref] = image_record(ref, created="2026-01-01T00:00:01Z",
+                                          labels={"jms.project": data["pid"]})
+            with self.fake(images=stale) as runtime, contextlib.redirect_stdout(io.StringIO()):
+                tag, built = JMS.build_project(data, self.build_args("--trust"))
+        self.assertTrue(built)
+        self.assertNotIn(tag, runtime.deleted)
+
     def test_trust_revoke_purge_removes_every_project_image(self):
         pid = "f" * 64
         images = {"p:1": image_record("p:1", labels={"jms.project": pid}),
