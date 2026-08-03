@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **License simplified to MIT.** 1.0.0 and 1.1.0 were released under
+  `MIT OR Apache-2.0`; the dual license is dropped in favor of MIT alone.
+  GitHub's license detector only recognizes a single known text, so the
+  pointer-style `LICENSE` resolved to `NOASSERTION` and the repository
+  advertised "Other" — a needless obstacle for anyone whose compliance
+  process filters on the detected value. Recipients of the earlier tags keep
+  the terms those tags shipped under; the Apache-2.0 option is simply no
+  longer offered going forward. Done now because the project has no install
+  base.
+
 ## 1.1.0 — 2026-08-03
 
 Linux support: jms now runs on Debian 13 (amd64) with local rootless
