@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.0 — 2026-07-30
+## 1.1.0 — 2026-08-03
 
 Linux support: jms now runs on Debian 13 (amd64) with local rootless
 Podman ≥ 5.4, alongside the existing apple/container backend on Apple
