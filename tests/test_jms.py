@@ -1971,14 +1971,28 @@ class PodmanReadinessTests(unittest.TestCase):
         self.assertIsNone(backend.parse_version("container CLI version 1.2.0"))
         with self.assertRaisesRegex(JMS.JMSException, "too old"):
             backend.validate_version((5, 3, 9), "podman version 5.3.9")
+        # No ceiling: nothing at or above the floor is ever refused.  Within
+        # the qualified major that acceptance is silent.
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
             backend.validate_version((5, 4, 0), "podman version 5.4.0")
-            # No maximum, no warning machinery: newer majors are silent, and
-            # JMS_RUNTIME_ACCEPT is meaningful only for apple/container.
-            with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "9.0.0"}):
-                backend.validate_version((9, 0, 0), "podman version 9.0.0")
+            backend.validate_version((5, 9, 9), "podman version 5.9.9")
         self.assertEqual(stderr.getvalue(), "")
+        # A newer major is accepted too, but never silently.
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            backend.validate_version((6, 0, 0), "podman version 6.0.0")
+        warning = stderr.getvalue()
+        self.assertIn("podman 6.0.0 is newer", warning)
+        self.assertIn("5.4.2", warning)         # the qualified version, from code
+        self.assertIn("proceeding unqualified", warning)
+        # JMS_RUNTIME_ACCEPT is meaningful only for apple/container: it
+        # neither suppresses this warning nor is required to proceed.
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "6.0.0"}):
+                backend.validate_version((6, 0, 0), "podman version 6.0.0")
+        self.assertEqual(stderr.getvalue(), warning)
 
     def test_podman_runtime_ready_end_to_end(self):
         info_payload = json.dumps(self.info()).encode()

@@ -443,7 +443,11 @@ class PodmanBackend:
     install_hint = ("install the qualified package set: sudo apt install "
                     "podman uidmap passt dbus-user-session fuse-overlayfs coreutils")
     version_min = (5, 4, 0)              # Debian 13's packaged podman
-    version_max = None                   # min-only; qualification lives in the release checklist
+    version_max = None                   # no ceiling: a newer podman warns, never refuses
+    # Backend-private policy datum, deliberately not part of the protocol
+    # surface (§2): the newest podman the integration tiers ran green on.
+    # Bump it with the release that qualifies a new series.
+    _version_qualified = (5, 4, 2)
 
     # -- Class A: pure serializers and parsers (no I/O of any kind) --
 
@@ -523,12 +527,23 @@ class PodmanBackend:
     # -- Class B: executing queries and policy --
 
     def validate_version(self, parsed, first_line):
-        # Min-only policy: any version at or above the floor is accepted
-        # silently, and JMS_RUNTIME_ACCEPT is meaningful only for
-        # apple/container.  Qualification lives in the release checklist.
+        # Min-only policy: nothing at or above the floor is ever refused,
+        # because podman is OS-packaged and a distribution upgrade must not
+        # strand the user.  A new major is still not silent: it changes
+        # cleanup, user-namespace, and mount semantics this backend parses
+        # strictly, so it warns.  Patch and minor bumps within the qualified
+        # major stay quiet.  JMS_RUNTIME_ACCEPT is meaningful only for
+        # apple/container and has no effect here.
         if parsed < self.version_min:
             fail("podman runtime is too old; jms requires podman %s or newer"
                  % ".".join(map(str, self.version_min)))
+        if parsed[0] > self._version_qualified[0]:
+            # stderr only: cold-launch stdout carries the launched program's
+            # output and nothing else (R6/RC-006).
+            print("warning: podman %s is newer than the podman %d.x series jms %s is "
+                  "qualified against (newest qualified: %s); proceeding unqualified"
+                  % (".".join(map(str, parsed)), self._version_qualified[0], __version__,
+                     ".".join(map(str, self._version_qualified))), file=sys.stderr)
 
     def ensure_started(self):
         # Podman is daemonless; validate one `podman info` invocation in full.
