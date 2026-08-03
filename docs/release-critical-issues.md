@@ -5,10 +5,12 @@ Reviewed: 2026-07-30; updated 2026-07-31 after a live macOS validation
 pass, then again 2026-07-31 closing RC-002/RC-005 and landing the RC-003
 procedures, then again 2026-07-31 recording the macOS RC-003 acceptance
 runs and the RC-004 macOS gate at `b144a27`, then again 2026-08-03
-recording the Debian 13 gate at `8b52ffe` and closing RC-001/RC-004
+recording the Debian 13 gate at `8b52ffe` and closing RC-001/RC-004, then
+again 2026-08-03 recording the R8.4 documentation review at `b24b59d`
 Merge disposition: **ready**, with one recommended re-check — every
-RC-001 through RC-007 issue is closed with recorded evidence, and the
-only outstanding item is replaying the RC-007 README fix on a pristine
+RC-001 through RC-007 issue is closed with recorded evidence, the
+release-blocking R8.4 documentation review is performed and recorded, and
+the only outstanding item is replaying the RC-007 README fix on a pristine
 Debian 13 VM (see that issue's residual risk).
 
 This register contains only issues that must be resolved or explicitly closed
@@ -456,6 +458,30 @@ a login shell was used, which is exactly what the two added lines automate —
 but a literal re-run on a fresh VM is the honest way to close this to the
 same standard as the rest of the register, and is recommended before tagging.
 
+## R8.4 threat-model documentation review
+
+Performed 2026-08-03 at `b24b59d`. R8.4 is the spec's only **doc** row
+(`docs/multi-runtime-implementation.md` §12): a release-blocking review of
+the SECURITY.md/README threat-model wording. It carries no enforceable
+behavioral claim, so the review is its evidence. Each required topic, where
+it is stated, and the code the statement was checked against:
+
+| Topic | Location | Cross-checked against |
+| --- | --- | --- |
+| Kernel and OCI-runtime trust; no "escape can never yield host root" claim | SECURITY.md "Trusted: the host kernel and the OCI runtime" | — (scope statement) |
+| Ambient-configuration trust assumption (MIR-040) | SECURITY.md "Ambient Podman configuration is trusted host input" | `PodmanBackend.run_argv` — argv pins only `--userns` and `label=disable`, matching the claim that jms neither validates nor neutralizes ambient config |
+| Escape consequences | SECURITY.md "What an escape yields" | — (scope statement) |
+| Weaker-than-VM statement | SECURITY.md "The container boundary, per platform"; README "Two things to know" and the stack list | `PodmanBackend.run_argv` uid-0 refusal path; rootless-only enforcement at `bin/jms` `os.geteuid() == 0` |
+| Mounted-data exposure | SECURITY.md trust model (credential-mount warning) and "What no boundary mitigates" | Read-only shell mount and rejected-source rules (R7.11, R8.3) |
+| SELinux and supplementary-group limitations | SECURITY.md `label=disable` rationale, SELinux-enforcing paragraph, owner-based permission contract; README "Known Linux limitations" | `--security-opt label=disable` is unconditional in `run_argv`; no enforcing-mode detection exists, as documented |
+| Reserved namespace and concurrency limitation (MIR-047) | README "Image refs starting with `jmscontainers-` are reserved" | `PodmanBackend.local_name` strips exactly `localhost/` — the narrowed normalization MIR-047 requires — so the documented reserved namespace matches the code's |
+
+Findings: none. The wording is accurate against the shipping behavior and
+does not overclaim; the weaker-than-VM and escape-consequence statements are
+stated plainly rather than hedged. The reserved-namespace and concurrency
+limitation lives in the README only, which is what MIR-047's "done when"
+requires; SECURITY.md carries the boundary claims. No changes were needed.
+
 ## Verification log
 
 | Check | Result | Notes |
@@ -473,3 +499,5 @@ same standard as the rest of the register, and is recommended before tagging.
 | Podman integration at `8b52ffe` (2026-08-03) | Pass | podman 5.4.2; full `scripts/integration.sh all`, both tiers green on a fresh Debian 13 amd64 host as uid/gid 4242 over a real ssh login session; live-answered credential prompt; survivor-set did not cascade; clean leak sweep; no leaked containers, images, or nft tables (RC-001, RC-004) |
 | Clean-host install walkthrough (2026-08-03) | Pass with defects | Debian 13 + fresh `jmsqual`; README followed verbatim, exposing the two RC-007 defects; end-to-end green once corrected. Corrected text not yet replayed on a pristine VM (RC-007 residual risk) |
 | `git diff --check main...HEAD` at `8b52ffe` (2026-08-03) | Pass | No whitespace errors |
+| R8.4 documentation review at `b24b59d` (2026-08-03) | Pass | All seven required threat-model topics present and accurate against the shipping code; no findings, no changes (see the section above) |
+| `make test` at `b24b59d` (2026-08-03) | Pass | 190 tests on Python 3.13.5, Debian 13; this run's host lacked shellcheck, so the shellcheck leg is the one recorded at `8b52ffe` |
