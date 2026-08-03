@@ -40,17 +40,19 @@ command -v "$runtime" >/dev/null 2>&1 || {
     exit 1
 }
 
-# The Linux tiers install a harness-owned nftables egress denial partway
-# through; discovering a missing prerequisite there wastes a base build and
-# leaves the run half-done.  Check it up front -- before mktemp, so nothing
-# is created and the EXIT trap is not yet armed.
-if [ "$runtime" = podman ]; then
+# Tier A installs a harness-owned nftables egress denial partway through;
+# discovering a missing prerequisite there wastes a base build and leaves the
+# run half-done.  Check it up front -- before mktemp, so nothing is created
+# and the EXIT trap is not yet armed.  Scoped to the selections that actually
+# reach install_egress_denial: tier B never touches nftables, and `b` is a
+# supported standalone invocation that must run on a host without sudo.
+if [ "$runtime" = podman ] && [ "$tier" != b ]; then
     # The probe is what the harness actually needs, so it is authoritative:
     # nft lives in /usr/sbin and `command -v` can miss it for a user whose
     # PATH omits the sbin directories even though `sudo nft` works.  It only
     # classifies the failure for the hint.
     if ! sudo -n nft list tables >/dev/null 2>&1; then
-        echo "harness failure: the Linux tiers need passwordless 'sudo nft' for the egress denial" >&2
+        echo "harness failure: Linux tier A needs passwordless 'sudo nft' for the egress denial" >&2
         if command -v nft >/dev/null 2>&1 || [ -x /usr/sbin/nft ]; then
             echo "hint: grant this user NOPASSWD access to /usr/sbin/nft in sudoers" >&2
         else
