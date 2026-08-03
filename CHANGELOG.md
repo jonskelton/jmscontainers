@@ -32,6 +32,15 @@
   rootless Podman ≥ 5.4), and states as a Linux prerequisite that jms does
   not enforce a Podman sandbox profile.
 
+- **Integration harness checks its nftables prerequisites up front.**
+  `scripts/integration.sh` now probes `sudo -n nft` before creating any
+  state, so a missing `nftables` package or missing passwordless sudo exits
+  3 with a hint naming which of the two is absent, instead of failing
+  partway through after a base build. The requirement is also named in
+  `CONTRIBUTING.md` and the release checklist, neither of which previously
+  mentioned the package or that the sudo access must be passwordless.
+  Affects the manual qualification run only.
+
 - **Integration harness reports a cleanup failure it used to swallow.**
   `scripts/integration.sh` sets exit status 3 whenever the nftables
   egress-denial table survives the EXIT trap, instead of only when the

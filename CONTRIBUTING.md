@@ -22,9 +22,12 @@ release, or a Debian 13 (amd64) host with rootless Podman. Tier A is the
 fast one and asserts the launch contracts on the base image; tier B is
 expensive and builds the example gallery, and assumes tier A's base image
 already exists. `make integration` runs both. The Linux launch contracts and
-the egress-denied FROM-resolution check need `sudo` for a harness-owned
-nftables rule. Release-qualifying runs have further host requirements — see
-the [release checklist](docs/release-checklist.md).
+the egress-denied FROM-resolution check need the `nftables` package
+(`sudo apt install nftables`, not pulled in by `podman`) and *passwordless*
+`sudo nft`, for a harness-owned egress-denial rule; the harness checks both
+before it builds anything and exits 3 if either is missing.
+Release-qualifying runs have further host requirements — see the
+[release checklist](docs/release-checklist.md).
 
 ## Changes to trust-sensitive code
 
