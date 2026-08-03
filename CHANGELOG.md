@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Integration harness reports a cleanup failure it used to swallow.**
+  `scripts/integration.sh` sets exit status 3 whenever the nftables
+  egress-denial table survives the EXIT trap, instead of only when the
+  tiers otherwise passed. Previously a tier failure (1) or a leak-sweep
+  failure (2) masked it, so a run that left an egress-blocking rule
+  installed on the host could be classified as an ordinary test failure —
+  contrary to §9, which specifies the harness failure be reported
+  distinctly. Affects the manual Linux/macOS qualification run only; jms
+  itself is unchanged.
+
 - **License simplified to MIT.** 1.0.0 and 1.1.0 were released under
   `MIT OR Apache-2.0`; the dual license is dropped in favor of MIT alone.
   GitHub's license detector only recognizes a single known text, so the

@@ -15,6 +15,8 @@
 #
 # Exit codes: 0 pass; 1 test failure or leak; 2 sweep failure; 3 harness
 # failure (egress-denial install/remove problems, unsupported platform).
+# When more than one applies the highest number wins: a harness failure
+# outranks a sweep failure, which outranks a tier failure.
 # This intentionally does not run in PR CI; the qualified Linux run happens
 # on a real Debian 13 amd64 host with a fresh non-root, non-1000 user over
 # ssh (MIR-049/056).
@@ -87,12 +89,15 @@ on_exit() {
     sweep_status=0
     python3 "$root/scripts/leak_sweep.py" "$runtime" "$work" || sweep_status=$?
     rm -rf "$work"
+    # Precedence: a harness failure means the run itself is untrustworthy and
+    # the host may still carry the egress-denial table, so it outranks both
+    # the sweep result and the tier status (§9).
+    if [ "$harness_failed" -ne 0 ]; then
+        exit 3
+    fi
     if [ "$sweep_status" -ne 0 ]; then
         echo "leak sweep exited $sweep_status" >&2
         exit "$sweep_status"
-    fi
-    if [ "$harness_failed" -ne 0 ] && [ "$status" -eq 0 ]; then
-        exit 3
     fi
     exit "$status"
 }
