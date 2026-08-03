@@ -48,6 +48,30 @@ only the runtime layer is per-backend.
   auth-mount and manifest-env parity checks, and the image survivor-set
   run. Both tiers end in a strict three-outcome leak sweep.
 
+### Qualification
+
+Both real-host gates are green. macOS: apple/container 1.2.0 on Apple
+Silicon, full interactive `scripts/integration.sh all` (2026-07-31). Linux:
+the matrix below, full `scripts/integration.sh all` plus the clean-host
+install walkthrough, run as a fresh `adduser` account with a non-1000 UID
+and non-1000 primary GID over a real ssh login session (2026-08-03).
+
+| Dimension | Tested value |
+| --- | --- |
+| Podman | 5.4.2 |
+| Architecture | amd64 (`x86_64`) |
+| Kernel | 6.12.100+deb13-amd64 |
+| Distribution | Debian GNU/Linux 13 (trixie) |
+| cgroup | v2, `systemd` manager |
+| OCI runtime | crun 1.21 |
+| Storage driver | `overlay` (extfs backing, native overlay diff) |
+| Network backend | netavark 1.14.0, aardvark-dns 1.14.0, pasta |
+| Rootless | yes |
+| Python | 3.13.5 |
+
+Other distributions, arm64, and SELinux-enforcing hosts remain unqualified
+but allowed. See `docs/release-critical-issues.md` for the full evidence.
+
 ## 1.0.0 — 2026-07-29
 
 Initial release.

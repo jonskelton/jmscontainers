@@ -4,8 +4,12 @@ Review target: `main...multi-runtime` at `c5157cd`
 Reviewed: 2026-07-30; updated 2026-07-31 after a live macOS validation
 pass, then again 2026-07-31 closing RC-002/RC-005 and landing the RC-003
 procedures, then again 2026-07-31 recording the macOS RC-003 acceptance
-runs and the RC-004 macOS gate at `b144a27`
-Merge disposition: **not ready**
+runs and the RC-004 macOS gate at `b144a27`, then again 2026-08-03
+recording the Debian 13 gate at `8b52ffe` and closing RC-001/RC-004
+Merge disposition: **ready**, with one recommended re-check — every
+RC-001 through RC-007 issue is closed with recorded evidence, and the
+only outstanding item is replaying the RC-007 README fix on a pristine
+Debian 13 VM (see that issue's residual risk).
 
 This register contains only issues that must be resolved or explicitly closed
 with qualification evidence before 1.1.0 is merged for release.
@@ -20,7 +24,7 @@ Status values:
 ## RC-001 — Standalone images have an undeclared `1000:1000` runtime ABI
 
 - **Severity:** Blocker
-- **Status:** Awaiting qualification
+- **Status:** Closed
 - **Affected:** `bin/jms:493-503`, `README.md:197-199`,
   `examples/clean-slate/.jmscontainer/Containerfile:5-8`
 
@@ -66,6 +70,26 @@ repository-owned Containerfiles to the runtime UID/GID constants, and adds
 the complete standalone launch assertions to integration tier B. `make test`
 passes. RC-001 remains open pending a green `scripts/integration.sh all` run
 on the qualified fresh non-1000 Debian/Podman host.
+
+### Resolution
+
+2026-08-03: the qualifying run is recorded. `scripts/integration.sh all`
+passed at `8b52ffe` on a fresh Debian 13 (trixie) amd64 host with Podman
+5.4.2, run as `jmsqual` (uid 4242, primary gid 4242 — both non-1000) from a
+real ssh login session, exit 0 with no `FAIL:` lines and a clean leak sweep.
+
+The tier B standalone user-ABI assertions all executed against
+`examples/clean-slate` on a store from which `registry.fedoraproject.org/
+fedora:latest` had been deleted, so the fully qualified external base was
+re-fetched first. Inside the container the assertions confirmed `id -u`,
+`id -g`, `id -u isolation`, and `id -g isolation` are all `1000`, `id -un`
+is `isolation`, the passwd home is `/home/isolation` and the shell
+`/bin/bash`, `/home/isolation` exists, is writable, and is owned `1000:1000`,
+and `sudo -n true` succeeds. On the host side the `/work` probe written by
+that container came back owned `4242:4242` — the invoking user, not
+`1000:1000` — which is the keep-id mapping behaving as designed for a
+non-1000 account. This is the case the register was opened for: it could not
+have passed had the ABI been left implicit.
 
 ## RC-002 — The documented SELinux support state contradicts the release scope
 
@@ -197,7 +221,7 @@ convergence clean exited 0.
 ## RC-004 — Mandatory real-host release qualification is not recorded
 
 - **Severity:** Blocker
-- **Status:** Awaiting qualification
+- **Status:** Closed
 - **Affected:** `docs/release-checklist.md:15-36`, `CHANGELOG.md:3-43`
 
 ### Finding
@@ -263,6 +287,65 @@ clean-host install walkthrough, and the release-notes matrix) remain the
 blocker; if they force a code change, this macOS run must be repeated at
 the new candidate commit.
 
+### Resolution
+
+2026-08-03, Debian gate recorded. All four required Linux gates are green at
+`8b52ffe`. No executable code changed to achieve them, so the macOS gate
+recorded at `b144a27` stands (the only deltas since are the documentation
+commits recording these results and the README fix under RC-007).
+
+Host: fresh Debian 13 (trixie) amd64, kernel 6.12.100+deb13-amd64. Test
+account `jmsqual` created with `adduser` — uid 4242, primary gid 4242, both
+non-1000 — with `/etc/subuid` and `/etc/subgid` ranges `165536:65536`
+provisioned automatically, a fresh home on local ext4, and no prior
+container state. All commands ran over a real ssh login session; `pam_systemd`
+supplied `XDG_RUNTIME_DIR=/run/user/4242` and the user D-Bus session
+(`loginctl` reports `Remote=yes`, `Type=tty`). The harness's nftables
+egress-denial rule ran via a `NOPASSWD: /usr/sbin/nft` sudoers grant, since
+`scripts/integration.sh` uses `sudo -n` by design.
+
+- **Both integration tiers:** `scripts/integration.sh all` exit 0. Tier A and
+  tier B both printed their pass banners, followed by `integration tier(s)
+  'all' passed on podman`. No `FAIL:` or `harness failure` lines in 1837
+  lines of output. The leak sweep runs from the harness EXIT trap and is
+  silent on success; a sweep failure would have exited 2. Post-run the host
+  showed no containers, no `itest-*` images, and no leftover
+  `jms-integration-*` nft table.
+- **Credential-consent prompt answered live.** The tier B `--trust --auth`
+  launch prompted exactly once and was answered `y` through a pty, so the
+  auth-mount assertion passed interactively rather than via a
+  `JMS_TRUST_FINGERPRINT` pin: the probe landed in
+  `~/.local/share/jmscontainers/agents/claude/`, owned by uid 4242, with
+  `CLAUDE_CONFIG_DIR` visible inside.
+- **Survivor-set graph (Podman half).** The manual alias
+  `itest-survivor-alias:keep` outside the reserved namespace survived
+  `jms clean --images` on the same image identity, and the unselected
+  dangling image survived unpruned — delete-by-ref did not cascade on
+  Podman either.
+- **Clean-host install walkthrough:** performed as `jmsqual` following the
+  README verbatim. It exposed two README defects, recorded and fixed as
+  RC-007; with those corrected the walkthrough runs end to end — base image
+  built, and `jms launch` in a fresh checkout mounted the project at `/work`
+  as `isolation` 1000:1000 with the host file readable.
+- **`make test` with shellcheck present:** 190 unit tests plus a clean
+  shellcheck 0.10.0 leg, exit 0. This is the first Linux run of the RC-005
+  gate on a host that actually has shellcheck installed.
+
+Release-notes matrix (also recorded in CHANGELOG.md):
+
+| Dimension | Value |
+| --- | --- |
+| Podman | 5.4.2 (`5.4.2+ds1-2+b2`) |
+| Architecture | amd64 (`x86_64`) |
+| Kernel | 6.12.100+deb13-amd64 |
+| Distribution | Debian GNU/Linux 13 (trixie) |
+| cgroup | v2, `systemd` manager |
+| OCI runtime | crun 1.21 |
+| Storage driver | `overlay` on extfs, native overlay diff |
+| Network backend | netavark 1.14.0 (aardvark-dns 1.14.0, pasta 0.0~git20250503) |
+| Rootless | true (graph root `~/.local/share/containers/storage`) |
+| Python | 3.13.5 |
+
 ## RC-005 — `make test` fails wherever shellcheck is installed
 
 - **Severity:** Blocker
@@ -326,6 +409,53 @@ Validated on macOS: a cold-launch `$(jms launch ... -c 'echo "$JMS_ITEST"')`
 capture yields exactly the manifest value, and the 188-test unit suite
 passes. The Linux side is covered by the RC-004 qualification rerun.
 
+## RC-007 — The README Debian install block fails when followed verbatim
+
+- **Severity:** Blocker
+- **Status:** Closed
+- **Affected:** `README.md:18-25`, `README.md:54-59`
+
+### Finding
+
+Found by the RC-004 clean-host install walkthrough on 2026-08-03 — the gate
+exists precisely to catch this, and nothing else would have. The Debian
+block did not survive a literal reading on a fresh host; it failed twice:
+
+1. **`make` is missing.** The block runs `make install`, but `make` is not
+   in its `apt` list and is not part of a base Debian 13 install. A new user
+   following the README gets `bash: make: command not found`, exit 127, at
+   step two. The macOS block is unaffected because Xcode Command Line Tools
+   ship `make`, which is likely why this went unnoticed.
+2. **`jms` is not on `PATH` in the installing shell.** `make install`
+   symlinks into `~/.local/bin`, and Debian's default `~/.profile` prepends
+   that directory only `if [ -d "$HOME/.local/bin" ]` — evaluated at login.
+   On a fresh account the directory does not exist yet, so the shell that
+   runs `make install` never picks it up and the very next line,
+   `jms build --base`, fails with `command not found`. It works in any
+   *subsequent* login shell, which makes this easy to miss when testing on
+   an account that has installed something into `~/.local/bin` before.
+
+Both are release-blocking on the same grounds as RC-002: the install
+instructions are a public support surface, and the release checklist makes
+the clean-host walkthrough mandatory.
+
+### Resolution
+
+2026-08-03: `make` added to the Debian `apt` line, and an explicit
+`exec "$SHELL" -l` step added after `make install`. The load-bearing-packages
+paragraph now explains both, so neither reads as noise a reader might skip.
+
+### Residual risk
+
+The walkthrough that found these ran against the README as of `8b52ffe`; the
+corrected text has not itself been replayed on a pristine host, because doing
+so needs a Debian 13 VM that has never had Podman or `make` installed, and
+the qualification host no longer qualifies. The fix is a superset of what the
+recorded run proved works — that run succeeded once `make` was installed and
+a login shell was used, which is exactly what the two added lines automate —
+but a literal re-run on a fresh VM is the honest way to close this to the
+same standard as the rest of the register, and is recommended before tagging.
+
 ## Verification log
 
 | Check | Result | Notes |
@@ -339,3 +469,7 @@ passes. The Linux side is covered by the RC-004 qualification rerun.
 | Unit suite at `b144a27` (2026-07-31) | Pass | 190 tests plus a clean shellcheck leg on macOS |
 | apple/container integration at `b144a27` (2026-07-31) | Pass | container 1.2.0; full interactive run, both tiers green including the answered credential prompt and the RC-003 survivor-set acceptance; found and fixed the consent `O_NONBLOCK` leak en route (see RC-004) |
 | Manual removal-race test at `b144a27` (2026-07-31) | Pass | container 1.2.0; ten-iteration external-delete race per the release-checklist appendix; every cleanup exited 0, no failed removals, converged clean (RC-003) |
+| `make test` at `8b52ffe` (2026-08-03) | Pass | 190 tests on Python 3.13.5, Debian 13, **with shellcheck 0.10.0 installed** — first Linux run of the RC-005 gate on a host that has it |
+| Podman integration at `8b52ffe` (2026-08-03) | Pass | podman 5.4.2; full `scripts/integration.sh all`, both tiers green on a fresh Debian 13 amd64 host as uid/gid 4242 over a real ssh login session; live-answered credential prompt; survivor-set did not cascade; clean leak sweep; no leaked containers, images, or nft tables (RC-001, RC-004) |
+| Clean-host install walkthrough (2026-08-03) | Pass with defects | Debian 13 + fresh `jmsqual`; README followed verbatim, exposing the two RC-007 defects; end-to-end green once corrected. Corrected text not yet replayed on a pristine VM (RC-007 residual risk) |
+| `git diff --check main...HEAD` at `8b52ffe` (2026-08-03) | Pass | No whitespace errors |
