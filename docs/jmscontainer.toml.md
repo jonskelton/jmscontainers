@@ -65,7 +65,7 @@ empty or `.`/`..` component, and no `,`, `=`, or NUL (the runtime's mount
 grammar cannot carry the first two). It must sit under one of four prefixes:
 
 - `/home/isolation/` — the home fixed by the
-  [project-image user ABI](../README.md#project-image-user-abi)
+  [project-image user ABI](project-images.md#project-image-user-abi)
 - `/opt/`
 - `/mnt/`
 - `/srv/`

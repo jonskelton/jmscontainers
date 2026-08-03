@@ -75,7 +75,7 @@ registry policy stay in the trusted-host class: they are not container
 isolation defaults and should not be conflated with them.
 
 If the current policy is instead retained deliberately, this item closes as
-*won't do* and the README prerequisite becomes the permanent answer.
+*won't do* and the Linux-guide prerequisite becomes the permanent answer.
 
 ### Done when
 

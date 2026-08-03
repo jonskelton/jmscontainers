@@ -471,16 +471,16 @@ it is stated, and the code the statement was checked against:
 | Kernel and OCI-runtime trust; no "escape can never yield host root" claim | SECURITY.md "Trusted: the host kernel and the OCI runtime" | — (scope statement) |
 | Ambient-configuration trust assumption (MIR-040) | SECURITY.md "Ambient Podman configuration is trusted host input" | `PodmanBackend.run_argv` — argv pins only `--userns` and `label=disable`, matching the claim that jms neither validates nor neutralizes ambient config |
 | Escape consequences | SECURITY.md "What an escape yields" | — (scope statement) |
-| Weaker-than-VM statement | SECURITY.md "The container boundary, per platform"; README "Two things to know" and the stack list | `PodmanBackend.run_argv` uid-0 refusal path; rootless-only enforcement at `bin/jms` `os.geteuid() == 0` |
+| Weaker-than-VM statement | SECURITY.md "The container boundary, per platform"; README "Know these three things"; `docs/linux.md` "Security boundary" | `PodmanBackend.run_argv` uid-0 refusal path; rootless-only enforcement at `bin/jms` `os.geteuid() == 0` |
 | Mounted-data exposure | SECURITY.md trust model (credential-mount warning) and "What no boundary mitigates" | Read-only shell mount and rejected-source rules (R7.11, R8.3) |
-| SELinux and supplementary-group limitations | SECURITY.md `label=disable` rationale, SELinux-enforcing paragraph, owner-based permission contract; README "Known Linux limitations" | `--security-opt label=disable` is unconditional in `run_argv`; no enforcing-mode detection exists, as documented |
-| Reserved namespace and concurrency limitation (MIR-047) | README "Image refs starting with `jmscontainers-` are reserved" | `PodmanBackend.local_name` strips exactly `localhost/` — the narrowed normalization MIR-047 requires — so the documented reserved namespace matches the code's |
+| SELinux and supplementary-group limitations | SECURITY.md `label=disable` rationale, SELinux-enforcing paragraph, owner-based permission contract; `docs/linux.md` "Known limitations" | `--security-opt label=disable` is unconditional in `run_argv`; no enforcing-mode detection exists, as documented |
+| Reserved namespace and concurrency limitation (MIR-047) | `docs/linux.md` "Known limitations" | `PodmanBackend.local_name` strips exactly `localhost/` — the narrowed normalization MIR-047 requires — so the documented reserved namespace matches the code's |
 
 Findings: none. The wording is accurate against the shipping behavior and
 does not overclaim; the weaker-than-VM and escape-consequence statements are
 stated plainly rather than hedged. The reserved-namespace and concurrency
-limitation lives in the README only, which is what MIR-047's "done when"
-requires; SECURITY.md carries the boundary claims. No changes were needed.
+limitation now lives in the Linux guide; SECURITY.md carries the boundary
+claims. No changes were needed to runtime behavior.
 
 ## Verification log
 
