@@ -1,10 +1,12 @@
 import contextlib
+import datetime
 import importlib.machinery
 import hashlib
 import io
 import json
 import os
 import pathlib
+import pty
 import re
 import stat
 import subprocess
@@ -26,6 +28,16 @@ JMS = importlib.machinery.SourceFileLoader(
 GOLDEN_TREE_TF = "0941c3a1ee51b32eeace1fb270552a32cb8c694e2e6c3801087effc2c287742d"
 GOLDEN_SINGLE_TF = "d0004b6bc950679f0de2eedf06f9bec5c9f02442b46109af80ef1915acd5f7c7"
 DEFAULT_CONTAINERFILE = b"FROM jmscontainers-base:latest\n"
+
+
+def setUpModule():
+    # Install the backend by assigning the cache (seam #3): the suite must be
+    # platform-independent, never exercising select_runtime() implicitly.
+    JMS._RUNTIME = JMS.ContainerBackend()
+
+
+def tearDownModule():
+    JMS._RUNTIME = None
 
 
 @contextlib.contextmanager
@@ -76,15 +88,37 @@ def fingerprint_of(root):
     return JMS.trust_fingerprint(JMS.spec_entries(os.fsencode(root / ".jmscontainer")))
 
 
+FIXTURES = pathlib.Path(__file__).parent / "fixtures"
+
+
+def load_fixture(name):
+    with open(FIXTURES / name, "rb") as handle:
+        return json.load(handle)
+
+
+def forbid(*args, **kwargs):
+    raise AssertionError("forbidden call reached: " + repr(args[:1]))
+
+
+def fake_hex_id(name):
+    return hashlib.sha256(name.encode()).hexdigest()
+
+
 def image_record(ref, created="2026-01-01T00:00:00Z", labels=None):
-    return {"configuration": {"name": ref, "creationDate": created},
-            "variants": [{"config": {"config": {"Labels": labels or {}}}}]}
+    """Normalized fake-image state; FakeRuntime renders it per backend."""
+    return {"created": created, "labels": dict(labels or {})}
 
 
 class FakeRuntime:
-    """Canned `container` subprocess seam driven by the argv prefix."""
+    """Canned runtime subprocess seam driven by the argv prefix.
 
-    def __init__(self, images=None, containers=None, build_error=None, stop_error=False):
+    Internal state is backend-neutral (image_record() specs keyed by ref,
+    containers as {"id", "labels"} dicts); payloads are rendered in each
+    engine's real JSON schema so the strict normalizers parse them.
+    """
+
+    def __init__(self, images=None, containers=None, build_error=None, stop_error=False,
+                 backend="container"):
         self.calls = []
         self.images = dict(images or {})
         self.containers = list(containers or [])
@@ -92,54 +126,111 @@ class FakeRuntime:
         self.build_error = build_error
         self.build_count = 0
         self.stop_error = stop_error
+        self.backend = backend
 
     def result(self, returncode=0, stdout=b"", stderr=b""):
         return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
+    def payload(self, value):
+        return self.result(stdout=json.dumps(value).encode())
+
+    def apple_images_payload(self):
+        records = []
+        for ref, spec in self.images.items():
+            digest = fake_hex_id(ref)
+            records.append({"id": digest,
+                            "configuration": {"name": ref, "creationDate": spec["created"],
+                                              "descriptor": {"digest": "sha256:" + digest}},
+                            "variants": [{"config": {"config": {"Labels": dict(spec["labels"])}}}]})
+        return records
+
+    def podman_images_payload(self):
+        records = []
+        for ref, spec in self.images.items():
+            epoch = int(datetime.datetime.fromisoformat(spec["created"]).timestamp())
+            records.append({"Id": fake_hex_id(ref), "Names": [ref], "Created": epoch,
+                            "Labels": dict(spec["labels"]) or None})
+        return records
+
+    def parse_build(self, argv, label_flag):
+        self.build_count += 1
+        if self.build_error is not None:
+            raise JMS.JMSException(self.build_error)
+        tag = argv[argv.index("--tag") + 1]
+        labels = {}
+        for index, value in enumerate(argv):
+            if value == label_flag:
+                key, _, label_value = argv[index + 1].partition("=")
+                labels[key] = label_value
+        created = "2026-01-01T00:00:%02dZ" % (self.build_count % 60)
+        self.images[tag] = image_record(tag, created=created, labels=labels)
+        return self.result()
+
     def __call__(self, argv, capture=True, check=True, stdin=None,
                  stdout=None, stderr=None, replace=False):
         self.calls.append({"argv": list(argv), "replace": replace})
+        if argv[0] != self.backend:
+            raise AssertionError("fake %s runtime saw argv[0]=%s" % (self.backend, argv[0]))
+        if self.backend == "podman":
+            return self.podman_call(argv, check)
+        return self.apple_call(argv, check)
+
+    def apple_call(self, argv, check):
         if argv[:2] == ["container", "--version"]:
-            return self.result(stdout=b"container CLI version 1.1.0 (build: release)\n")
+            return self.result(stdout=b"container CLI version 1.2.0 (build: release)\n")
         if argv[:3] == ["container", "system", "status"]:
             return self.result()
         if argv[:3] == ["container", "image", "inspect"]:
             ref = argv[3]
             if ref in self.images:
-                return self.result(stdout=json.dumps([self.images[ref]]).encode())
+                return self.payload(self.apple_images_payload())
             return self.result(returncode=1, stderr=("Error: image not found: " + ref).encode())
         if argv[:3] == ["container", "image", "list"]:
-            return self.result(stdout=json.dumps(list(self.images.values())).encode())
+            return self.payload(self.apple_images_payload())
         if argv[:3] == ["container", "image", "delete"]:
             self.deleted.append(argv[3])
             self.images.pop(argv[3], None)
             return self.result()
         if argv[:2] == ["container", "build"]:
-            self.build_count += 1
-            if self.build_error is not None:
-                raise JMS.JMSException(self.build_error)
-            tag = argv[argv.index("--tag") + 1]
-            labels = {}
-            for index, value in enumerate(argv):
-                if value == "-l":
-                    key, _, label_value = argv[index + 1].partition("=")
-                    labels[key] = label_value
-            created = "2026-01-01T00:00:%02dZ" % (self.build_count % 60)
-            self.images[tag] = image_record(tag, created=created, labels=labels)
-            return self.result()
+            return self.parse_build(argv, "-l")
         if argv[:2] == ["container", "list"]:
-            return self.result(stdout=json.dumps(self.containers).encode())
+            return self.payload([{"id": c["id"], "configuration": {"labels": dict(c["labels"])}}
+                                 for c in self.containers])
         if argv[:2] == ["container", "stop"] and self.stop_error:
             if check:
                 raise JMS.JMSException("command failed: container stop " + argv[2])
             return self.result(returncode=1, stderr=b"Error: container is not running")
         return self.result()
 
+    def podman_call(self, argv, check):
+        if argv[:2] == ["podman", "--version"]:
+            return self.result(stdout=b"podman version 5.4.2\n")
+        if argv[:2] == ["podman", "info"]:
+            return self.payload(load_fixture("podman-5.4.2-info.json"))
+        if argv[:3] == ["podman", "image", "exists"]:
+            return self.result(returncode=0 if argv[3] in self.images else 1)
+        if argv[:2] == ["podman", "images"]:
+            return self.payload(self.podman_images_payload())
+        if argv[:3] == ["podman", "image", "rm"]:
+            self.deleted.append(argv[-1])
+            self.images.pop(argv[-1], None)
+            return self.result()
+        if argv[:2] == ["podman", "build"]:
+            return self.parse_build(argv, "--label")
+        if argv[:2] == ["podman", "ps"]:
+            return self.payload([{"Id": c["id"], "Labels": dict(c["labels"]) or None}
+                                 for c in self.containers])
+        if argv[:2] == ["podman", "stop"] and self.stop_error:
+            return self.result(returncode=1, stderr=b"some containers could not be stopped")
+        return self.result()
+
 
 @contextlib.contextmanager
-def fake_runtime(**kwargs):
-    runtime = FakeRuntime(**kwargs)
-    with mock.patch.object(JMS, "runtime_run", runtime):
+def fake_runtime(backend="container", **kwargs):
+    runtime = FakeRuntime(backend=backend, **kwargs)
+    backend_cls = JMS.ContainerBackend if backend == "container" else JMS.PodmanBackend
+    with mock.patch.object(JMS, "_RUNTIME", backend_cls()), \
+         mock.patch.object(JMS, "runtime_run", runtime):
         yield runtime
 
 
@@ -564,6 +655,23 @@ class ConsentTests(unittest.TestCase):
              mock.patch.object(sys, "stderr", TTYIO(tty)):
             return JMS.approve(root, tf, args, action=action, config=config)
 
+    def test_consent_read_survives_a_leaked_nonblocking_terminal(self):
+        # An attached `container run --interactive` exits with O_NONBLOCK
+        # left on the shared terminal description; the consent read must not
+        # turn that leak into an instant default-No EOF.
+        master, slave = pty.openpty()
+        try:
+            os.set_blocking(slave, False)
+            os.write(master, b"y\n")
+            reader = os.fdopen(slave, "r", closefd=False)
+            with mock.patch.object(sys, "stdin", reader), \
+                 mock.patch.object(sys, "stderr", TTYIO(True)):
+                self.assertEqual(JMS.consent_input("Allow? "), "y")
+            self.assertTrue(os.get_blocking(slave))
+        finally:
+            os.close(master)
+            os.close(slave)
+
     def test_trust_flag_is_one_shot_and_never_writes(self):
         with sandbox() as home:
             root = JMS.canon(os.fsencode(make_project(home)))
@@ -741,22 +849,29 @@ class CliSurfaceTests(unittest.TestCase):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout), self.assertRaises(SystemExit):
             JMS.parse_cli(["--version"])
-        self.assertEqual(stdout.getvalue().strip(), "1.0.0")
+        self.assertEqual(stdout.getvalue().strip(), "1.1.0")
 
 
 class BuildTests(unittest.TestCase):
+    BACKEND = "container"
+    EXE = "container"
+    PULL_FLAG = "--pull"
+
     def build_args(self, *extra):
         return JMS.parse_cli(["build", *extra])
+
+    def fake(self, **kwargs):
+        return fake_runtime(backend=self.BACKEND, **kwargs)
 
     def test_project_build_uses_spec_as_context_with_identity_labels(self):
         with sandbox() as home:
             root = make_project(home)
             data = JMS.project_data(JMS.canon(os.fsencode(root)))
-            with fake_runtime() as runtime, contextlib.redirect_stdout(io.StringIO()):
+            with self.fake() as runtime, contextlib.redirect_stdout(io.StringIO()):
                 tag, built = JMS.build_project(data, self.build_args("--trust"))
             self.assertTrue(built)
             self.assertEqual(tag, data["tag_prefix"] + ":" + data["tf"][:12])
-            build = next(call["argv"] for call in runtime.calls if call["argv"][:2] == ["container", "build"])
+            build = next(call["argv"] for call in runtime.calls if call["argv"][:2] == [self.EXE, "build"])
             spec_text = os.fsdecode(data["spec"])
             self.assertEqual(build[-1], spec_text)
             self.assertIn("--file", build)
@@ -764,27 +879,29 @@ class BuildTests(unittest.TestCase):
             self.assertIn("jms.project=" + data["pid"], build)
             self.assertIn("jms.fingerprint=" + data["tf"], build)
             self.assertNotIn("--no-cache", build)
-            self.assertNotIn("--pull", build)
+            # No pull refresh: project builds never re-pull (podman's explicit
+            # --pull=missing is the no-refresh spelling on that backend).
+            self.assertNotIn(self.PULL_FLAG, build)
 
     def test_fingerprint_reuse_and_no_cache_rebuild(self):
         with sandbox() as home:
             root = make_project(home)
             data = JMS.project_data(JMS.canon(os.fsencode(root)))
             tag = data["tag_prefix"] + ":" + data["tf"][:12]
-            with fake_runtime(images={tag: image_record(tag)}) as runtime, \
+            with self.fake(images={tag: image_record(tag)}) as runtime, \
                  contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(JMS.build_project(data, self.build_args()), (tag, False))
                 self.assertEqual(runtime.build_count, 0)
                 self.assertEqual(JMS.build_project(data, self.build_args("--no-cache")),
                                  (tag, True))
                 build = next(call["argv"] for call in runtime.calls
-                             if call["argv"][:2] == ["container", "build"])
+                             if call["argv"][:2] == [self.EXE, "build"])
                 self.assertIn("--no-cache", build)
 
     def test_pull_without_base_is_rejected_with_the_update_recipe(self):
         with sandbox() as home:
             make_project(home)
-            with fake_runtime() as runtime:
+            with self.fake() as runtime:
                 with self.assertRaisesRegex(JMS.UsageError,
                                             "jms build --base --pull --no-cache") as caught:
                     JMS.cmd_build(self.build_args("--pull"))
@@ -796,7 +913,7 @@ class BuildTests(unittest.TestCase):
             root = make_project(home)
             data = JMS.project_data(JMS.canon(os.fsencode(root)))
             (root / ".jmscontainer" / "Containerfile").write_bytes(b"FROM sneaky\n")
-            with fake_runtime() as runtime:
+            with self.fake() as runtime:
                 with self.assertRaisesRegex(JMS.JMSException, "changed during consent"):
                     JMS.build_project(data, self.build_args())
                 self.assertEqual(runtime.build_count, 0)
@@ -806,7 +923,7 @@ class BuildTests(unittest.TestCase):
             root = make_project(home, containerfile=b"FROM x\nCOPY ../src /src\n")
             data = JMS.project_data(JMS.canon(os.fsencode(root)))
             stderr = io.StringIO()
-            with fake_runtime(build_error="command failed: container build"), \
+            with self.fake(build_error="command failed: container build"), \
                  contextlib.redirect_stdout(io.StringIO()), \
                  contextlib.redirect_stderr(stderr):
                 with self.assertRaisesRegex(JMS.JMSException, "command failed"):
@@ -815,7 +932,7 @@ class BuildTests(unittest.TestCase):
 
     def test_base_build_failure_has_no_context_note(self):
         stderr = io.StringIO()
-        with fake_runtime(build_error="command failed"), \
+        with self.fake(build_error="command failed"), \
              contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(stderr):
             with self.assertRaises(JMS.JMSException):
@@ -823,7 +940,7 @@ class BuildTests(unittest.TestCase):
         self.assertNotIn(".jmscontainer", stderr.getvalue())
 
     def test_base_build_uses_the_repo_as_context(self):
-        with fake_runtime() as runtime, contextlib.redirect_stdout(io.StringIO()):
+        with self.fake() as runtime, contextlib.redirect_stdout(io.StringIO()):
             JMS.build_base(self.build_args("--base", "--pull", "--no-cache"))
         build = runtime.calls[-1]["argv"]
         repo = os.fsdecode(JMS.canon(os.fsencode(pathlib.Path(JMS.__file__).resolve().parent.parent)))
@@ -831,14 +948,14 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(build[build.index("--file") + 1], repo + "/Containerfile")
         self.assertEqual(build[-1], repo)
         self.assertIn("--no-cache", build)
-        self.assertIn("--pull", build)
+        self.assertIn(self.PULL_FLAG, build)
 
     def test_cmd_build_without_project_builds_base(self):
         with sandbox() as home:
             (home / "git" / "plain").mkdir()
-            with fake_runtime() as runtime, contextlib.redirect_stdout(io.StringIO()):
+            with self.fake() as runtime, contextlib.redirect_stdout(io.StringIO()):
                 JMS.cmd_build(JMS.parse_cli(["build", "-w", str(home / "git" / "plain")]))
-            build = next(call["argv"] for call in runtime.calls if call["argv"][:2] == ["container", "build"])
+            build = next(call["argv"] for call in runtime.calls if call["argv"][:2] == [self.EXE, "build"])
             self.assertEqual(build[build.index("--tag") + 1], JMS.BASE)
 
     def test_newest_two_images_are_kept_per_project(self):
@@ -855,7 +972,7 @@ class BuildTests(unittest.TestCase):
             "other:1": image_record("other:1", labels={"jms.project": "0" * 64}),
             "plain:1": image_record("plain:1"),
         }
-        with fake_runtime(images=images) as runtime, contextlib.redirect_stdout(io.StringIO()):
+        with self.fake(images=images) as runtime, contextlib.redirect_stdout(io.StringIO()):
             JMS.gc_project_images(pid, "p", keep=2)
         self.assertEqual(sorted(runtime.deleted), ["p:1", "p:2"])
 
@@ -863,9 +980,15 @@ class BuildTests(unittest.TestCase):
         pid = "f" * 64
         images = {"p:1": image_record("p:1", labels={"jms.project": pid}),
                   "squatter:1": image_record("squatter:1", labels={"jms.project": pid})}
-        with fake_runtime(images=images) as runtime, contextlib.redirect_stdout(io.StringIO()):
+        with self.fake(images=images) as runtime, contextlib.redirect_stdout(io.StringIO()):
             JMS.gc_project_images(pid, "p", keep=0)
         self.assertEqual(runtime.deleted, ["p:1"])
+
+
+class BuildTestsPodman(BuildTests):
+    BACKEND = "podman"
+    EXE = "podman"
+    PULL_FLAG = "--pull=always"
 
 
 class RuntimeGateTests(unittest.TestCase):
@@ -878,37 +1001,37 @@ class RuntimeGateTests(unittest.TestCase):
             JMS.runtime_ready()
 
     def test_version_gate(self):
-        self.probe(b"container CLI version 1.1.0 (build: release, commit: x)\n")
+        self.probe(b"container CLI version 1.2.0 (build: release, commit: x)\n")
         with self.assertRaisesRegex(JMS.JMSException, "too old"):
-            self.probe(b"container CLI version 1.0.9\n")
+            self.probe(b"container CLI version 1.1.9\n")
         with self.assertRaisesRegex(JMS.JMSException, "newer than the newest runtime"):
-            self.probe(b"container CLI version 1.2.0\n")
+            self.probe(b"container CLI version 1.3.0\n")
         with self.assertRaisesRegex(JMS.JMSException, "cannot parse"):
             self.probe(b"something else\n")
         with self.assertRaisesRegex(JMS.JMSException, "cannot parse"):
-            self.probe(b"container CLI version 1.1.0\n", returncode=1)
+            self.probe(b"container CLI version 1.2.0\n", returncode=1)
 
     def test_runtime_accept_pin_admits_one_exact_newer_version(self):
-        newer = b"container CLI version 1.2.0\n"
-        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.2.0"}):
+        newer = b"container CLI version 1.3.0\n"
+        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.3.0"}):
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
                 self.probe(newer)
             self.assertIn("not qualified", stderr.getvalue())
             self.assertIn("JMS_RUNTIME_ACCEPT", stderr.getvalue())
-        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.3.0"}):
+        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.4.0"}):
             with self.assertRaisesRegex(JMS.JMSException, "newer than the newest runtime"):
                 self.probe(newer)
-        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.0.9"}):
+        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.1.9"}):
             with self.assertRaisesRegex(JMS.JMSException, "too old"):
-                self.probe(b"container CLI version 1.0.9\n")
-        with self.assertRaisesRegex(JMS.JMSException, "JMS_RUNTIME_ACCEPT=1.2.0"):
+                self.probe(b"container CLI version 1.1.9\n")
+        with self.assertRaisesRegex(JMS.JMSException, "JMS_RUNTIME_ACCEPT=1.3.0"):
             self.probe(newer)
 
     def test_runtime_json_rejects_invalid_payloads(self):
         with fake_runtime() as runtime:
             runtime.images = {}
-            self.assertEqual(JMS.image_records(), [])
+            self.assertEqual(JMS.image_facts(), [])
         def fake(argv, **kwargs):
             return types.SimpleNamespace(returncode=0, stdout=b"not json", stderr=b"")
         with mock.patch.object(JMS, "runtime_run", fake):
@@ -928,9 +1051,15 @@ class RuntimeGateTests(unittest.TestCase):
 
 
 class LaunchTests(unittest.TestCase):
+    BACKEND = "container"
+    EXE = "container"
+    USER_ISOLATION = "isolation"
+    USER_ROOT = "root"
+    MOUNT = "source="
+
     def launch_argv(self, home, argv, images=None, containers=None, trusted_auth=False):
         """Run cmd_launch against the fake runtime; return the exec argv."""
-        with fake_runtime(images=dict(images or {})) as runtime, \
+        with fake_runtime(backend=self.BACKEND, images=dict(images or {})) as runtime, \
              mock.patch.object(JMS, "ensure_agent_state_directory"), \
              contextlib.redirect_stdout(io.StringIO()), quiet():
             JMS.cmd_launch(JMS.parse_cli(argv))
@@ -947,14 +1076,14 @@ class LaunchTests(unittest.TestCase):
             argv = self.launch_argv(
                 home, ["launch", "--trust", "--no-auth", "-w", str(root), "--", "-c", "true"],
                 images={tag: image_record(tag)})
-            self.assertEqual(argv[:4], ["container", "run", "--rm", "--interactive"])
-            self.assertEqual(argv[argv.index("--user") + 1], "isolation")
+            self.assertEqual(argv[:4], [self.EXE, "run", "--rm", "--interactive"])
+            self.assertEqual(argv[argv.index("--user") + 1], self.USER_ISOLATION)
             self.assertEqual(argv[argv.index("--workdir") + 1], "/work")
             self.assertEqual(argv[argv.index("--entrypoint") + 1], "/bin/bash")
             self.assertIn("FOO=bar", argv)
             self.assertIn("jms.project=" + data["pid"], argv)
             root_text = os.fsdecode(JMS.canon(os.fsencode(root)))
-            self.assertIn("source=" + root_text + ",target=/work", argv)
+            self.assertIn(self.MOUNT + root_text + ",target=/work", argv)
             self.assertIn(tag, argv)
             self.assertEqual(argv[-2:], ["-c", "true"])
             self.assertNotIn("/.claude", " ".join(argv[argv.index("--mount"):]))
@@ -968,7 +1097,7 @@ class LaunchTests(unittest.TestCase):
             argv = self.launch_argv(home, ["launch", "--trust", "--no-auth", "--root",
                                            "-b", "/bin/sh", "-w", str(root)],
                                     images={tag: image_record(tag)})
-            self.assertEqual(argv[argv.index("--user") + 1], "root")
+            self.assertEqual(argv[argv.index("--user") + 1], self.USER_ROOT)
             self.assertEqual(argv[argv.index("--entrypoint") + 1], "/bin/sh")
             self.assertNotIn("CLAUDE_CONFIG_DIR=/root/.claude", argv)
 
@@ -990,7 +1119,7 @@ class LaunchTests(unittest.TestCase):
                                     images={tag: image_record(tag)})
             mounts = " ".join(argv)
             agents = str(JMS.agent_state_root())
-            self.assertIn("source=" + agents + "/claude,target=/home/isolation/.claude", mounts)
+            self.assertIn(self.MOUNT + agents + "/claude,target=/home/isolation/.claude", mounts)
             self.assertIn("target=/home/isolation/.codex", mounts)
             self.assertIn("target=/home/isolation/.local/share/opencode", mounts)
             self.assertIn("target=/home/isolation/.config/opencode", mounts)
@@ -1012,12 +1141,12 @@ class LaunchTests(unittest.TestCase):
             shell = str(JMS.shell_state_root())
             argv = self.launch_argv(home, ["launch", "--no-auth", "-w", str(plain)],
                                     images={JMS.BASE: image_record(JMS.BASE)})
-            self.assertIn("source=" + shell + ",target=/home/isolation/.config/jms-shell,readonly",
+            self.assertIn(self.MOUNT + shell + ",target=/home/isolation/.config/jms-shell,readonly",
                           argv)
             self.assertTrue(JMS.shell_state_root().is_dir())
             argv = self.launch_argv(home, ["launch", "--no-auth", "--root", "-w", str(plain)],
                                     images={JMS.BASE: image_record(JMS.BASE)})
-            self.assertIn("source=" + shell + ",target=/root/.config/jms-shell,readonly", argv)
+            self.assertIn(self.MOUNT + shell + ",target=/root/.config/jms-shell,readonly", argv)
 
     def test_shell_config_symlink_source_is_rejected_before_the_runtime(self):
         with sandbox() as home:
@@ -1072,8 +1201,16 @@ class LaunchTests(unittest.TestCase):
             with mock.patch.object(os, "getcwd", return_value=str(anywhere)):
                 argv = self.launch_argv(home, ["launch", "--no-auth"],
                                         images={JMS.BASE: image_record(JMS.BASE)})
-            self.assertIn("source=" + os.fsdecode(canonical) + ",target=/work",
+            self.assertIn(self.MOUNT + os.fsdecode(canonical) + ",target=/work",
                           " ".join(argv))
+
+
+class LaunchTestsPodman(LaunchTests):
+    BACKEND = "podman"
+    EXE = "podman"
+    USER_ISOLATION = "1000:1000"
+    USER_ROOT = "0:0"
+    MOUNT = "type=bind,source="
 
 
 class TrustCommandTests(unittest.TestCase):
@@ -1222,16 +1359,37 @@ class InitTests(unittest.TestCase):
 
 
 class CleanTests(unittest.TestCase):
+    BACKEND = "container"
+    EXE = "container"
+    STOP_PREFIX = ("container", "stop")
+    REMOVE_PREFIX = ("container", "delete")
+    IMAGE_PREFIX = ("container", "image")
+
     def clean(self, argv, images=None, containers=None, stop_error=False):
-        with fake_runtime(images=dict(images or {}), containers=list(containers or []),
+        with fake_runtime(backend=self.BACKEND, images=dict(images or {}),
+                          containers=list(containers or []),
                           stop_error=stop_error) as runtime:
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
                 JMS.cmd_clean(JMS.parse_cli(argv))
             return runtime, stdout.getvalue()
 
-    def container_record(self, ident, labels=None):
-        return {"id": ident, "configuration": {"labels": labels or {}}}
+    def cid(self, name):
+        # Podman container ids are 64-hex; apple/container ids are names.
+        return name if self.BACKEND == "container" else fake_hex_id(name)
+
+    def container_record(self, ident, labels=None, *, launch=None):
+        labels = dict(labels or {})
+        # jms-launched fixtures carry the provenance marker the predicate
+        # requires (§5); pass launch=False for manual-container cases.
+        if launch is None:
+            launch = "jms.project" in labels
+        if launch:
+            labels.setdefault("jms.container", "launch")
+        return {"id": self.cid(ident), "labels": labels}
+
+    def prefixed(self, call, prefix):
+        return tuple(call["argv"][:len(prefix)]) == prefix
 
     def test_project_scope_selects_only_matching_containers_and_images(self):
         with sandbox() as home:
@@ -1252,11 +1410,12 @@ class CleanTests(unittest.TestCase):
             }
             runtime, output = self.clean(["clean", "--images", "-w", str(root)],
                                          images=images, containers=containers)
-            self.assertIn("removed container \"jms-demo-1\"", output)
-            self.assertNotIn("jms-other-1", output)
+            self.assertIn("removed container \"" + self.cid("jms-demo-1") + "\"", output)
+            self.assertNotIn(self.cid("jms-other-1"), output)
             self.assertEqual(runtime.deleted, [mine])
-            stopped = [call["argv"][2] for call in runtime.calls if call["argv"][:2] == ["container", "stop"]]
-            self.assertEqual(stopped, ["jms-demo-1"])
+            stopped = [call["argv"][-1] for call in runtime.calls
+                       if self.prefixed(call, self.STOP_PREFIX)]
+            self.assertEqual(stopped, [self.cid("jms-demo-1")])
 
     def test_all_scope_includes_base_and_labelled_containers(self):
         with sandbox():
@@ -1273,23 +1432,51 @@ class CleanTests(unittest.TestCase):
             }
             runtime, output = self.clean(["clean", "--all", "--images"],
                                          images=images, containers=containers)
-            self.assertIn("labelled", output)
-            self.assertNotIn("unrelated", output)
+            self.assertIn(self.cid("labelled"), output)
+            self.assertNotIn(self.cid("unrelated"), output)
             self.assertEqual(sorted(runtime.deleted),
                              [JMS.BASE, "jmscontainers-mine-00000000:1"])
-            self.assertFalse(any(call["argv"][:3] == ["container", "image", "prune"]
-                                 for call in runtime.calls))
+            self.assertFalse(any(call["argv"][2:3] == ["prune"] for call in runtime.calls
+                                 if self.prefixed(call, self.IMAGE_PREFIX)))
 
     def test_all_scope_ignores_unlabelled_containers_named_like_jms(self):
         with sandbox():
             containers = [self.container_record("jms-production-db"),
                           self.container_record("jms-demo-1", {"jms.project": "0" * 64})]
             runtime, output = self.clean(["clean", "--all"], containers=containers)
-            self.assertNotIn("jms-production-db", output)
-            self.assertIn("removed container \"jms-demo-1\"", output)
+            self.assertNotIn(self.cid("jms-production-db"), output)
+            self.assertIn("removed container \"" + self.cid("jms-demo-1") + "\"", output)
             touched = [call["argv"][-1] for call in runtime.calls
-                       if call["argv"][:2] in (["container", "stop"], ["container", "delete"])]
-            self.assertNotIn("jms-production-db", touched)
+                       if self.prefixed(call, self.STOP_PREFIX)
+                       or self.prefixed(call, self.REMOVE_PREFIX)]
+            self.assertNotIn(self.cid("jms-production-db"), touched)
+
+    def test_cleanup_provenance_predicate(self):
+        # R5.8: ownership requires jms.project AND jms.container=launch;
+        # inherited-marker, manual, and marker-absent containers are never
+        # selected, and dry-run selects the same ids as real cleanup.
+        with sandbox():
+            pid = "0" * 64
+            containers = [
+                self.container_record("jms-launched", {"jms.project": pid}),
+                # Manual container from a jms image: inherits the neutral
+                # build marker, never the launch value.
+                self.container_record("manual-from-jms-image",
+                                      {"jms.project": pid, "jms.container": "image"},
+                                      launch=False),
+                # Malicious preseed cannot exist on a jms build (the build
+                # stamp overrides it), but a manual --label can spell it; it
+                # still lacks nothing here -- it IS selected only with both.
+                self.container_record("marker-absent", {"jms.project": pid}, launch=False),
+                self.container_record("unrelated-jms-name", launch=False),
+            ]
+            runtime, dry = self.clean(["clean", "--all", "--dry-run"], containers=containers)
+            runtime, real = self.clean(["clean", "--all"], containers=containers)
+            for output in (dry, real):
+                self.assertIn(self.cid("jms-launched"), output)
+                self.assertNotIn(self.cid("manual-from-jms-image"), output)
+                self.assertNotIn(self.cid("marker-absent"), output)
+                self.assertNotIn(self.cid("unrelated-jms-name"), output)
 
     def test_all_scope_without_images_performs_no_image_operations(self):
         with sandbox():
@@ -1298,9 +1485,9 @@ class CleanTests(unittest.TestCase):
                       "foreign:1": image_record("foreign:1")}
             runtime, output = self.clean(["clean", "--all"], images=images,
                                          containers=containers)
-            self.assertIn("removed container \"jms-demo-1\"", output)
+            self.assertIn("removed container \"" + self.cid("jms-demo-1") + "\"", output)
             self.assertEqual(runtime.deleted, [])
-            self.assertFalse(any(call["argv"][:2] == ["container", "image"]
+            self.assertFalse(any(self.prefixed(call, self.IMAGE_PREFIX)
                                  for call in runtime.calls))
 
     def test_stop_failure_does_not_abort_deletion(self):
@@ -1309,11 +1496,11 @@ class CleanTests(unittest.TestCase):
                           self.container_record("jms-demo-2", {"jms.project": "0" * 64})]
             runtime, output = self.clean(["clean", "--all"], containers=containers,
                                          stop_error=True)
-            self.assertIn("removed container \"jms-demo-1\"", output)
-            self.assertIn("removed container \"jms-demo-2\"", output)
-            deleted = [call["argv"][3] for call in runtime.calls
-                       if call["argv"][:2] == ["container", "delete"]]
-            self.assertEqual(deleted, ["jms-demo-1", "jms-demo-2"])
+            self.assertIn("removed container \"" + self.cid("jms-demo-1") + "\"", output)
+            self.assertIn("removed container \"" + self.cid("jms-demo-2") + "\"", output)
+            deleted = [call["argv"][-1] for call in runtime.calls
+                       if self.prefixed(call, self.REMOVE_PREFIX)]
+            self.assertEqual(deleted, [self.cid("jms-demo-1"), self.cid("jms-demo-2")])
 
     def test_dry_run_reports_without_mutating(self):
         with sandbox():
@@ -1325,14 +1512,15 @@ class CleanTests(unittest.TestCase):
             self.assertIn("would remove image", output)
             self.assertNotIn("prune", output)
             self.assertEqual(runtime.deleted, [])
-            self.assertFalse(any(call["argv"][:2] == ["container", "stop"] for call in runtime.calls))
+            self.assertFalse(any(self.prefixed(call, self.STOP_PREFIX)
+                                 for call in runtime.calls))
 
     def test_clean_without_project_requires_explicit_scope(self):
         with sandbox() as home:
             outside = home / "elsewhere"
             outside.mkdir()
             with mock.patch.object(os, "getcwd", return_value=str(outside)):
-                with fake_runtime():
+                with fake_runtime(backend=self.BACKEND):
                     with self.assertRaisesRegex(JMS.UsageError, "pass --workdir or --all"):
                         JMS.cmd_clean(JMS.parse_cli(["clean"]))
 
@@ -1341,6 +1529,14 @@ class CleanTests(unittest.TestCase):
             with self.assertRaisesRegex(JMS.UsageError, "workdir does not exist"):
                 JMS.cmd_clean(JMS.parse_cli(["clean", "-w", str(home / "missing")]))
             ready.assert_not_called()
+
+
+class CleanTestsPodman(CleanTests):
+    BACKEND = "podman"
+    EXE = "podman"
+    STOP_PREFIX = ("podman", "stop")
+    REMOVE_PREFIX = ("podman", "rm")
+    IMAGE_PREFIX = ("podman", "image")
 
 
 class TerminalSafetyTests(unittest.TestCase):
@@ -1372,6 +1568,1037 @@ class TerminalSafetyTests(unittest.TestCase):
                          "source=/tmp/x,target=/opt/y,readonly")
         with self.assertRaises(JMS.JMSException):
             JMS.mount_argument("/tmp/a=b", "/work")
+
+
+PROJECT_PID = "p" * 64
+GOLDEN_LABELS = (("jms.project", PROJECT_PID), ("jms.container", "launch"))
+
+
+def golden_plan(**overrides):
+    fields = dict(name="jms-demo-cafe0123", user="isolation", tty=False,
+                  workdir="/work", entrypoint="/bin/bash", image="img:1",
+                  labels=GOLDEN_LABELS, env=(),
+                  mounts=(("/tmp/proj", "/work", False),
+                          ("/tmp/shell", "/home/isolation/.config/jms-shell", True)),
+                  command=("-l",))
+    fields.update(overrides)
+    return JMS.LaunchPlan(**fields)
+
+
+class LaunchArgvGoldenTests(unittest.TestCase):
+    """R7.1/R7.7/R7.8/R7.9/R7.14: exact launch argv per backend, same plans."""
+
+    def test_default_launch_argv_golden(self):
+        plan = golden_plan()
+        self.assertEqual(JMS.ContainerBackend().run_argv(plan), [
+            "container", "run", "--rm", "--interactive",
+            "--name", "jms-demo-cafe0123", "--user", "isolation",
+            "--workdir", "/work", "--entrypoint", "/bin/bash",
+            "--label", "jms.project=" + PROJECT_PID,
+            "--label", "jms.container=launch",
+            "--mount", "source=/tmp/proj,target=/work",
+            "--mount", "source=/tmp/shell,target=/home/isolation/.config/jms-shell,readonly",
+            "img:1", "-l"])
+        self.assertEqual(JMS.PodmanBackend().run_argv(plan), [
+            "podman", "run", "--rm", "--interactive",
+            "--name", "jms-demo-cafe0123", "--user", "1000:1000",
+            "--workdir", "/work", "--entrypoint", "/bin/bash",
+            "--label", "jms.project=" + PROJECT_PID,
+            "--label", "jms.container=launch",
+            "--hostname", "container", "--security-opt", "label=disable",
+            "--userns=keep-id:uid=1000,gid=1000",
+            "--mount", "type=bind,source=/tmp/proj,target=/work",
+            "--mount", "type=bind,source=/tmp/shell,target=/home/isolation/.config/jms-shell,readonly",
+            "img:1", "-l"])
+
+    def test_root_launch_argv_golden(self):
+        plan = golden_plan(user="root", tty=True,
+                           mounts=(("/tmp/proj", "/work", False),
+                                   ("/tmp/shell", "/root/.config/jms-shell", True)))
+        apple = JMS.ContainerBackend().run_argv(plan)
+        podman = JMS.PodmanBackend().run_argv(plan)
+        self.assertEqual(apple[4], "--tty")
+        self.assertEqual(apple[apple.index("--user") + 1], "root")
+        self.assertEqual(podman[podman.index("--user") + 1], "0:0")
+        self.assertIn("--userns=host", podman)
+        self.assertNotIn("--userns=keep-id:uid=1000,gid=1000", podman)
+
+    def test_auth_and_manifest_launch_argv_golden(self):
+        plan = golden_plan(
+            env=(("CLAUDE_CONFIG_DIR", "/home/isolation/.claude"), ("FOO", "bar")),
+            mounts=(("/tmp/proj", "/work", False),
+                    ("/tmp/cache", "/home/isolation/.cache/example", True),
+                    ("/tmp/shell", "/home/isolation/.config/jms-shell", True),
+                    ("/tmp/agents/claude", "/home/isolation/.claude", False)))
+        for backend, mount_prefix in ((JMS.ContainerBackend(), "source="),
+                                      (JMS.PodmanBackend(), "type=bind,source=")):
+            argv = backend.run_argv(plan)
+            # CLAUDE_CONFIG_DIR precedes the /work mount; manifest env follows it.
+            env_positions = [index for index, value in enumerate(argv) if value == "--env"]
+            self.assertEqual(argv[env_positions[0] + 1], "CLAUDE_CONFIG_DIR=/home/isolation/.claude")
+            self.assertEqual(argv[env_positions[1] + 1], "FOO=bar")
+            mount_positions = [index for index, value in enumerate(argv) if value == "--mount"]
+            self.assertLess(env_positions[0], mount_positions[0])
+            self.assertLess(mount_positions[0], env_positions[1])
+            self.assertEqual(argv[mount_positions[0] + 1], mount_prefix + "/tmp/proj,target=/work")
+            self.assertEqual(argv[mount_positions[-1] + 1],
+                             mount_prefix + "/tmp/agents/claude,target=/home/isolation/.claude")
+
+    def test_no_unmask_in_any_argv(self):
+        for plan in (golden_plan(), golden_plan(user="root")):
+            for backend in (JMS.ContainerBackend(), JMS.PodmanBackend()):
+                argv = backend.run_argv(plan)
+                self.assertFalse(any("unmask" in value for value in argv))
+                security = [argv[index + 1] for index, value in enumerate(argv)
+                            if value == "--security-opt"]
+                self.assertIn(security, ([], ["label=disable"]))
+
+    def test_launch_plan_rejects_unknown_user_mode(self):
+        with self.assertRaises(AssertionError):
+            golden_plan(user="admin")
+
+
+class BuildArgvGoldenTests(unittest.TestCase):
+    """R6.1: exact build argv per backend."""
+
+    LABELS = {"jms.project": PROJECT_PID, "jms.fingerprint": "a" * 64,
+              "jms.container": "image"}
+
+    def test_build_argv_golden(self):
+        apple, podman = JMS.ContainerBackend(), JMS.PodmanBackend()
+        self.assertEqual(
+            apple.build_argv("/spec", "t:1", self.LABELS, no_cache=False, pull=False, project=True),
+            ["container", "build", "--tag", "t:1", "--file", "/spec/Containerfile",
+             "-l", "jms.project=" + PROJECT_PID, "-l", "jms.fingerprint=" + "a" * 64,
+             "-l", "jms.container=image", "/spec"])
+        self.assertEqual(
+            podman.build_argv("/spec", "t:1", self.LABELS, no_cache=False, pull=False, project=True),
+            ["podman", "build", "--tag", "t:1", "--file", "/spec/Containerfile",
+             "--label", "jms.project=" + PROJECT_PID, "--label", "jms.fingerprint=" + "a" * 64,
+             "--label", "jms.container=image", "--pull=missing", "/spec"])
+        self.assertEqual(
+            apple.build_argv("/repo", JMS.BASE, {}, no_cache=True, pull=True, project=False),
+            ["container", "build", "--tag", JMS.BASE, "--file", "/repo/Containerfile",
+             "--no-cache", "--pull", "/repo"])
+        self.assertEqual(
+            podman.build_argv("/repo", JMS.BASE, {}, no_cache=True, pull=True, project=False),
+            ["podman", "build", "--tag", JMS.BASE, "--file", "/repo/Containerfile",
+             "--no-cache", "--pull=always", "/repo"])
+        # Base build without --pull: no pull flag on either backend.
+        self.assertNotIn("--pull", apple.build_argv("/repo", JMS.BASE, {}, no_cache=False, pull=False, project=False))
+        self.assertFalse([value for value in podman.build_argv("/repo", JMS.BASE, {}, no_cache=False, pull=False, project=False)
+                          if value.startswith("--pull")])
+
+    def test_builds_stamp_the_neutral_provenance_label(self):
+        # run_build owns the shared label assembly; the stamp overrides any
+        # caller-supplied value (R5.8's build half).
+        with fake_runtime() as runtime, contextlib.redirect_stdout(io.StringIO()):
+            JMS.build_base(JMS.parse_cli(["build", "--base"]))
+        build = runtime.calls[-1]["argv"]
+        self.assertIn("jms.container=image", build)
+
+
+class SelectionTests(unittest.TestCase):
+    """MIR-039/R4.5: platform selection is side-effect-free and precedes consent."""
+
+    def select(self, platform, euid=1000):
+        with mock.patch.object(sys, "platform", platform), \
+             mock.patch.object(os, "geteuid", lambda: euid), \
+             mock.patch.object(subprocess, "run", forbid), \
+             mock.patch.object(os, "uname", forbid):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                backend = JMS.select_runtime()
+            self.assertEqual(stderr.getvalue(), "")
+            return backend
+
+    def test_platform_defaults(self):
+        self.assertIsInstance(self.select("darwin"), JMS.ContainerBackend)
+        self.assertIsInstance(self.select("linux"), JMS.PodmanBackend)
+
+    def test_unsupported_platform_is_refused(self):
+        for platform in ("win32", "freebsd14", "aix"):
+            with self.assertRaisesRegex(JMS.UsageError, "unsupported platform"):
+                self.select(platform)
+
+    def test_root_on_linux_is_refused(self):
+        with self.assertRaisesRegex(JMS.UsageError, "rootless podman only"):
+            self.select("linux", euid=0)
+
+    def test_linux_scope_is_qualification_not_gate(self):
+        # Debian amd64, another distro, arm64: jms performs no distribution
+        # or architecture detection, so every local rootless Linux host
+        # selects PodmanBackend identically, silently (MIR-039).  The forbid
+        # patches on subprocess.run and os.uname prove no detection call.
+        for euid in (1000, 12345, 65534):
+            self.assertIsInstance(self.select("linux", euid=euid), JMS.PodmanBackend)
+
+    def test_selection_failure_precedes_consent_and_store_writes(self):
+        with sandbox() as home:
+            root = make_project(home)
+            with mock.patch.object(JMS, "_RUNTIME", None), \
+                 mock.patch.object(sys, "platform", "win32"), \
+                 mock.patch.object(JMS, "consent_input", forbid), \
+                 mock.patch.object(JMS, "runtime_run", forbid):
+                with self.assertRaisesRegex(JMS.UsageError, "unsupported platform"):
+                    JMS.cmd_build(JMS.parse_cli(["build", "-w", str(root)]))
+                with self.assertRaisesRegex(JMS.UsageError, "unsupported platform"):
+                    JMS.cmd_launch(JMS.parse_cli(["launch", "-w", str(root)]))
+                with self.assertRaisesRegex(JMS.UsageError, "unsupported platform"):
+                    JMS.cmd_clean(JMS.parse_cli(["clean", "--all"]))
+            self.assertEqual(JMS.read_store()["projects"], {})
+
+    def test_revoke_purge_selection_failure_leaves_the_store_untouched(self):
+        with sandbox() as home:
+            root = make_project(home)
+            tf = fingerprint_of(root)
+            with contextlib.redirect_stdout(io.StringIO()), quiet():
+                JMS.cmd_trust(JMS.parse_cli(["trust", str(root), "--fingerprint", tf]))
+            self.assertEqual(len(JMS.read_store()["projects"]), 1)
+            with mock.patch.object(JMS, "_RUNTIME", None), \
+                 mock.patch.object(sys, "platform", "win32"), \
+                 mock.patch.object(JMS, "runtime_run", forbid):
+                with self.assertRaisesRegex(JMS.UsageError, "unsupported platform"):
+                    JMS.cmd_trust(JMS.parse_cli(["trust", "revoke", str(root), "--purge-images"]))
+            self.assertEqual(len(JMS.read_store()["projects"]), 1)
+
+
+class LazinessTests(unittest.TestCase):
+    """MIR-051/§2: pure commands never select a runtime or start a process."""
+
+    @contextlib.contextmanager
+    def no_runtime(self):
+        with mock.patch.object(JMS, "_RUNTIME", None), \
+             mock.patch.object(JMS, "runtime", forbid), \
+             mock.patch.object(JMS, "select_runtime", forbid), \
+             mock.patch.object(JMS, "runtime_run", forbid):
+            yield
+
+    def test_version_never_selects_a_runtime(self):
+        with self.no_runtime(), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                JMS.parse_cli(["--version"])
+            self.assertEqual(caught.exception.code, 0)
+
+    def test_pure_commands_run_with_no_runtime(self):
+        with sandbox() as home:
+            root = make_project(home)
+            tf = fingerprint_of(root)
+            with self.no_runtime(), contextlib.redirect_stdout(io.StringIO()), quiet():
+                JMS.cmd_inspect(JMS.parse_cli(["inspect", "-w", str(root)]))
+                JMS.cmd_init(JMS.parse_cli(["init", "-w", str(home / "git")]))
+                JMS.cmd_trust(JMS.parse_cli(["trust", str(root), "--fingerprint", tf]))
+                JMS.cmd_trust(JMS.parse_cli(["trust", "list"]))
+                JMS.cmd_trust(JMS.parse_cli(["trust", "revoke", str(root)]))
+                JMS.cmd_trust(JMS.parse_cli(["trust", "prune"]))
+
+
+class OrderingAndCanonTests(unittest.TestCase):
+    """R4.5/R4.6: consent precedes readiness; canon's coreutils diagnostic."""
+
+    def test_consent_precedes_runtime_readiness(self):
+        with sandbox() as home:
+            root = make_project(home)
+            order = []
+            def approve(*args, **kwargs):
+                order.append("approve")
+                raise JMS.TrustError("declined")
+            with mock.patch.object(JMS, "approve", approve), \
+                 mock.patch.object(JMS, "runtime_ready",
+                                   lambda: order.append("ready")):
+                with self.assertRaises(JMS.TrustError):
+                    JMS.cmd_build(JMS.parse_cli(["build", "-w", str(root)]))
+            # A declined consent never contacts the runtime.
+            self.assertEqual(order, ["approve"])
+            order.clear()
+            def approve_ok(*args, **kwargs):
+                order.append("approve")
+                return True, False
+            with mock.patch.object(JMS, "approve", approve_ok), \
+                 mock.patch.object(JMS, "runtime_ready",
+                                   side_effect=lambda: order.append("ready")), \
+                 mock.patch.object(JMS, "build_project", lambda *a: ("t:1", False)), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                JMS.cmd_build(JMS.parse_cli(["build", "-w", str(root)]))
+            self.assertEqual(order, ["approve", "ready"])
+
+    def test_grant_survives_a_readiness_failure(self):
+        with sandbox() as home:
+            root = make_project(home)
+            tf = fingerprint_of(root)
+            with contextlib.redirect_stdout(io.StringIO()), quiet():
+                JMS.cmd_trust(JMS.parse_cli(["trust", str(root), "--fingerprint", tf]))
+            with mock.patch.object(JMS, "runtime_ready",
+                                   side_effect=JMS.JMSException("engine down")):
+                with self.assertRaisesRegex(JMS.JMSException, "engine down"):
+                    JMS.cmd_build(JMS.parse_cli(["build", "-w", str(root)]))
+            # The grant records consent to a definition, not runtime state.
+            self.assertEqual(len(JMS.read_store()["projects"]), 1)
+
+    def test_canon_missing_realpath_diagnostic(self):
+        def missing(argv, **kwargs):
+            raise FileNotFoundError(argv[0])
+        with mock.patch.object(subprocess, "run", missing):
+            with self.assertRaisesRegex(JMS.JMSException,
+                                        "cannot canonicalize paths") as caught:
+                JMS.canon(b"/somewhere")
+        self.assertIn("coreutils", str(caught.exception))
+        self.assertNotIsInstance(caught.exception, JMS.UsageError)
+
+
+class PodmanReadinessTests(unittest.TestCase):
+    """R4.3/R4.4/R4.7: version floor and full podman-info validation."""
+
+    def info(self, mutate=None):
+        payload = load_fixture("podman-5.4.2-info.json")
+        if mutate is not None:
+            mutate(payload)
+        return payload
+
+    def ensure(self, payload):
+        def fake(argv, **kwargs):
+            self.assertEqual(argv[:2], ["podman", "info"])
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps(payload).encode(), stderr=b"")
+        with mock.patch.object(JMS, "runtime_run", fake):
+            JMS.PodmanBackend().ensure_started()
+
+    def maps(self, payload):
+        return payload["host"]["idMappings"]
+
+    def test_healthy_engine_passes(self):
+        self.ensure(self.info())
+
+    def test_remote_service_is_refused(self):
+        with self.assertRaisesRegex(JMS.JMSException, "remote podman service"):
+            self.ensure(self.info(lambda p: p["host"].update(serviceIsRemote=True)))
+
+    def test_rootful_engine_is_refused(self):
+        with self.assertRaisesRegex(JMS.JMSException, "not running rootless"):
+            self.ensure(self.info(lambda p: p["host"]["security"].update(rootless=False)))
+
+    def test_podman_readiness_matrix(self):
+        # Coverage boundary, per map independently: through 65535 passes,
+        # through 65534 fails with the subordinate-ID hint (R4.4).
+        singleton = lambda size: [{"container_id": 0, "host_id": 1000, "size": 1},
+                                  {"container_id": 1, "host_id": 100000, "size": size}]
+        self.ensure(self.info(lambda p: self.maps(p).update(uidmap=singleton(65535))))
+        for key in ("uidmap", "gidmap"):
+            with self.assertRaisesRegex(JMS.JMSException, key + r"[\s\S]*/etc/subuid"):
+                self.ensure(self.info(lambda p: self.maps(p).update({key: singleton(65534)})))
+        # A gap below 65536 fails even when the total size is sufficient.
+        gapped = [{"container_id": 0, "host_id": 1000, "size": 1},
+                  {"container_id": 2, "host_id": 100000, "size": 65536}]
+        with self.assertRaisesRegex(JMS.JMSException, "does not cover"):
+            self.ensure(self.info(lambda p: self.maps(p).update(uidmap=gapped)))
+        # Overlapping entries are harmless union semantics.
+        overlapping = [{"container_id": 0, "host_id": 1000, "size": 40000},
+                       {"container_id": 30000, "host_id": 200000, "size": 35536}]
+        self.ensure(self.info(lambda p: self.maps(p).update(uidmap=overlapping)))
+
+    def test_malformed_id_maps_fail_distinctly(self):
+        # Structurally malformed entries abort as malformed engine output,
+        # never as the undersized-range hint.
+        malformed = ([{"container_id": 0, "host_id": 1000, "size": True}],
+                     [{"container_id": "0", "host_id": 1000, "size": 65536}],
+                     [{"container_id": -1, "host_id": 1000, "size": 65536}],
+                     [{"container_id": 0, "host_id": 1000, "size": 0}],
+                     ["entry"], "not a list")
+        for uidmap in malformed:
+            with self.assertRaisesRegex(JMS.JMSException, "malformed uidmap") as caught:
+                self.ensure(self.info(lambda p: self.maps(p).update(uidmap=uidmap)))
+            self.assertNotIn("/etc/subuid", str(caught.exception))
+
+    def test_missing_graph_driver_is_refused(self):
+        with self.assertRaisesRegex(JMS.JMSException, "no storage graph driver"):
+            self.ensure(self.info(lambda p: p["store"].pop("graphDriverName")))
+
+    def test_malformed_info_shape_is_refused(self):
+        for payload in ([], "text", {"host": {}}, {"store": {}}, {"host": [], "store": {}}):
+            with self.assertRaises(JMS.JMSException):
+                self.ensure(payload)
+
+    def test_podman_version_floor(self):
+        backend = JMS.PodmanBackend()
+        self.assertEqual(backend.parse_version("podman version 5.4.2"), (5, 4, 2))
+        self.assertEqual(backend.parse_version("podman version 5.4.2-dev"), (5, 4, 2))
+        self.assertEqual(backend.parse_version("podman version 5.4.2+ds1"), (5, 4, 2))
+        self.assertIsNone(backend.parse_version("podman version 5.4"))
+        self.assertIsNone(backend.parse_version("podman version 5.4.2.1"))
+        self.assertIsNone(backend.parse_version("container CLI version 1.2.0"))
+        with self.assertRaisesRegex(JMS.JMSException, "too old"):
+            backend.validate_version((5, 3, 9), "podman version 5.3.9")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            backend.validate_version((5, 4, 0), "podman version 5.4.0")
+            # No maximum, no warning machinery: newer majors are silent, and
+            # JMS_RUNTIME_ACCEPT is meaningful only for apple/container.
+            with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "9.0.0"}):
+                backend.validate_version((9, 0, 0), "podman version 9.0.0")
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_podman_runtime_ready_end_to_end(self):
+        info_payload = json.dumps(self.info()).encode()
+        def fake(argv, **kwargs):
+            if argv[:2] == ["podman", "--version"]:
+                return types.SimpleNamespace(returncode=0, stdout=b"podman version 5.4.2\n", stderr=b"")
+            if argv[:2] == ["podman", "info"]:
+                return types.SimpleNamespace(returncode=0, stdout=info_payload, stderr=b"")
+            raise AssertionError("unexpected argv: " + repr(argv))
+        with mock.patch.object(JMS, "_RUNTIME", JMS.PodmanBackend()), \
+             mock.patch.object(JMS, "runtime_run", fake):
+            JMS.runtime_ready()
+        def bad_utf8(argv, **kwargs):
+            return types.SimpleNamespace(returncode=0, stdout=b"\xff\xfe", stderr=b"")
+        with mock.patch.object(JMS, "_RUNTIME", JMS.PodmanBackend()), \
+             mock.patch.object(JMS, "runtime_run", bad_utf8):
+            with self.assertRaisesRegex(JMS.JMSException, "invalid UTF-8"):
+                JMS.runtime_ready()
+
+    def test_podman_diagnostics_match_debian_contract(self):
+        # R4.7: the CLI-missing hint is the one full qualified apt command,
+        # and the ID-map hint names the uidmap package and both files.
+        apt_command = ("sudo apt install podman uidmap passt dbus-user-session "
+                       "fuse-overlayfs coreutils")
+        self.assertEqual(JMS.PodmanBackend.install_hint,
+                         "install the qualified package set: " + apt_command)
+        readme = (pathlib.Path(JMS.__file__).parents[1] / "README.md").read_text()
+        self.assertIn(apt_command, readme)          # verbatim agreement (R4.7)
+        self.assertIn("/etc/subuid", readme)
+        self.assertIn("adduser", readme)
+        singleton = [{"container_id": 0, "host_id": 1000, "size": 1}]
+        with self.assertRaises(JMS.JMSException) as caught:
+            self.ensure(self.info(lambda p: self.maps(p).update(uidmap=singleton)))
+        message = str(caught.exception)
+        for expected in ("uidmap package", "/etc/subuid", "/etc/subgid", "adduser"):
+            self.assertIn(expected, message)
+
+    def test_podman_image_exists_tristate(self):
+        def fake(code, stderr=b""):
+            def run(argv, **kwargs):
+                self.assertEqual(argv[:3], ["podman", "image", "exists"])
+                return types.SimpleNamespace(returncode=code, stdout=b"", stderr=stderr)
+            return run
+        backend = JMS.PodmanBackend()
+        with mock.patch.object(JMS, "runtime_run", fake(0)):
+            self.assertTrue(backend.image_exists("x:1"))
+        with mock.patch.object(JMS, "runtime_run", fake(1)):
+            self.assertFalse(backend.image_exists("x:1"))
+        with mock.patch.object(JMS, "runtime_run", fake(125, b"storage corrupt")):
+            with self.assertRaisesRegex(JMS.JMSException, "image exists failed"):
+                backend.image_exists("x:1")
+
+
+class MountGrammarTests(unittest.TestCase):
+    """R7.6: per-backend grammar, identical rejection behavior and error text."""
+
+    def test_mount_grammar_per_backend(self):
+        apple, podman = JMS.ContainerBackend(), JMS.PodmanBackend()
+        self.assertEqual(apple.mount_argument("/tmp/x", "/work"), "source=/tmp/x,target=/work")
+        self.assertEqual(podman.mount_argument("/tmp/x", "/work"), "type=bind,source=/tmp/x,target=/work")
+        self.assertEqual(apple.mount_argument("/tmp/x", "/opt/y", readonly=True),
+                         "source=/tmp/x,target=/opt/y,readonly")
+        self.assertEqual(podman.mount_argument("/tmp/x", "/opt/y", readonly=True),
+                         "type=bind,source=/tmp/x,target=/opt/y,readonly")
+
+    def test_mount_rejections_identical_across_backends(self):
+        cases = [(b"/tmp/a,b", "/work"), (b"/tmp/a=b", "/work"),
+                 (b"/tmp/a\0b", "/work"), (b"/tmp/\xff\xfe", "/work"),
+                 (b"/tmp/x", "/work,x"), (b"/tmp/x", "/work=x")]
+        for source, target in cases:
+            messages = []
+            for backend in (JMS.ContainerBackend(), JMS.PodmanBackend()):
+                with self.assertRaises(JMS.JMSException) as caught:
+                    backend.mount_argument(source, target)
+                messages.append(str(caught.exception))
+            self.assertEqual(messages[0], messages[1])
+
+
+class IsolationUidPinTests(unittest.TestCase):
+    """R3.1: runtime constants and repository image definitions agree."""
+
+    def test_isolation_identity_constants_match_containerfiles(self):
+        root = pathlib.Path(JMS.__file__).parents[1]
+        base = (root / "Containerfile").read_text()
+        standalone = (
+            root / "examples" / "clean-slate" / ".jmscontainer" / "Containerfile"
+        ).read_text()
+        uid = JMS.ISOLATION_UID
+        gid = JMS.ISOLATION_GID
+        self.assertEqual(uid, 1000)
+        self.assertEqual(gid, 1000)
+        self.assertIn("groupadd -g %d isolation" % gid, base)
+        self.assertIn("useradd -m -s /bin/bash -u %d -g %d isolation" % (uid, gid), base)
+        self.assertIn("groupadd --gid %d isolation" % gid, standalone)
+        self.assertIn("--uid %d --gid %d isolation" % (uid, gid), standalone)
+
+
+class SupportVocabularyTests(unittest.TestCase):
+    """MIR-039 / RC-002: the public support documents share one
+    classification for configurations outside the qualified matrix."""
+
+    PUBLIC_DOCS = ("README.md", "SECURITY.md", "docs/cli.md", "CHANGELOG.md")
+
+    def test_selinux_classification_is_unqualified_but_allowed(self):
+        root = pathlib.Path(JMS.__file__).parents[1]
+        for name in self.PUBLIC_DOCS:
+            text = (root / name).read_text()
+            self.assertIn("unqualified but allowed", text,
+                          "%s lost the MIR-039 support vocabulary" % name)
+            # Blocks are paragraphs or single top-level bullets, so the
+            # SELinux bullet is judged apart from its list neighbors.
+            for block in re.split(r"\n\n|\n(?=- )", text):
+                if "SELinux-enforcing" not in block:
+                    continue
+                self.assertNotIn(
+                    "unsupported", block,
+                    "%s classifies SELinux-enforcing hosts as unsupported; "
+                    "MIR-039 says unqualified but allowed" % name)
+
+
+class MissingBaseHintTests(unittest.TestCase):
+    """R3.7 (unit half): conditional wording, keyed to observed absence."""
+
+    def test_missing_base_hint_wording(self):
+        self.assertEqual(JMS.MISSING_BASE_NOTE,
+                         "note: the shared base image jmscontainers-base:latest is not "
+                         "present; if this project builds from it, run `jms build` in "
+                         "the base directory first")
+
+    def build_failure_stderr(self, images):
+        with sandbox() as home:
+            root = make_project(home)
+            data = JMS.project_data(JMS.canon(os.fsencode(root)))
+            stderr = io.StringIO()
+            with fake_runtime(images=images, build_error="command failed: build"), \
+                 contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(stderr):
+                with self.assertRaises(JMS.JMSException):
+                    JMS.build_project(data, JMS.parse_cli(["build"]))
+            return stderr.getvalue()
+
+    def test_hint_appended_after_context_note_when_base_absent(self):
+        output = self.build_failure_stderr(images={})
+        self.assertIn(JMS.CONTEXT_NOTE, output)
+        self.assertIn(JMS.MISSING_BASE_NOTE, output)
+        self.assertLess(output.index(JMS.CONTEXT_NOTE), output.index(JMS.MISSING_BASE_NOTE))
+
+    def test_no_hint_when_base_is_present(self):
+        output = self.build_failure_stderr(images={JMS.BASE: image_record(JMS.BASE)})
+        self.assertIn(JMS.CONTEXT_NOTE, output)
+        self.assertNotIn(JMS.MISSING_BASE_NOTE, output)
+
+
+SWEEP = importlib.machinery.SourceFileLoader(
+    "leak_sweep", str(pathlib.Path(__file__).parents[1] / "scripts" / "leak_sweep.py")
+).load_module()
+
+EPOCH_2026 = int(datetime.datetime.fromisoformat("2026-01-01T00:00:00Z").timestamp())
+
+
+def proc_result(returncode=0, stdout=b"", stderr=b""):
+    return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+class RemovalClassificationTests(unittest.TestCase):
+    """R5.9: normalized RemovalResult outcomes on both backends."""
+
+    def test_podman_removal_argv_and_success(self):
+        seen = []
+        def runner(argv, **kwargs):
+            seen.append(argv)
+            return proc_result()
+        with mock.patch.object(JMS, "runtime_run", runner):
+            backend = JMS.PodmanBackend()
+            self.assertEqual(backend.stop_container("c" * 64).outcome, "removed")
+            self.assertEqual(backend.remove_container("c" * 64).outcome, "removed")
+            self.assertEqual(backend.remove_image("localhost/x:1").outcome, "removed")
+        self.assertEqual(seen, [
+            ["podman", "stop", "--ignore", "c" * 64],
+            ["podman", "rm", "--ignore", "--force", "c" * 64],
+            ["podman", "image", "rm", "--ignore", "--no-prune", "localhost/x:1"]])
+
+    def test_podman_failure_detail_chain(self):
+        def runner_for(returncode, stdout=b"", stderr=b""):
+            return lambda argv, **kwargs: proc_result(returncode, stdout, stderr)
+        backend = JMS.PodmanBackend()
+        with mock.patch.object(JMS, "runtime_run", runner_for(125, stderr=b"boom")):
+            result = backend.remove_image("x:1")
+            self.assertEqual((result.outcome, result.detail), ("failed", '"boom"'))
+        with mock.patch.object(JMS, "runtime_run", runner_for(125, stdout=b"only stdout")):
+            self.assertEqual(backend.stop_container("c" * 64).detail, '"only stdout"')
+        with mock.patch.object(JMS, "runtime_run", runner_for(125)):
+            self.assertEqual(backend.remove_container("c" * 64).detail,
+                             "no diagnostic output (exit 125)")
+
+    def apple_runner(self, *, op_rc=1, op_stderr=b"engine says no", ps_payload=None,
+                     image_present=True):
+        def runner(argv, **kwargs):
+            if argv[:2] in (["container", "stop"], ["container", "delete"]) \
+                    or argv[:3] == ["container", "image", "delete"]:
+                return proc_result(op_rc, stderr=op_stderr)
+            if argv[:2] == ["container", "list"]:
+                return proc_result(stdout=json.dumps(ps_payload or []).encode())
+            if argv[:3] == ["container", "image", "inspect"]:
+                if image_present:
+                    return proc_result()
+                return proc_result(1, stderr=b"Error: image not found: " + argv[3].encode())
+            raise AssertionError("unexpected argv: " + repr(argv))
+        return runner
+
+    def test_apple_absence_classifies_removed_on_all_three_operations(self):
+        backend = JMS.ContainerBackend()
+        with mock.patch.object(JMS, "runtime_run", self.apple_runner(ps_payload=[])):
+            # Absent-stop case (MIR-052): the ps() recheck proves absence.
+            self.assertEqual(backend.stop_container("gone").outcome, "removed")
+            self.assertEqual(backend.remove_container("gone").outcome, "removed")
+        with mock.patch.object(JMS, "runtime_run", self.apple_runner(image_present=False)):
+            self.assertEqual(backend.remove_image("x:1").outcome, "removed")
+
+    def test_apple_present_resource_stays_failed(self):
+        backend = JMS.ContainerBackend()
+        present = [{"id": "still-here", "configuration": {"labels": {}}}]
+        with mock.patch.object(JMS, "runtime_run", self.apple_runner(ps_payload=present)):
+            result = backend.remove_container("still-here")
+            self.assertEqual((result.outcome, result.detail), ("failed", '"engine says no"'))
+            stop = backend.stop_container("still-here")
+            self.assertEqual(stop.outcome, "failed")
+
+    def test_apple_recheck_failure_never_raises(self):
+        backend = JMS.ContainerBackend()
+        def broken_recheck(argv, **kwargs):
+            if argv[:2] == ["container", "delete"]:
+                return proc_result(1, stderr=b"original failure")
+            if argv[:2] == ["container", "list"]:
+                return proc_result(stdout=b"not json")     # normalizer aborts
+            raise AssertionError("unexpected argv: " + repr(argv))
+        with mock.patch.object(JMS, "runtime_run", broken_recheck):
+            result = backend.remove_container("x")
+        self.assertEqual(result.outcome, "failed")
+        self.assertIn('"original failure"', result.detail)
+        self.assertIn("; recheck failed: ", result.detail)
+
+    def test_apple_empty_output_failure_uses_fixed_detail(self):
+        backend = JMS.ContainerBackend()
+        present = [{"id": "x", "configuration": {"labels": {}}}]
+        with mock.patch.object(JMS, "runtime_run",
+                               self.apple_runner(op_stderr=b"", ps_payload=present)):
+            self.assertEqual(backend.remove_container("x").detail,
+                             "no diagnostic output (exit 1)")
+
+
+class ImageFactTests(unittest.TestCase):
+    """R5.2/R5.3/R5.10 and R3.5: normalizers, accumulator, local_name."""
+
+    def apple_facts(self, records):
+        runner = lambda argv, **kwargs: proc_result(stdout=json.dumps(records).encode())
+        with mock.patch.object(JMS, "runtime_run", runner):
+            return JMS.ContainerBackend().image_facts()
+
+    def podman_facts(self, records):
+        runner = lambda argv, **kwargs: proc_result(stdout=json.dumps(records).encode())
+        with mock.patch.object(JMS, "runtime_run", runner):
+            return JMS.PodmanBackend().image_facts()
+
+    def apple_rec(self, ident, name, created="2026-01-01T00:00:00Z", labels=None):
+        record = {"id": ident,
+                  "configuration": {"creationDate": created,
+                                    "descriptor": {"digest": "sha256:" + ident}}}
+        if name is not None:
+            record["configuration"]["name"] = name
+        record["variants"] = [{"config": {"config": {"Labels": labels}}}]
+        return record
+
+    def podman_rec(self, ident, names, created=EPOCH_2026, labels=None):
+        return {"Id": ident, "Names": names, "Created": created, "Labels": labels}
+
+    def test_image_fact_accumulator(self):
+        ident, other = "a" * 64, "b" * 64
+        # apple: reordered duplicates, repeated refs, and mixed dangling/named
+        # records yield the identical single fact.
+        records = [self.apple_rec(ident, "x:2"), self.apple_rec(ident, "x:1"),
+                   self.apple_rec(ident, "x:1"), self.apple_rec(ident, None)]
+        for ordering in (records, records[::-1]):
+            self.assertEqual(self.apple_facts(ordering),
+                             [(ident, ("x:1", "x:2"), EPOCH_2026, {})])
+        # Conflicting created and conflicting/missing-vs-present labels abort.
+        with self.assertRaisesRegex(JMS.JMSException, "conflicting records"):
+            self.apple_facts([self.apple_rec(ident, "x:1"),
+                              self.apple_rec(ident, "x:2", created="2026-01-01T00:00:01Z")])
+        with self.assertRaisesRegex(JMS.JMSException, "conflicting records"):
+            self.apple_facts([self.apple_rec(ident, "x:1", labels={"jms.project": "x"}),
+                              self.apple_rec(ident, "x:2", labels={})])
+        with self.assertRaisesRegex(JMS.JMSException, "conflicting records"):
+            self.apple_facts([self.apple_rec(ident, "x:1", labels={"jms.project": "x"}),
+                              self.apple_rec(ident, "x:2")])
+        # id must equal the descriptor digest.
+        broken = self.apple_rec(ident, "x:1")
+        broken["configuration"]["descriptor"]["digest"] = "sha256:" + other
+        with self.assertRaisesRegex(JMS.JMSException, "descriptor digest"):
+            self.apple_facts([broken])
+        # podman: byte-identical per-tag duplicates collapse (fixture-pinned
+        # 5.4.2 reality); any disagreement aborts.
+        dup = self.podman_rec(ident, ["localhost/x:1", "localhost/x:2"])
+        self.assertEqual(self.podman_facts([dup, dict(dup)]),
+                         [(ident, ("localhost/x:1", "localhost/x:2"), EPOCH_2026, {})])
+        with self.assertRaisesRegex(JMS.JMSException, "conflicting records"):
+            self.podman_facts([dup, self.podman_rec(ident, ["localhost/x:1"])])
+        with self.assertRaisesRegex(JMS.JMSException, "conflicting records"):
+            self.podman_facts([dup, dict(dup, Created=EPOCH_2026 + 1)])
+        # Output sorted by id on both backends.
+        two = [self.podman_rec(other, ["b:1"]), self.podman_rec(ident, ["a:1"])]
+        self.assertEqual([fact[0] for fact in self.podman_facts(two)], [ident, other])
+
+    def test_shared_validation_rejections(self):
+        ident = "a" * 64
+        bad_podman = [
+            self.podman_rec("A" * 64, ["x:1"]),                    # uppercase id
+            self.podman_rec("a" * 63, ["x:1"]),                    # short id
+            self.podman_rec(ident, "x:1"),                         # names not a list
+            self.podman_rec(ident, ["x:1"], created=True),         # bool created
+            self.podman_rec(ident, ["x:1"], created=-1),
+            self.podman_rec(ident, ["x:1"], created=JMS.MAX_EPOCH + 1),
+            self.podman_rec(ident, ["x:1"], created="2026"),
+            self.podman_rec(ident, ["x:1"], labels="not a map"),
+            self.podman_rec(ident, ["x:1"], labels={"": "v"}),     # empty key
+            self.podman_rec(ident, ["x:1"], labels={"k": 7}),      # non-str value
+            self.podman_rec(ident, ["x:1"], labels={"k\0": "v"}),  # NUL key
+            self.podman_rec(ident, ["x\0:1"]),                     # NUL ref
+        ]
+        for record in bad_podman:
+            with self.assertRaises(JMS.JMSException):
+                self.podman_facts([record])
+        bad_apple = [
+            self.apple_rec(ident, "x:1", created="2026-01-01T00:00:00"),  # naive
+            self.apple_rec(ident, "x:1", created="not a date"),
+            self.apple_rec(ident, "x:1", created=1767225600),             # non-str
+            self.apple_rec(ident, "x:1", labels={"k": None}),
+        ]
+        for record in bad_apple:
+            with self.assertRaises(JMS.JMSException):
+                self.apple_facts([record])
+
+    def test_null_and_none_name_normalization(self):
+        # MIR-053: null/absent labels become {}; dangling and <none> names drop.
+        ident, named = "a" * 64, "b" * 64
+        facts = self.podman_facts([
+            self.podman_rec(ident, None),                          # dangling: skipped
+            self.podman_rec(named, ["<none>", "x:1"], labels=None)])
+        self.assertEqual(facts, [(named, ("x:1",), EPOCH_2026, {})])
+        record = self.podman_rec(named, ["x:1"])
+        del record["Labels"]
+        self.assertEqual(self.podman_facts([record])[0][3], {})
+
+    def test_created_is_epoch_seconds_on_both_backends(self):
+        # R5.3: one internal type; ordering never compares backend-local shapes.
+        apple = self.apple_facts([self.apple_rec("a" * 64, "x:1",
+                                                 created="2026-01-01T00:00:00+00:00")])
+        podman = self.podman_facts([self.podman_rec("a" * 64, ["x:1"])])
+        self.assertEqual(apple[0][2], podman[0][2])
+        self.assertIsInstance(apple[0][2], int)
+
+    def test_local_name_per_backend(self):
+        apple, podman = JMS.ContainerBackend(), JMS.PodmanBackend()
+        self.assertEqual(apple.local_name("docker.io/library/x:1"), "x:1")
+        self.assertEqual(apple.local_name("localhost/x:1"), "localhost/x:1")
+        self.assertEqual(podman.local_name("localhost/x:1"), "x:1")
+        # MIR-047: podman strips exactly localhost/ -- a registry-qualified
+        # manual alias stays outside the reserved namespace.
+        self.assertEqual(podman.local_name("docker.io/library/jmscontainers-a-b:1"),
+                         "docker.io/library/jmscontainers-a-b:1")
+
+    def test_podman_image_facts_normalizer(self):
+        # R5.2 over the checked-in capture.
+        records = load_fixture("podman-5.4.2-images.json")
+        runner = lambda argv, **kwargs: proc_result(stdout=json.dumps(records).encode())
+        with mock.patch.object(JMS, "runtime_run", runner):
+            facts = JMS.PodmanBackend().image_facts()
+        by_ref = {ref: fact for fact in facts for ref in fact[1]}
+        labelled = by_ref["localhost/jmsfix-labelled:latest"]
+        self.assertIn("localhost/jmsfix-labelled:alias", labelled[1])
+        self.assertEqual(labelled[3].get("jms.container"), "image")
+        self.assertEqual(by_ref["localhost/jmsfix-unlabeled:latest"][3], {})
+        self.assertTrue(all(fact[1] for fact in facts))            # dangling dropped
+        self.assertEqual([fact[0] for fact in facts], sorted(fact[0] for fact in facts))
+
+    def test_podman_ps_normalizer(self):
+        # R5.5 over the checked-in capture.
+        records = load_fixture("podman-5.4.2-ps.json")
+        runner = lambda argv, **kwargs: proc_result(stdout=json.dumps(records).encode())
+        with mock.patch.object(JMS, "runtime_run", runner):
+            parsed = JMS.PodmanBackend().ps()
+        markers = sorted(fact["labels"].get("jms.container", "absent") for fact in parsed)
+        self.assertEqual(markers, ["absent", "image", "launch"])
+        for fact in parsed:
+            self.assertRegex(fact["id"], r"^[0-9a-f]{64}$")
+        for bad in ([{"Id": "short"}], [{"Id": "a" * 64, "Labels": "x"}], ["record"], "text"):
+            with mock.patch.object(JMS, "runtime_run",
+                                   lambda argv, **kwargs: proc_result(stdout=json.dumps(bad).encode())):
+                with self.assertRaises(JMS.JMSException):
+                    JMS.PodmanBackend().ps()
+
+
+class CleanupPartialFailureTests(unittest.TestCase):
+    """R5.7: schedule/execute split with per-call-site policy (MIR-048)."""
+
+    def test_background_gc_warns_on_enumeration_failure(self):
+        runner = lambda argv, **kwargs: proc_result(stdout=b"not json")
+        stderr = io.StringIO()
+        with mock.patch.object(JMS, "_RUNTIME", JMS.ContainerBackend()), \
+             mock.patch.object(JMS, "runtime_run", runner), \
+             contextlib.redirect_stderr(stderr):
+            JMS.gc_project_images("f" * 64, "p", keep=0)   # must not raise
+        self.assertIn("warning: image cleanup skipped", stderr.getvalue())
+
+    def test_background_gc_warns_on_removal_failure_and_continues(self):
+        pid = "f" * 64
+        payload = [
+            {"Id": "a" * 64, "Names": ["p:old2"], "Created": 2, "Labels": {"jms.project": pid}},
+            {"Id": "b" * 64, "Names": ["p:old1"], "Created": 1, "Labels": {"jms.project": pid}},
+        ]
+        removed = []
+        def runner(argv, **kwargs):
+            if argv[:2] == ["podman", "images"]:
+                return proc_result(stdout=json.dumps(payload).encode())
+            if argv[:3] == ["podman", "image", "rm"]:
+                removed.append(argv[-1])
+                if argv[-1] == "p:old2":
+                    return proc_result(1, stderr=b"in use")
+                return proc_result()
+            raise AssertionError("unexpected argv: " + repr(argv))
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(JMS, "_RUNTIME", JMS.PodmanBackend()), \
+             mock.patch.object(JMS, "runtime_run", runner), \
+             contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            JMS.gc_project_images(pid, "p", keep=0)        # must not raise
+        self.assertEqual(removed, ["p:old2", "p:old1"])    # attempt-all ordering
+        self.assertIn("warning: could not remove image \"p:old2\"", stderr.getvalue())
+        self.assertIn("removed image \"p:old1\"", stdout.getvalue())
+
+    def test_clean_aggregates_failures_and_exits_1(self):
+        with sandbox():
+            container_id = "c" * 64
+            payload = [{"Id": container_id,
+                        "Labels": {"jms.project": "0" * 64, "jms.container": "launch"}}]
+            def runner(argv, **kwargs):
+                if argv[:2] == ["podman", "--version"]:
+                    return proc_result(stdout=b"podman version 5.4.2\n")
+                if argv[:2] == ["podman", "info"]:
+                    return proc_result(stdout=json.dumps(load_fixture("podman-5.4.2-info.json")).encode())
+                if argv[:2] == ["podman", "ps"]:
+                    return proc_result(stdout=json.dumps(payload).encode())
+                if argv[:2] == ["podman", "stop"]:
+                    return proc_result()
+                if argv[:2] == ["podman", "rm"]:
+                    return proc_result(2, stderr=b"cannot remove")
+                raise AssertionError("unexpected argv: " + repr(argv))
+            stderr = io.StringIO()
+            with mock.patch.object(JMS, "_RUNTIME", JMS.PodmanBackend()), \
+                 mock.patch.object(JMS, "runtime_run", runner), \
+                 contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(stderr):
+                with self.assertRaisesRegex(JMS.JMSException, "cleanup failed") as caught:
+                    JMS.cmd_clean(JMS.parse_cli(["clean", "--all"]))
+            self.assertEqual(caught.exception.exit_code, 1)
+            self.assertIn("failed to remove container", stderr.getvalue())
+            self.assertIn('"cannot remove"', stderr.getvalue())
+
+    def test_revoke_purge_stays_durable_through_every_failure(self):
+        with sandbox() as home:
+            root = make_project(home)
+            tf = fingerprint_of(root)
+            with contextlib.redirect_stdout(io.StringIO()), quiet():
+                JMS.cmd_trust(JMS.parse_cli(["trust", str(root), "--fingerprint", tf]))
+            # Readiness failure after revocation: the split message, and the
+            # record is already gone.
+            with mock.patch.object(JMS, "runtime_ready",
+                                   side_effect=JMS.JMSException("engine down")):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(JMS.JMSException,
+                                                "trust was revoked, but image purge failed"):
+                        JMS.cmd_trust(JMS.parse_cli(["trust", "revoke", str(root),
+                                                     "--purge-images"]))
+            self.assertEqual(JMS.read_store()["projects"], {})
+
+    def test_revoke_purge_aggregates_removal_failures(self):
+        with sandbox() as home:
+            root = make_project(home)
+            canonical = JMS.canon(os.fsencode(root))
+            pid = hashlib.sha256(canonical).hexdigest()
+            tf = fingerprint_of(root)
+            mine = JMS.tag_prefix_for(canonical, pid) + ":aaaaaaaaaaaa"
+            with contextlib.redirect_stdout(io.StringIO()), quiet():
+                JMS.cmd_trust(JMS.parse_cli(["trust", str(root), "--fingerprint", tf]))
+            payload = [{"Id": "a" * 64, "Names": [mine], "Created": 1,
+                        "Labels": {"jms.project": pid}}]
+            def runner(argv, **kwargs):
+                if argv[:2] == ["podman", "--version"]:
+                    return proc_result(stdout=b"podman version 5.4.2\n")
+                if argv[:2] == ["podman", "info"]:
+                    return proc_result(stdout=json.dumps(load_fixture("podman-5.4.2-info.json")).encode())
+                if argv[:2] == ["podman", "images"]:
+                    return proc_result(stdout=json.dumps(payload).encode())
+                if argv[:3] == ["podman", "image", "rm"]:
+                    return proc_result(1, stderr=b"in use by a container")
+                raise AssertionError("unexpected argv: " + repr(argv))
+            with mock.patch.object(JMS, "_RUNTIME", JMS.PodmanBackend()), \
+                 mock.patch.object(JMS, "runtime_run", runner), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(JMS.JMSException,
+                                            "trust was revoked, but image purge failed"):
+                    JMS.cmd_trust(JMS.parse_cli(["trust", "revoke", str(root),
+                                                 "--purge-images"]))
+            self.assertEqual(JMS.read_store()["projects"], {})
+
+    def test_second_clean_invocation_converges(self):
+        with sandbox():
+            containers = [{"id": "jms-demo-1",
+                           "labels": {"jms.project": "0" * 64, "jms.container": "launch"}}]
+            with fake_runtime(containers=containers) as runtime:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    JMS.cmd_clean(JMS.parse_cli(["clean", "--all"]))
+                runtime.containers = []      # removed out-of-band / by first run
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    JMS.cmd_clean(JMS.parse_cli(["clean", "--all"]))
+            self.assertNotIn("removed container", stdout.getvalue())
+
+
+class SeamTests(unittest.TestCase):
+    """§2 prohibitions: every backend execution crosses module runtime_run."""
+
+    def test_backend_operations_only_reach_processes_via_runtime_run(self):
+        calls = []
+        def recorder(argv, **kwargs):
+            calls.append(list(argv))
+            return proc_result(stdout=b"[]")
+        with mock.patch.object(subprocess, "run", forbid), \
+             mock.patch.object(os, "execvp", forbid):
+            for backend in (JMS.ContainerBackend(), JMS.PodmanBackend()):
+                with mock.patch.object(JMS, "_RUNTIME", backend), \
+                     mock.patch.object(JMS, "runtime_run", recorder):
+                    JMS.image_facts()
+                    JMS.container_records()
+                    JMS.stop_container("c" * 64)
+                    JMS.remove_container("c" * 64)
+                    JMS.remove_image("x:1")
+        self.assertTrue(all(argv[0] in ("container", "podman") for argv in calls))
+        self.assertGreaterEqual(len(calls), 10)
+
+    # The complete protocol surface (§2): five class attributes plus the
+    # Class A and Class B method tables, and nothing else.
+    PROTOCOL_SURFACE = frozenset({
+        "name", "exe", "install_hint", "version_min", "version_max",
+        "version_argv", "parse_version", "local_name", "mount_argument",
+        "build_argv", "run_argv",
+        "validate_version", "ensure_started", "image_exists", "image_facts",
+        "ps", "stop_container", "remove_container", "remove_image",
+    })
+
+    def test_no_backend_exposes_an_image_inspection_operation(self):
+        # R3.2 (conformance half): the public surface of each backend is
+        # exactly the protocol -- in particular, no verify_image_abi and no
+        # operation that reads an image's filesystem exists on any backend.
+        for backend in (JMS.ContainerBackend(), JMS.PodmanBackend()):
+            public = {attr for attr in dir(backend) if not attr.startswith("_")}
+            self.assertEqual(public, set(self.PROTOCOL_SURFACE))
+
+    def test_commands_never_branch_on_the_backend_identity(self):
+        # §2 prohibition: no command function reads runtime().name,
+        # isinstance-checks a backend, or branches on sys.platform for
+        # runtime behavior.  sys.platform may appear only inside
+        # select_runtime(); backend classes are never isinstance-checked.
+        source = pathlib.Path(JMS.__file__).read_text()
+        self.assertNotIn("runtime().name", source)
+        self.assertNotIn("isinstance(backend", source)
+        for match in re.finditer(r"[^\n]*sys\.platform[^\n]*", source):
+            line_start = source.rfind("\ndef ", 0, match.start())
+            head = source[line_start + 1:source.index("\n", line_start + 1)]
+            self.assertEqual(head, "def select_runtime():",
+                             "sys.platform outside select_runtime(): " + match.group(0))
+
+
+class LeakSweepTests(unittest.TestCase):
+    """R7.13: sweep snippet over the checked-in fixtures; three outcomes."""
+
+    WORK = "/home/user/jms-fixture-work"
+
+    def podman_runner(self, ps_payload, inspect_map, exists_codes=None):
+        def runner(argv):
+            if argv[:2] == ["podman", "ps"]:
+                return 0, json.dumps(ps_payload).encode(), b""
+            if argv[:2] == ["podman", "inspect"]:
+                ident = argv[-1]
+                entry = inspect_map.get(ident)
+                if entry is None:
+                    return 125, b"", b"no such container"
+                return 0, json.dumps(entry).encode(), b""
+            if argv[:3] == ["podman", "container", "exists"]:
+                return (exists_codes or {}).get(argv[-1], 0), b"", b""
+            raise AssertionError("unexpected argv: " + repr(argv))
+        return runner
+
+    def fixture_state(self):
+        ps_payload = load_fixture("podman-5.4.2-ps.json")
+        inspect_record = load_fixture("podman-5.4.2-inspect.json")
+        running = inspect_record[0]["Id"]
+        empty = [dict(inspect_record[0], Mounts=[])]
+        inspect_map = {record["Id"]: ([dict(inspect_record[0], Id=record["Id"])]
+                                      if record["Id"] == running else
+                                      [dict(empty[0], Id=record["Id"])])
+                       for record in ps_payload}
+        return ps_payload, inspect_map, running
+
+    def test_clean_and_leak_outcomes(self):
+        ps_payload, inspect_map, running = self.fixture_state()
+        runner = self.podman_runner(ps_payload, inspect_map)
+        self.assertEqual(SWEEP.podman_sweep("/somewhere/else", runner), [])
+        leaks = SWEEP.podman_sweep(self.WORK, runner)
+        self.assertEqual(leaks, [(running, [self.WORK])])
+        # Prefix semantics: exact match and children leak, siblings do not.
+        self.assertTrue(SWEEP.leaking_sources("/w", ["/w"]))
+        self.assertTrue(SWEEP.leaking_sources("/w", ["/w/sub"]))
+        self.assertFalse(SWEEP.leaking_sources("/w", ["/w2", "/x/w"]))
+
+    def test_vanished_container_recheck_outcomes(self):
+        # All three `container exists` recheck outcomes (MIR-056).
+        ps_payload, inspect_map, running = self.fixture_state()
+        gone = ps_payload[0]["Id"]
+        del inspect_map[gone]
+        runner = self.podman_runner(ps_payload, inspect_map, exists_codes={gone: 1})
+        self.assertIsInstance(SWEEP.podman_sweep("/somewhere/else", runner), list)
+        for code in (0, 125):
+            runner = self.podman_runner(ps_payload, inspect_map, exists_codes={gone: code})
+            with self.assertRaisesRegex(SWEEP.SweepFailure, "container exists"):
+                SWEEP.podman_sweep("/somewhere/else", runner)
+
+    def test_malformed_output_is_sweep_failure_never_leak(self):
+        bad_ps = self.podman_runner([{"Id": "short"}], {})
+        with self.assertRaises(SWEEP.SweepFailure):
+            SWEEP.podman_sweep(self.WORK, bad_ps)
+        ps_payload, inspect_map, running = self.fixture_state()
+        inspect_map[running] = [dict(inspect_map[running][0], Mounts="not a list")]
+        with self.assertRaises(SWEEP.SweepFailure):
+            SWEEP.podman_sweep(self.WORK, self.podman_runner(ps_payload, inspect_map))
+        broken = self.podman_runner("not a list", {})
+        with self.assertRaises(SWEEP.SweepFailure):
+            SWEEP.podman_sweep(self.WORK, broken)
+
+    def test_apple_sweep_single_pass(self):
+        records = [{"id": "leaky", "configuration": {"mounts": [{"source": self.WORK + "/sub"}]}},
+                   {"id": "fine", "configuration": {"mounts": [{"source": "/elsewhere"}]}}]
+        runner = lambda argv: (0, json.dumps(records).encode(), b"")
+        self.assertEqual(SWEEP.apple_sweep(self.WORK, runner),
+                         [("leaky", [self.WORK + "/sub"])])
+        with self.assertRaises(SWEEP.SweepFailure):
+            SWEEP.apple_sweep(self.WORK, lambda argv: (0, b"not json", b""))
+        with self.assertRaises(SWEEP.SweepFailure):
+            SWEEP.apple_sweep(self.WORK, lambda argv: (
+                0, json.dumps([{"id": "x", "configuration": {"mounts": [{"source": 7}]}}]).encode(), b""))
+
+    def test_main_usage_and_unknown_backend(self):
+        with quiet():
+            self.assertEqual(SWEEP.main([]), 2)
+            self.assertEqual(SWEEP.main(["docker", "/w", "extra"]), 2)
 
 
 if __name__ == "__main__":

@@ -49,13 +49,23 @@ before approval; mount sources that touch jms credential, configuration, or tool
 directories are rejected. For the complete security and trust behavior, see
 [SECURITY.md](../SECURITY.md).
 
+On the Linux backend, access to a mount source is owner-based: a source is
+supported only if it is reachable through the invoking user's own UID and
+primary GID. Access that exists only via a supplementary group, an ACL grant,
+or a setgid directory does not survive the rootless user-namespace mapping,
+so such a mount may resolve and pass approval on the host and still be
+unreadable or unwritable inside the container. jms performs no preflight
+detection of this; the failure surfaces in the container. The same rule
+applies to the project tree itself.
+
 ## Mount targets
 
 A `target` is an absolute, normalized container path: no trailing slash, no
 empty or `.`/`..` component, and no `,`, `=`, or NUL (the runtime's mount
 grammar cannot carry the first two). It must sit under one of four prefixes:
 
-- `/home/isolation/` — the default runtime user's home
+- `/home/isolation/` — the home fixed by the
+  [project-image user ABI](../README.md#project-image-user-abi)
 - `/opt/`
 - `/mnt/`
 - `/srv/`

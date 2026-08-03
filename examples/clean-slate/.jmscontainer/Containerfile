@@ -1,7 +1,12 @@
 # A standalone definition: projects need not inherit jmscontainers-base:latest.
-FROM fedora:latest
+# External bases should be fully qualified so no registry ambiguity exists.
+FROM registry.fedoraproject.org/fedora:latest
 
 RUN dnf -y install bash sudo && dnf clean all && \
-    useradd --create-home --shell /bin/bash isolation && \
-    printf 'isolation ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/isolation && chmod 0440 /etc/sudoers.d/isolation
+    groupadd --gid 1000 isolation && \
+    useradd --create-home --shell /bin/bash \
+            --uid 1000 --gid 1000 isolation && \
+    printf 'isolation ALL=(ALL) NOPASSWD: ALL\n' \
+        > /etc/sudoers.d/isolation && \
+    chmod 0440 /etc/sudoers.d/isolation
 USER isolation

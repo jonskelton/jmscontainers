@@ -10,11 +10,21 @@ Run the test suite before opening a pull request:
 make test
 ```
 
-It runs the unit and fake-runtime tests without requiring macOS or
-`apple/container`. PR CI runs exactly that, on Ubuntu (Python 3.11 and 3.14)
-and on macOS. On a macOS host with the runtime installed, run
-`make integration` as well; it builds the example gallery against the real
-runtime and is intentionally not part of PR CI.
+It runs the unit tests and shell lint against the fake backends, so it needs
+no container runtime and no particular host: the apple/container and Podman
+surfaces are both exercised by fakes. PR CI runs exactly that, on Ubuntu
+(Python 3.11 and 3.14) and on macOS.
+
+Real-runtime checks are opt-in and intentionally not part of PR CI. Run
+`make integration` — or `scripts/integration.sh a|b|all` for one tier — on
+either qualified host: a macOS host with the qualified apple/container
+release, or a Debian 13 (amd64) host with rootless Podman. Tier A is the
+fast one and asserts the launch contracts on the base image; tier B is
+expensive and builds the example gallery, and assumes tier A's base image
+already exists. `make integration` runs both. The Linux launch contracts and
+the egress-denied FROM-resolution check need `sudo` for a harness-owned
+nftables rule. Release-qualifying runs have further host requirements — see
+the [release checklist](docs/release-checklist.md).
 
 ## Changes to trust-sensitive code
 
@@ -31,8 +41,16 @@ channels.
 
 jmscontainers is not a compose/orchestration tool. Services, compose files,
 multi-container networking, and declarative package/build DSLs require a new
-proposal rather than a drive-by feature addition. Keep runtime-specific calls
-behind the existing CLI seam so an alternate backend remains possible later.
+proposal rather than a drive-by feature addition.
+
+Every call into a container runtime goes through the backend protocol —
+`ContainerBackend` for apple/container, `PodmanBackend` for rootless Podman.
+Do not reach past it to a runtime CLI from shared code: behavior that is not
+per-runtime belongs above the seam, and a new runtime-specific method belongs
+on the protocol with both backends implementing it. Both backends are covered
+by fakes in `make test`, and per-backend differences that users can observe
+(mount grammar, version qualification, cleanup semantics) need tests
+asserting the two agree wherever they are supposed to.
 
 ## Pull requests
 

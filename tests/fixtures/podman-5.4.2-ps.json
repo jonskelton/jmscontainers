@@ -1,0 +1,133 @@
+[
+  {
+    "AutoRemove": false,
+    "CIDFile": "",
+    "Command": [
+      "sleep",
+      "300"
+    ],
+    "Created": 1785439122,
+    "CreatedAt": "12 seconds ago",
+    "ExitCode": 0,
+    "Exited": false,
+    "ExitedAt": -62135596800,
+    "ExposedPorts": null,
+    "Id": "3677bc64a3e7e030251f96adad86ed768ca59c96b33488fe421826ea3e2792ab",
+    "Image": "localhost/jmsfix-labelled:latest",
+    "ImageID": "71c17aef4e0d2e09c8037bd7abb594c8c1c58205f2e3f583ee97934eb91f6bdb",
+    "IsInfra": false,
+    "Labels": {
+      "io.buildah.version": "1.39.3",
+      "jms.container": "launch",
+      "jms.example": "fixture",
+      "jms.fingerprint": "8155454e44ff6c95ec40e4f7fc1adde0ba8d7c36e185ba244c860e7467bf21fc",
+      "jms.project": "a87d9b9a1a609d627a255eb505f84eadf937ceda83efd4fe155763d758bb3ac4",
+      "org.opencontainers.image.licenses": "MIT",
+      "org.opencontainers.image.title": "fedora",
+      "org.opencontainers.image.url": "https://fedoraproject.org/",
+      "org.opencontainers.image.vendor": "Fedora Project",
+      "org.opencontainers.image.version": "44"
+    },
+    "Mounts": [
+      "/work"
+    ],
+    "Names": [
+      "jmsfix-running"
+    ],
+    "Namespaces": {},
+    "Networks": [],
+    "Pid": 22429,
+    "Pod": "",
+    "PodName": "",
+    "Ports": null,
+    "Restarts": 0,
+    "Size": null,
+    "StartedAt": 1785439124,
+    "State": "running",
+    "Status": "Up 11 seconds"
+  },
+  {
+    "AutoRemove": false,
+    "CIDFile": "",
+    "Command": [
+      "true"
+    ],
+    "Created": 1785439124,
+    "CreatedAt": "11 seconds ago",
+    "ExitCode": 0,
+    "Exited": true,
+    "ExitedAt": 1785439125,
+    "ExposedPorts": null,
+    "Id": "2148f4b868dd9909876f35ac325f83e2e9efa163f72914b195300145783a0726",
+    "Image": "localhost/jmsfix-labelled:latest",
+    "ImageID": "71c17aef4e0d2e09c8037bd7abb594c8c1c58205f2e3f583ee97934eb91f6bdb",
+    "IsInfra": false,
+    "Labels": {
+      "io.buildah.version": "1.39.3",
+      "jms.container": "image",
+      "jms.example": "fixture",
+      "jms.fingerprint": "8155454e44ff6c95ec40e4f7fc1adde0ba8d7c36e185ba244c860e7467bf21fc",
+      "jms.project": "a87d9b9a1a609d627a255eb505f84eadf937ceda83efd4fe155763d758bb3ac4",
+      "org.opencontainers.image.licenses": "MIT",
+      "org.opencontainers.image.title": "fedora",
+      "org.opencontainers.image.url": "https://fedoraproject.org/",
+      "org.opencontainers.image.vendor": "Fedora Project",
+      "org.opencontainers.image.version": "44"
+    },
+    "Mounts": [],
+    "Names": [
+      "jmsfix-exited"
+    ],
+    "Namespaces": {},
+    "Networks": [],
+    "Pid": 0,
+    "Pod": "",
+    "PodName": "",
+    "Ports": null,
+    "Restarts": 0,
+    "Size": null,
+    "StartedAt": 1785439125,
+    "State": "exited",
+    "Status": "Exited (0) 10 seconds ago"
+  },
+  {
+    "AutoRemove": false,
+    "CIDFile": "",
+    "Command": [
+      "true"
+    ],
+    "Created": 1785439126,
+    "CreatedAt": "8 seconds ago",
+    "ExitCode": 0,
+    "Exited": true,
+    "ExitedAt": 1785439129,
+    "ExposedPorts": null,
+    "Id": "b0b59d087df8cdb1c415ff062d5c1235da039d8a1996788f4bde7bf9032243c1",
+    "Image": "registry.fedoraproject.org/fedora:latest",
+    "ImageID": "daffde64b0d6130d6a1d7b72ec26d172dc60d34cb6cf2d173711f040654a18bf",
+    "IsInfra": false,
+    "Labels": {
+      "io.buildah.version": "1.43.2",
+      "org.opencontainers.image.licenses": "MIT",
+      "org.opencontainers.image.title": "fedora",
+      "org.opencontainers.image.url": "https://fedoraproject.org/",
+      "org.opencontainers.image.vendor": "Fedora Project",
+      "org.opencontainers.image.version": "44"
+    },
+    "Mounts": [],
+    "Names": [
+      "jmsfix-plain"
+    ],
+    "Namespaces": {},
+    "Networks": [],
+    "Pid": 0,
+    "Pod": "",
+    "PodName": "",
+    "Ports": null,
+    "Restarts": 0,
+    "Size": null,
+    "StartedAt": 1785439129,
+    "State": "exited",
+    "Status": "Exited (0) 6 seconds ago"
+  }
+]

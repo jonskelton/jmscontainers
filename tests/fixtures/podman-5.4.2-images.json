@@ -1,0 +1,164 @@
+[
+  {
+    "Containers": 2,
+    "Created": 1785439120,
+    "CreatedAt": "2026-07-30T19:18:40Z",
+    "Digest": "sha256:831a31bcf6070b46cb32de56d040550f50380723331401fe637e41694d456c89",
+    "History": [
+      "localhost/jmsfix-labelled:latest",
+      "localhost/jmsfix-labelled:alias"
+    ],
+    "Id": "71c17aef4e0d2e09c8037bd7abb594c8c1c58205f2e3f583ee97934eb91f6bdb",
+    "Labels": {
+      "io.buildah.version": "1.39.3",
+      "jms.container": "image",
+      "jms.example": "fixture",
+      "jms.fingerprint": "8155454e44ff6c95ec40e4f7fc1adde0ba8d7c36e185ba244c860e7467bf21fc",
+      "jms.project": "a87d9b9a1a609d627a255eb505f84eadf937ceda83efd4fe155763d758bb3ac4",
+      "org.opencontainers.image.licenses": "MIT",
+      "org.opencontainers.image.title": "fedora",
+      "org.opencontainers.image.url": "https://fedoraproject.org/",
+      "org.opencontainers.image.vendor": "Fedora Project",
+      "org.opencontainers.image.version": "44"
+    },
+    "Names": [
+      "localhost/jmsfix-labelled:alias",
+      "localhost/jmsfix-labelled:latest"
+    ],
+    "ParentId": "f2b98b793df2546bd17e6f62ae2950bc79d3f389116f70b3841d4ad0a637bc46",
+    "RepoDigests": [
+      "localhost/jmsfix-labelled@sha256:831a31bcf6070b46cb32de56d040550f50380723331401fe637e41694d456c89"
+    ],
+    "RepoTags": null,
+    "SharedSize": 0,
+    "Size": 189706719,
+    "VirtualSize": 189706719
+  },
+  {
+    "Containers": 2,
+    "Created": 1785439120,
+    "CreatedAt": "2026-07-30T19:18:40Z",
+    "Digest": "sha256:831a31bcf6070b46cb32de56d040550f50380723331401fe637e41694d456c89",
+    "History": [
+      "localhost/jmsfix-labelled:latest",
+      "localhost/jmsfix-labelled:alias"
+    ],
+    "Id": "71c17aef4e0d2e09c8037bd7abb594c8c1c58205f2e3f583ee97934eb91f6bdb",
+    "Labels": {
+      "io.buildah.version": "1.39.3",
+      "jms.container": "image",
+      "jms.example": "fixture",
+      "jms.fingerprint": "8155454e44ff6c95ec40e4f7fc1adde0ba8d7c36e185ba244c860e7467bf21fc",
+      "jms.project": "a87d9b9a1a609d627a255eb505f84eadf937ceda83efd4fe155763d758bb3ac4",
+      "org.opencontainers.image.licenses": "MIT",
+      "org.opencontainers.image.title": "fedora",
+      "org.opencontainers.image.url": "https://fedoraproject.org/",
+      "org.opencontainers.image.vendor": "Fedora Project",
+      "org.opencontainers.image.version": "44"
+    },
+    "Names": [
+      "localhost/jmsfix-labelled:alias",
+      "localhost/jmsfix-labelled:latest"
+    ],
+    "ParentId": "f2b98b793df2546bd17e6f62ae2950bc79d3f389116f70b3841d4ad0a637bc46",
+    "RepoDigests": [
+      "localhost/jmsfix-labelled@sha256:831a31bcf6070b46cb32de56d040550f50380723331401fe637e41694d456c89"
+    ],
+    "RepoTags": null,
+    "SharedSize": 0,
+    "Size": 189706719,
+    "VirtualSize": 189706719
+  },
+  {
+    "Containers": 0,
+    "Created": 1785439109,
+    "CreatedAt": "2026-07-30T19:18:29Z",
+    "Dangling": true,
+    "Digest": "sha256:5d93c3447998be1c0e26a88d4af0cb1e03808e7590499f79651d57e379b69185",
+    "History": [
+      "localhost/jmsfix-dangle:latest"
+    ],
+    "Id": "8dfdb3974410bcdef8666ef532b4706a2417e317417b4a3878291daeeeb17b8b",
+    "Labels": null,
+    "ParentId": "",
+    "RepoDigests": [],
+    "RepoTags": null,
+    "SharedSize": 0,
+    "Size": 11339,
+    "VirtualSize": 11339
+  },
+  {
+    "Containers": 0,
+    "Created": 1785439109,
+    "CreatedAt": "2026-07-30T19:18:29Z",
+    "Digest": "sha256:0d050daf89ee8e84e0783d159999b2b50bb916c5d1b31f4c6e41b16350009963",
+    "History": [
+      "localhost/jmsfix-dangle:latest"
+    ],
+    "Id": "613d12b2c6629d4ffae2b08c6a8494cd9805a58cbb6cf3ddabbc28c0e4971aee",
+    "Labels": null,
+    "Names": [
+      "localhost/jmsfix-dangle:latest"
+    ],
+    "ParentId": "",
+    "RepoDigests": [
+      "localhost/jmsfix-dangle@sha256:0d050daf89ee8e84e0783d159999b2b50bb916c5d1b31f4c6e41b16350009963"
+    ],
+    "RepoTags": null,
+    "SharedSize": 0,
+    "Size": 11341,
+    "VirtualSize": 11341
+  },
+  {
+    "Containers": 0,
+    "Created": 1785439105,
+    "CreatedAt": "2026-07-30T19:18:25Z",
+    "Digest": "sha256:a7261d040c18a7a2c5da37069f5854c4514cae02806d08c5f8add4be6726d642",
+    "History": [
+      "localhost/jmsfix-unlabeled:latest"
+    ],
+    "Id": "94c9d1e4362b2ef4c5aa8fa07eb8518053b240d560a6bd355d450a94f6edd5c3",
+    "Labels": null,
+    "Names": [
+      "localhost/jmsfix-unlabeled:latest"
+    ],
+    "ParentId": "",
+    "RepoDigests": [
+      "localhost/jmsfix-unlabeled@sha256:a7261d040c18a7a2c5da37069f5854c4514cae02806d08c5f8add4be6726d642"
+    ],
+    "RepoTags": null,
+    "SharedSize": 0,
+    "Size": 11341,
+    "VirtualSize": 11341
+  },
+  {
+    "Containers": 1,
+    "Created": 1785307646,
+    "CreatedAt": "2026-07-29T06:47:26Z",
+    "Digest": "sha256:cffa25ae42f013b76653abd96137c05c776cd6e6bc1ac4a79290296ff42cbc7b",
+    "History": [
+      "registry.fedoraproject.org/fedora:latest"
+    ],
+    "Id": "daffde64b0d6130d6a1d7b72ec26d172dc60d34cb6cf2d173711f040654a18bf",
+    "Labels": {
+      "io.buildah.version": "1.43.2",
+      "org.opencontainers.image.licenses": "MIT",
+      "org.opencontainers.image.title": "fedora",
+      "org.opencontainers.image.url": "https://fedoraproject.org/",
+      "org.opencontainers.image.vendor": "Fedora Project",
+      "org.opencontainers.image.version": "44"
+    },
+    "Names": [
+      "registry.fedoraproject.org/fedora:latest"
+    ],
+    "ParentId": "",
+    "RepoDigests": [
+      "registry.fedoraproject.org/fedora@sha256:76cefb492960b4f49b644f9cb3b80fe035175fade06e191a48d2fad0def62970",
+      "registry.fedoraproject.org/fedora@sha256:cffa25ae42f013b76653abd96137c05c776cd6e6bc1ac4a79290296ff42cbc7b"
+    ],
+    "RepoTags": null,
+    "SharedSize": 0,
+    "Size": 379410734,
+    "VirtualSize": 379410734
+  }
+]

@@ -11,7 +11,7 @@ grant and defaults to no. In non-interactive automation, use an audited exact
 fingerprint; do not use a boolean bypass.
 
 Everything else running as the invoking user on the host — the filesystem
-outside project definitions, the `container` runtime and its output, and other
+outside project definitions, the container runtime and its output, and other
 jms processes — is trusted. An attacker who can tamper with those already has
 the user's account; jms does not defend the user's machine against itself.
 
@@ -19,13 +19,86 @@ Granting both grants hands the project's image — and every transitive
 dependency it pulls in — read/write access to your agents' persistent state:
 their credentials and their configuration. The `isolation` user is not a security boundary
 (passwordless sudo is by design);
-the VM limits blast radius to the *host*, not to anything mounted into the
-container. Credential mounts stay read-write because the agent CLIs refresh
-tokens in place (`--mount …,readonly` exists but would break auth
-persistence); recovery from corruption is "delete the dir and log in again."
-Prefer dedicated, least-privileged agent accounts for third-party work;
-per-project auth profiles are future work. Never claim the VM meaningfully
-limits exfiltration of mounted credentials.
+the container boundary limits blast radius to the *host*, not to anything
+mounted into the container. Credential mounts stay read-write because the
+agent CLIs refresh tokens in place (`--mount …,readonly` exists but would
+break auth persistence); recovery from corruption is "delete the dir and log
+in again." Prefer dedicated, least-privileged agent accounts for third-party
+work; per-project auth profiles are future work. Never claim the container
+boundary meaningfully limits exfiltration of mounted credentials.
+
+## The container boundary, per platform
+
+The boundary that contains an approved project is different on the two
+supported platforms, and the difference matters:
+
+- **macOS (apple/container):** each container runs in its own lightweight
+  virtual machine. The boundary is hardware-virtualized.
+- **Linux (rootless Podman):** rootless Podman is the only supported Linux
+  mode — jms refuses to run as uid 0, because rootful operation would
+  silently remove the user-namespace boundary described here. The boundary
+  is a user namespace plus
+  Podman's seccomp filter and capability drops *as configured on the host* —
+  kernel isolation, not hardware-virtualized isolation. This is a
+  meaningfully weaker boundary than the macOS VM against kernel exploits.
+  SELinux label separation contributes nothing here: jms always passes
+  `--security-opt label=disable`, because relabeling (`:z`) would `chcon`
+  your real project tree and the shared agent-state directories on the host
+  — mutating host state and fighting other tools — while the sandbox's real
+  boundary is the user namespace. On non-SELinux hosts (the qualified
+  Debian 13 target runs AppArmor) the flag is a no-op.
+
+The precise Linux claims:
+
+- **Ambient Podman configuration is trusted host input.** `containers.conf`
+  and its drop-ins, `mounts.conf`, `storage.conf`,
+  `policy.json`/`registries.conf`, configuration-selecting environment
+  variables, and OCI hooks belong to the invoking user and sit in the same
+  trust class as the `podman` binary and the kernel, for `build` and `run`
+  alike. jms neither validates nor neutralizes them; host configuration
+  that mounts additional data into containers is your own configuration,
+  outside jms's claims. jms's argv pins only what it itself relies on: the
+  explicit `--userns` mapping and `label=disable`.
+- **Trusted: the host kernel and the OCI runtime.** The boundary holds only
+  as long as they do; a kernel or runtime exploit can cross the namespace
+  boundary and potentially elevate beyond the invoking user. No claim of
+  the form "an escape can never yield host root" is made.
+- **What the boundary aims to contain:** absent such an exploit, container
+  processes — including container "root", which is an unprivileged mapped
+  UID of the invoking user — hold at most the invoking user's authority on
+  the host. `sudo` inside the container works under the isolation user
+  because container root is a mapped subordinate UID, not host root.
+- **What an escape yields:** everything the invoking user's account can do —
+  their files, credentials, processes, and network access. For a
+  single-user development machine that is most of what matters; "not host
+  root" is a limited consolation and is not presented as more.
+- **What no boundary mitigates:** anything deliberately mounted in. Project
+  files and mounted credentials are exposed to the agent by design; the
+  credential-exfiltration warning above applies regardless of boundary
+  type.
+- SELinux-**enforcing** hosts are **unqualified but allowed** in 1.1.0,
+  like every local rootless Linux configuration outside the qualified
+  Debian 13/amd64 matrix: jms does not detect enforcing mode and prints no
+  warning, and no qualification or support guarantee is made for the
+  configuration. Enforcing-mode qualification is planned alongside the
+  Fedora host target.
+- The host-permission contract is owner-based only: project trees, extra
+  mounts, and shell/credential state must be reachable through the invoking
+  user's own UID and primary GID. Supplementary-group, ACL-only, and setgid
+  access is a documented limitation, with no preflight detection.
+- NFS and other distributed home directories are unsupported: rootless
+  Podman's container storage under `~/.local/share/containers` is
+  known-broken on such filesystems. jms does not detect this — the failure
+  surfaces at the first build or launch (or at `podman info` when storage
+  initialization fails outright) with Podman's own stderr.
+- Nested sandboxes: bubblewrap's full sandbox fails inside rootless Podman
+  on the masked `/proc`. jms never passes `--security-opt unmask` and does
+  not weaken container defaults to accommodate an inner sandbox; agents run
+  without one, inside jms's boundary.
+
+Unchanged on both platforms: the protected-source rules, the read-only
+shell-mount rationale, the trust-store location, and the credential-mount
+warning, none of which depend on the boundary type.
 
 Do not put secrets in Containerfiles, manifests, or files under
 `.jmscontainer/`: the whole directory is the build context, so build inputs

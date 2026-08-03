@@ -1,0 +1,608 @@
+[
+  {
+    "configuration": {
+      "creationDate": "2026-05-27T22:07:12Z",
+      "descriptor": {
+        "digest": "sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898",
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "size": 4658
+      },
+      "name": "docker.io/library/fedora:latest"
+    },
+    "id": "6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898",
+    "variants": [
+      {
+        "config": {
+          "architecture": "amd64",
+          "config": {
+            "Cmd": [
+              "/bin/bash"
+            ],
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+              "DISTTAG=f44container",
+              "FGC=f44",
+              "FBR=f44"
+            ],
+            "Labels": {
+              "maintainer": "Clement Verna <cverna@fedoraproject.org>"
+            },
+            "WorkingDir": "/"
+          },
+          "created": "2026-05-27T22:08:46.712768115Z",
+          "history": [
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:08:46.712768115Z",
+              "created_by": "LABEL maintainer=Clement Verna <cverna@fedoraproject.org>",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:08:46.712768115Z",
+              "created_by": "ENV DISTTAG=f44container FGC=f44 FBR=f44",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:08:46.712768115Z",
+              "created_by": "ADD fedora-20260527.tar / # buildkit"
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:08:46.712768115Z",
+              "created_by": "CMD [\"/bin/bash\"]",
+              "empty_layer": true
+            }
+          ],
+          "os": "linux",
+          "rootfs": {
+            "diff_ids": [
+              "sha256:81fff2cd9f840aea704ee8cbd8224df5aec026ccee2b6b913f411b766a9b95b7"
+            ],
+            "type": "layers"
+          }
+        },
+        "digest": "sha256:89f61a124414261868224666aa7fb8df1b78397a53623774bdfb105d1612b48b",
+        "platform": {
+          "architecture": "amd64",
+          "os": "linux"
+        },
+        "size": 69315938
+      },
+      {
+        "config": {
+          "architecture": "unknown",
+          "config": {},
+          "os": "unknown",
+          "rootfs": {
+            "diff_ids": [
+              "sha256:5fb8de3299cd38702a15a3ac29e8e3677d113fdf141454d4f9b5e448432fd489",
+              "sha256:54254e96f9e8fb8d9f5d529c0a350ad753223886172d0eed830a28134d79c3c2"
+            ],
+            "type": "layers"
+          }
+        },
+        "digest": "sha256:34d9f359f7f0f3ee926bd8e1fcb375deed68daa639f31c439f5dff4666f73fd0",
+        "platform": {
+          "architecture": "unknown",
+          "os": "unknown"
+        },
+        "size": 3388005
+      },
+      {
+        "config": {
+          "architecture": "arm64",
+          "config": {
+            "Cmd": [
+              "/bin/bash"
+            ],
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+              "DISTTAG=f44container",
+              "FGC=f44",
+              "FBR=f44"
+            ],
+            "Labels": {
+              "maintainer": "Clement Verna <cverna@fedoraproject.org>"
+            },
+            "WorkingDir": "/"
+          },
+          "created": "2026-05-27T22:09:03.56065412Z",
+          "history": [
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "LABEL maintainer=Clement Verna <cverna@fedoraproject.org>",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "ENV DISTTAG=f44container FGC=f44 FBR=f44",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "ADD fedora-20260527.tar / # buildkit"
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "CMD [\"/bin/bash\"]",
+              "empty_layer": true
+            }
+          ],
+          "os": "linux",
+          "rootfs": {
+            "diff_ids": [
+              "sha256:44157061143cb91d5818b1f3d2dc2109476e3efcf3eb9e495c9eb5a7db49c170"
+            ],
+            "type": "layers"
+          },
+          "variant": "v8"
+        },
+        "digest": "sha256:a471bd8bf8e7e99812fd2f29fc950685d860b3d528b9f090443dbc1a0d2bad62",
+        "platform": {
+          "architecture": "arm64",
+          "os": "linux",
+          "variant": "v8"
+        },
+        "size": 65757814
+      },
+      {
+        "config": {
+          "architecture": "unknown",
+          "config": {},
+          "os": "unknown",
+          "rootfs": {
+            "diff_ids": [
+              "sha256:5fb8de3299cd38702a15a3ac29e8e3677d113fdf141454d4f9b5e448432fd489",
+              "sha256:54254e96f9e8fb8d9f5d529c0a350ad753223886172d0eed830a28134d79c3c2"
+            ],
+            "type": "layers"
+          }
+        },
+        "digest": "sha256:29ce094847aeb74f91b830f62cc78b64f5786c66e68da77f05447c6ab75e6cdb",
+        "platform": {
+          "architecture": "unknown",
+          "os": "unknown"
+        },
+        "size": 3388005
+      },
+      {
+        "config": {
+          "architecture": "ppc64le",
+          "config": {
+            "Cmd": [
+              "/bin/bash"
+            ],
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+              "DISTTAG=f44container",
+              "FGC=f44",
+              "FBR=f44"
+            ],
+            "Labels": {
+              "maintainer": "Clement Verna <cverna@fedoraproject.org>"
+            },
+            "WorkingDir": "/"
+          },
+          "created": "2026-05-27T22:07:12.929780423Z",
+          "history": [
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:07:12.929780423Z",
+              "created_by": "LABEL maintainer=Clement Verna <cverna@fedoraproject.org>",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:07:12.929780423Z",
+              "created_by": "ENV DISTTAG=f44container FGC=f44 FBR=f44",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:07:12.929780423Z",
+              "created_by": "ADD fedora-20260527.tar / # buildkit"
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:07:12.929780423Z",
+              "created_by": "CMD [\"/bin/bash\"]",
+              "empty_layer": true
+            }
+          ],
+          "os": "linux",
+          "rootfs": {
+            "diff_ids": [
+              "sha256:1866e3bd346848bceaa1cfa4bdf1c39a70d5574c2f0bcc4036b9e7440f225d11"
+            ],
+            "type": "layers"
+          }
+        },
+        "digest": "sha256:c2e593e6a5a9c47cc1e001256313fe5db1f768cacba15005702d07317a1b5b48",
+        "platform": {
+          "architecture": "ppc64le",
+          "os": "linux"
+        },
+        "size": 75216147
+      },
+      {
+        "config": {
+          "architecture": "unknown",
+          "config": {},
+          "os": "unknown",
+          "rootfs": {
+            "diff_ids": [
+              "sha256:5fb8de3299cd38702a15a3ac29e8e3677d113fdf141454d4f9b5e448432fd489",
+              "sha256:54254e96f9e8fb8d9f5d529c0a350ad753223886172d0eed830a28134d79c3c2"
+            ],
+            "type": "layers"
+          }
+        },
+        "digest": "sha256:be67ce9b5401bc4297c2e67c0e8a36907cc32cfbd14799dc010265d08c29968b",
+        "platform": {
+          "architecture": "unknown",
+          "os": "unknown"
+        },
+        "size": 3388005
+      },
+      {
+        "config": {
+          "architecture": "s390x",
+          "config": {
+            "Cmd": [
+              "/bin/bash"
+            ],
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+              "DISTTAG=f44container",
+              "FGC=f44",
+              "FBR=f44"
+            ],
+            "Labels": {
+              "maintainer": "Clement Verna <cverna@fedoraproject.org>"
+            },
+            "WorkingDir": "/"
+          },
+          "created": "2026-05-27T22:08:17.506999362Z",
+          "history": [
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:08:17.506999362Z",
+              "created_by": "LABEL maintainer=Clement Verna <cverna@fedoraproject.org>",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:08:17.506999362Z",
+              "created_by": "ENV DISTTAG=f44container FGC=f44 FBR=f44",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:08:17.506999362Z",
+              "created_by": "ADD fedora-20260527.tar / # buildkit"
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:08:17.506999362Z",
+              "created_by": "CMD [\"/bin/bash\"]",
+              "empty_layer": true
+            }
+          ],
+          "os": "linux",
+          "rootfs": {
+            "diff_ids": [
+              "sha256:78695ff0b10990c4c93146df65894d9c94a36a884882996aa850b96e76ba7b7d"
+            ],
+            "type": "layers"
+          }
+        },
+        "digest": "sha256:80aec3859f7aff062c21d28b5e009aa7facb6347879524d289478732e3db0788",
+        "platform": {
+          "architecture": "s390x",
+          "os": "linux"
+        },
+        "size": 68530796
+      },
+      {
+        "config": {
+          "architecture": "unknown",
+          "config": {},
+          "os": "unknown",
+          "rootfs": {
+            "diff_ids": [
+              "sha256:5fb8de3299cd38702a15a3ac29e8e3677d113fdf141454d4f9b5e448432fd489",
+              "sha256:54254e96f9e8fb8d9f5d529c0a350ad753223886172d0eed830a28134d79c3c2"
+            ],
+            "type": "layers"
+          }
+        },
+        "digest": "sha256:9f21979a1b30256e59a409731060fe0020de5ae4af95b252d8545d40095ffb56",
+        "platform": {
+          "architecture": "unknown",
+          "os": "unknown"
+        },
+        "size": 3388005
+      }
+    ]
+  },
+  {
+    "configuration": {
+      "creationDate": "2026-05-27T22:09:03Z",
+      "descriptor": {
+        "annotations": {
+          "com.apple.containerization.image.name": "jmscontainers-fixture-a87d9b9a:8155454e44ff",
+          "io.containerd.image.name": "docker.io/library/jmscontainers-fixture-a87d9b9a:8155454e44ff",
+          "org.opencontainers.image.created": "2026-07-30T04:45:03Z",
+          "org.opencontainers.image.ref.name": "8155454e44ff"
+        },
+        "digest": "sha256:1efe3a3b29ff5231c183b6514196015a3c7ce2a1d91388c81d9f7723f68b1309",
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "size": 374
+      },
+      "name": "docker.io/library/jms-fixture-alias:latest"
+    },
+    "id": "1efe3a3b29ff5231c183b6514196015a3c7ce2a1d91388c81d9f7723f68b1309",
+    "variants": [
+      {
+        "config": {
+          "architecture": "arm64",
+          "config": {
+            "Cmd": [
+              "/bin/bash"
+            ],
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+              "DISTTAG=f44container",
+              "FGC=f44",
+              "FBR=f44"
+            ],
+            "Labels": {
+              "jms.fingerprint": "8155454e44ff6c95ec40e4f7fc1adde0ba8d7c36e185ba244c860e7467bf21fc",
+              "jms.project": "a87d9b9a1a609d627a255eb505f84eadf937ceda83efd4fe155763d758bb3ac4",
+              "maintainer": "Clement Verna <cverna@fedoraproject.org>",
+              "org.opencontainers.image.title": "jms-fixture-base"
+            },
+            "WorkingDir": "/"
+          },
+          "created": "2026-05-27T22:09:03.56065412Z",
+          "history": [
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "LABEL maintainer=Clement Verna <cverna@fedoraproject.org>",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "ENV DISTTAG=f44container FGC=f44 FBR=f44",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "ADD fedora-20260527.tar / # buildkit"
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "CMD [\"/bin/bash\"]",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "LABEL org.opencontainers.image.title=jms-fixture-base",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "LABEL jms.project=a87d9b9a1a609d627a255eb505f84eadf937ceda83efd4fe155763d758bb3ac4 jms.fingerprint=8155454e44ff6c95ec40e4f7fc1adde0ba8d7c36e185ba244c860e7467bf21fc",
+              "empty_layer": true
+            }
+          ],
+          "os": "linux",
+          "rootfs": {
+            "diff_ids": [
+              "sha256:44157061143cb91d5818b1f3d2dc2109476e3efcf3eb9e495c9eb5a7db49c170"
+            ],
+            "type": "layers"
+          }
+        },
+        "digest": "sha256:151e539a9fb442453c8294b31fe7a16c329382da262a1244619144efbf0e532b",
+        "platform": {
+          "architecture": "arm64",
+          "os": "linux"
+        },
+        "size": 65757914
+      }
+    ]
+  },
+  {
+    "configuration": {
+      "creationDate": "2026-05-27T22:09:03Z",
+      "descriptor": {
+        "annotations": {
+          "com.apple.containerization.image.name": "jmscontainers-fixture-a87d9b9a:8155454e44ff",
+          "io.containerd.image.name": "docker.io/library/jmscontainers-fixture-a87d9b9a:8155454e44ff",
+          "org.opencontainers.image.created": "2026-07-30T04:45:03Z",
+          "org.opencontainers.image.ref.name": "8155454e44ff"
+        },
+        "digest": "sha256:1efe3a3b29ff5231c183b6514196015a3c7ce2a1d91388c81d9f7723f68b1309",
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "size": 374
+      },
+      "name": "jmscontainers-fixture-a87d9b9a:8155454e44ff"
+    },
+    "id": "1efe3a3b29ff5231c183b6514196015a3c7ce2a1d91388c81d9f7723f68b1309",
+    "variants": [
+      {
+        "config": {
+          "architecture": "arm64",
+          "config": {
+            "Cmd": [
+              "/bin/bash"
+            ],
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+              "DISTTAG=f44container",
+              "FGC=f44",
+              "FBR=f44"
+            ],
+            "Labels": {
+              "jms.fingerprint": "8155454e44ff6c95ec40e4f7fc1adde0ba8d7c36e185ba244c860e7467bf21fc",
+              "jms.project": "a87d9b9a1a609d627a255eb505f84eadf937ceda83efd4fe155763d758bb3ac4",
+              "maintainer": "Clement Verna <cverna@fedoraproject.org>",
+              "org.opencontainers.image.title": "jms-fixture-base"
+            },
+            "WorkingDir": "/"
+          },
+          "created": "2026-05-27T22:09:03.56065412Z",
+          "history": [
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "LABEL maintainer=Clement Verna <cverna@fedoraproject.org>",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "ENV DISTTAG=f44container FGC=f44 FBR=f44",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "ADD fedora-20260527.tar / # buildkit"
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "CMD [\"/bin/bash\"]",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "LABEL org.opencontainers.image.title=jms-fixture-base",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "LABEL jms.project=a87d9b9a1a609d627a255eb505f84eadf937ceda83efd4fe155763d758bb3ac4 jms.fingerprint=8155454e44ff6c95ec40e4f7fc1adde0ba8d7c36e185ba244c860e7467bf21fc",
+              "empty_layer": true
+            }
+          ],
+          "os": "linux",
+          "rootfs": {
+            "diff_ids": [
+              "sha256:44157061143cb91d5818b1f3d2dc2109476e3efcf3eb9e495c9eb5a7db49c170"
+            ],
+            "type": "layers"
+          }
+        },
+        "digest": "sha256:151e539a9fb442453c8294b31fe7a16c329382da262a1244619144efbf0e532b",
+        "platform": {
+          "architecture": "arm64",
+          "os": "linux"
+        },
+        "size": 65757914
+      }
+    ]
+  },
+  {
+    "configuration": {
+      "creationDate": "2026-05-27T22:09:03Z",
+      "descriptor": {
+        "annotations": {
+          "com.apple.containerization.image.name": "jmscontainers-fixture-base:latest",
+          "io.containerd.image.name": "docker.io/library/jmscontainers-fixture-base:latest",
+          "org.opencontainers.image.created": "2026-07-30T04:45:00Z",
+          "org.opencontainers.image.ref.name": "latest"
+        },
+        "digest": "sha256:66efaf68e1b1cd0dffcb7416b5c39740bb0680004077c6d70bdda642407edce5",
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "size": 374
+      },
+      "name": "jmscontainers-fixture-base:latest"
+    },
+    "id": "66efaf68e1b1cd0dffcb7416b5c39740bb0680004077c6d70bdda642407edce5",
+    "variants": [
+      {
+        "config": {
+          "architecture": "arm64",
+          "config": {
+            "Cmd": [
+              "/bin/bash"
+            ],
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+              "DISTTAG=f44container",
+              "FGC=f44",
+              "FBR=f44"
+            ],
+            "Labels": {
+              "maintainer": "Clement Verna <cverna@fedoraproject.org>",
+              "org.opencontainers.image.title": "jms-fixture-base"
+            },
+            "WorkingDir": "/"
+          },
+          "created": "2026-05-27T22:09:03.56065412Z",
+          "history": [
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "LABEL maintainer=Clement Verna <cverna@fedoraproject.org>",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "ENV DISTTAG=f44container FGC=f44 FBR=f44",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "ADD fedora-20260527.tar / # buildkit"
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "CMD [\"/bin/bash\"]",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-05-27T22:09:03.56065412Z",
+              "created_by": "LABEL org.opencontainers.image.title=jms-fixture-base",
+              "empty_layer": true
+            }
+          ],
+          "os": "linux",
+          "rootfs": {
+            "diff_ids": [
+              "sha256:44157061143cb91d5818b1f3d2dc2109476e3efcf3eb9e495c9eb5a7db49c170"
+            ],
+            "type": "layers"
+          }
+        },
+        "digest": "sha256:28ef73b488c3cd82c0d7ba335ff8f93d98233cd5a200721d0ddb3a363054d495",
+        "platform": {
+          "architecture": "arm64",
+          "os": "linux"
+        },
+        "size": 65757471
+      }
+    ]
+  }
+]
