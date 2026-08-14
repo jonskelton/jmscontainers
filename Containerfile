@@ -6,6 +6,11 @@
 FROM registry.fedoraproject.org/fedora:latest
 
 # --allowerasing: the fedora base image ships curl-minimal, which conflicts with curl.
+# tzdata already arrives transitively; it is named anyway because `jms launch`
+# passes the host's zone in as TZ, and a zone name with no /usr/share/zoneinfo
+# entry behind it silently degrades to UTC -- the exact failure the inherited
+# zone exists to prevent. Naming it makes a future slimming pass argue with a
+# line rather than break dates quietly.
 RUN dnf -y upgrade && \
     dnf -y install --allowerasing \
         neovim tmux zsh \
@@ -15,7 +20,8 @@ RUN dnf -y upgrade && \
         ripgrep fd-find fzf bat tree zoxide \
         curl wget jq yq bind-utils iproute iputils nmap-ncat openssh-clients rsync \
         htop procps-ng lsof psmisc file less man-db which util-linux findutils hostname \
-        tar unzip zip xz zstd gh ShellCheck bubblewrap ca-certificates sudo && \
+        tar unzip zip xz zstd gh ShellCheck bubblewrap ca-certificates sudo \
+        tzdata && \
     dnf -y install --skip-unavailable eza git-delta && \
     dnf clean all
 
@@ -70,11 +76,17 @@ RUN printf '%s\n' \
 # /etc/profile), so bash-specific lines are guarded by BASH_VERSION.
 # ~/.config/jms-shell is the user's host-side shell config
 # (~/.local/share/jmscontainers/shell), mounted read-only by jms.
+# The date line states the day AND the zone abbreviation at every login, so a
+# container whose zone did not arrive announces itself in the first line of the
+# session rather than in an argument about a date three weeks later. JMS_BANNER
+# keeps it to once per session: a zsh login shell reads both /etc/profile.d and
+# /etc/zshrc, and unlike the exports around it, printing is not idempotent.
 RUN printf '%s\n' \
         'export EDITOR=nvim' \
         'export CLAUDE_CONFIG_DIR="$HOME/.claude"' \
         'export CLAUDE_CODE_DISABLE_MOUSE=1' \
         'export HOSTNAME=container' \
+        '[ -n "$PS1" ] && [ -z "$JMS_BANNER" ] && export JMS_BANNER=1 && date "+%a %Y-%m-%d %H:%M %Z"' \
         '[ -n "$PS1" ] && [ -n "$BASH_VERSION" ] && PS1="[\u@container \W]\\$ "' \
         '[ -n "$PS1" ] && [ -n "$BASH_VERSION" ] && [ -r "$HOME/.config/jms-shell/bashrc" ] && . "$HOME/.config/jms-shell/bashrc"' \
         'true' \
