@@ -197,6 +197,19 @@ tier_a() {
         fail "SIGTERM left container $name behind"
     fi
 
+    # Time zone: the container renders dates in the host's zone, not UTC.  The
+    # offset comparison is vacuous on a UTC host, so a host that states a zone
+    # at all must also see a nonempty TZ inside.  --bin bypasses the login
+    # profile deliberately: what is under test is the inherited environment.
+    host_offset=$(date +%z)
+    offset_inside=$(launch_out "$proj" --bin /bin/sh -- -c 'date +%z' | tr -d '[:space:]')
+    [ "$offset_inside" = "$host_offset" ] \
+        || fail "in-container UTC offset is $offset_inside, host is $host_offset"
+    if [ -L /etc/localtime ]; then
+        tz_inside=$(launch_out "$proj" --bin /bin/sh -- -c 'printf %s "$TZ"' | tr -d '[:space:]')
+        [ -n "$tz_inside" ] || fail "host states a zone but TZ did not reach the container"
+    fi
+
     # Read-only shell state: writing to the shell-state target fails.
     if launch_out "$proj" --bin /bin/sh -- -c 'touch "$HOME/.config/jms-shell/x"' 2>/dev/null; then
         fail "shell-state mount was writable"
@@ -283,6 +296,11 @@ tier_b() {
     value=$(jms launch --trust --no-auth -w "$proj" --bin /bin/sh -- -c 'echo "$JMS_ITEST"' \
             | tr -d '[:space:]')
     [ "$value" = parity ] || fail "manifest env var not visible inside the container"
+    # A pinned zone replaces the inherited one, and reaches the runtime once.
+    printf '[env]\nJMS_ITEST = "parity"\nTZ = "Asia/Tokyo"\n' > "$proj/.jmscontainer/jmscontainer.toml"
+    value=$(jms launch --trust --no-auth -w "$proj" --bin /bin/sh -- -c 'date +%z' \
+            | tr -d '[:space:]')
+    [ "$value" = "+0900" ] || fail "manifest TZ pin did not win: offset inside is $value"
     probe="itest-auth-probe-$$"
     jms launch --trust --auth -w "$proj" --bin /bin/sh -- \
         -c 'echo "$CLAUDE_CONFIG_DIR" > "$HOME/.claude/'"$probe"'"'
