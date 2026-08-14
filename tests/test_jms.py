@@ -526,6 +526,12 @@ class PreserveHostPathTests(unittest.TestCase):
             with self.assertRaisesRegex(JMS.JMSException, "reserved mount target"):
                 JMS.project_mount_target(root, self.preserved(), self.HOME)
 
+    def test_a_relative_or_denormalized_root_is_refused(self):
+        """Unreachable through canon(), but a relative target matches no prefix guard."""
+        for root in (b"relative/path", b"/opt/./project", b"/opt/project/", b"/opt/../etc"):
+            with self.assertRaisesRegex(JMS.JMSException, "absolute, normalized"):
+                JMS.project_mount_target(root, self.preserved(), self.HOME)
+
     def test_root_user_home_is_refused_under_its_own_effective_home(self):
         """--root moves the home to /root, which is also critical: refused twice over."""
         with self.assertRaises(JMS.JMSException):

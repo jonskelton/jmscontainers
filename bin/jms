@@ -1177,8 +1177,12 @@ def project_mount_target(root: bytes, config: dict, home: str) -> str:
     # runtime_path() first: NUL, non-UTF-8, and the runtime's mount grammar
     # are rejected before the path is reasoned about as a container target.
     target = runtime_path(root)
-    if target != os.path.normpath(target):
-        fail("run.preserve_host_path needs a normalized project path: " + quote(root))
+    # canon() already returns an absolute, normalized path, so this is a guard
+    # against a future caller rather than a reachable manifest input -- but the
+    # value becomes a mount target in argv, and a relative one would pass every
+    # check below by matching no absolute prefix at all.
+    if not target.startswith("/") or target != os.path.normpath(target):
+        fail("run.preserve_host_path needs an absolute, normalized project path: " + quote(root))
     if shadows_critical_path(target):
         fail("run.preserve_host_path would mount the project over container system state at "
              + quote(target) + " -- move the checkout or drop the key")
