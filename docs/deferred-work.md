@@ -9,7 +9,7 @@ Opened 2026-08-03 from a review of the rootless Podman backend at `b54c1c0`.
 The four items that review raised as cheap and verifiable from source were
 fixed on `1.1.x-bugfixes`; these are the ones that were not, because each
 needs a qualified host, changes launch behavior, or is a product decision
-rather than a defect.
+rather than a defect. Items after DW-005 have other origins and name them.
 
 Status values:
 
@@ -23,6 +23,7 @@ Status values:
 | DW-003 | Reproducible base-image inputs | Accepted | Medium | A product decision (see below) |
 | DW-004 | Qualify `--group-add=keep-groups` | Accepted | Small | Next Debian 13 qualification run |
 | DW-005 | `jms doctor` diagnostic | Proposed | Small–medium | Judgment; DW-002 may cover most of the need |
+| DW-006 | Make `/etc/localtime` agree with the inherited zone | Proposed | Small | Judgment; nothing observed reads it |
 
 Suggested order: **DW-002 → DW-001**, since changing launch argv without a
 real-Podman feedback loop is how a boundary regression ships unnoticed.
@@ -223,3 +224,47 @@ surface.
 ### Done when
 
 A decision is recorded here either way.
+
+---
+
+## DW-006 — `/etc/localtime` still says UTC
+
+**Status:** Proposed — recorded, not accepted. Raised by the Unreleased change
+that makes a launch inherit the host's time zone.
+
+`jms launch` passes the host's zone in as `TZ`, which is what glibc, Python,
+and git actually read, so dates inside a container are local. `/etc/localtime`
+is untouched and still points at `Etc/UTC`, because the zone is not known when
+the base image is built.
+
+### Why it might matter
+
+The two disagree, and a reader checking the container's configuration rather
+than its behavior finds the wrong answer:
+
+```
+$ date +%Z                    # PDT   -- correct
+$ readlink -f /etc/localtime  # .../Etc/UTC   -- stale
+```
+
+Anything that reads the file directly instead of consulting `TZ` gets UTC.
+Nothing in the base image is known to do so, which is why this is Proposed
+rather than Accepted — the case rests on defense in depth and on not leaving
+a contradiction for the next person to debug, not on an observed failure.
+
+### What to do, if it is accepted
+
+The zone arrives at launch, not at build, so the relink has to happen per
+session — a snippet in `/etc/profile.d/jms.sh` calling `sudo -n ln -sf
+/usr/share/zoneinfo/"$TZ" /etc/localtime` (and writing `/etc/timezone`, which
+Fedora omits). Costs: a `sudo` call on every shell start, a mutation of `/etc`
+in a container whose value is being disposable, and coverage only for shells —
+`jms launch --bin` bypasses the profile entirely, so the file and the
+environment would still disagree there. A build-time `ARG TZ` was considered
+and rejected: it pins one zone into a base image shared by every project.
+
+### Done when
+
+A decision is recorded here either way. If it is declined, say so in
+[cli.md](cli.md#launch), which already states that `/etc/localtime` is left
+alone, so that the disagreement reads as designed rather than overlooked.
