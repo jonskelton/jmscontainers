@@ -200,13 +200,14 @@ class LaunchPlan:
     name: str                            # container name (given or generated)
     user: str                            # "isolation" | "root" -- the single user-mode authority
     tty: bool                            # append the runtime's --tty
-    workdir: str                         # "/work" or "/work/<inner>"
+    workdir: str                         # project target, or "<target>/<inner>";
+                                         # target is "/work" unless run.preserve_host_path
     entrypoint: str                      # entry[0]
     image: str
     labels: tuple                        # ordered (key, value) pairs
     env: tuple                           # ordered (key, value) pairs; CLAUDE_CONFIG_DIR first when present,
                                          # then inherited TZ and manifest env merged and sorted together
-    mounts: tuple                        # ordered (source, target, readonly); /work first
+    mounts: tuple                        # ordered (source, target, readonly); project mount first
     command: tuple                       # entry[1:] + extra argv
 
     def __post_init__(self):
@@ -1142,8 +1143,54 @@ def target_overlaps_reserved(value: str, home: str) -> bool:
                for target in reserved_mount_targets(home))
 
 
+# Container paths the project mount must never cover or land inside.  Only
+# run.preserve_host_path can steer the project mount away from "/work", and
+# only as far as the checkout's own host path -- but a checkout under /etc or
+# /usr would shadow the image's system state, and one under /proc or /dev
+# would reach into kernel state, so those host locations lose the key rather
+# than the container losing its integrity.
+CRITICAL_CONTAINER_PATHS = ("/bin", "/boot", "/dev", "/etc", "/lib", "/lib64",
+                            "/proc", "/root", "/run", "/sbin", "/sys", "/usr", "/var")
+
+
+def shadows_critical_path(value: str) -> bool:
+    """True when mounting at `value` would cover, contain, or sit in system state."""
+    return value == "/" or any(value == path or value.startswith(path + "/")
+                               or path.startswith(value + "/")
+                               for path in CRITICAL_CONTAINER_PATHS)
+
+
+def project_mount_target(root: bytes, config: dict, home: str) -> str:
+    """Container path for the project mount: "/work", or the host path itself.
+
+    Tools that key per-project state on the working directory -- Claude Code's
+    ~/.claude/projects/<escaped-cwd> is the motivating case -- cannot share
+    that state between host and container under the default "/work", because
+    every project collides on one key inside the container while each has its
+    own key outside.  run.preserve_host_path makes the two paths identical so
+    the keys agree.  The manifest chooses only whether to preserve the path,
+    never what the path is: the value is the checkout location the user
+    already picked, so a hostile manifest gains no new target here.
+    """
+    if not config["preserve_host_path"]:
+        return "/work"
+    # runtime_path() first: NUL, non-UTF-8, and the runtime's mount grammar
+    # are rejected before the path is reasoned about as a container target.
+    target = runtime_path(root)
+    if target != os.path.normpath(target):
+        fail("run.preserve_host_path needs a normalized project path: " + quote(root))
+    if shadows_critical_path(target):
+        fail("run.preserve_host_path would mount the project over container system state at "
+             + quote(target) + " -- move the checkout or drop the key")
+    if target_overlaps_reserved(target, home):
+        fail("run.preserve_host_path collides with a reserved mount target at "
+             + quote(target) + " -- move the checkout or drop the key")
+    return target
+
+
 def default_config():
-    return {"name": None, "env": {}, "mounts": [], "entry": ["/bin/bash", "-l"], "mount_auth": True}
+    return {"name": None, "env": {}, "mounts": [], "entry": ["/bin/bash", "-l"],
+            "mount_auth": True, "preserve_host_path": False}
 
 
 def parse_manifest(raw: bytes | None) -> dict:
@@ -1175,7 +1222,7 @@ def parse_manifest(raw: bytes | None) -> dict:
     if type(run) is not dict: err("run")
     else:
         for key in run:
-            if key not in {"entry", "mount_auth"}: err("run." + key)
+            if key not in {"entry", "mount_auth", "preserve_host_path"}: err("run." + key)
         if "entry" in run:
             entry = run["entry"]
             if type(entry) is not list or not entry or any(type(x) is not str or "\0" in x for x in entry) or not entry[0]: err("run.entry")
@@ -1183,6 +1230,9 @@ def parse_manifest(raw: bytes | None) -> dict:
         if "mount_auth" in run:
             if type(run["mount_auth"]) is not bool: err("run.mount_auth")
             else: config["mount_auth"] = run["mount_auth"]
+        if "preserve_host_path" in run:
+            if type(run["preserve_host_path"]) is not bool: err("run.preserve_host_path")
+            else: config["preserve_host_path"] = run["preserve_host_path"]
     mounts = data.get("mounts", [])
     if type(mounts) is not list: err("mounts")
     else:
@@ -1220,7 +1270,9 @@ def print_capability_summary(root: bytes, config: dict) -> None:
     print("Project container capabilities:", file=sys.stderr)
     print("- build and run: arbitrary commands with unrestricted network and root via passwordless sudo",
           file=sys.stderr)
-    print("- project mount: " + quote(root) + " -> \"/work\" read-write", file=sys.stderr)
+    print("- project mount: " + quote(root) + " -> "
+          + (quote(root) + " (host path preserved)" if config["preserve_host_path"] else "\"/work\"")
+          + " read-write", file=sys.stderr)
     for mount in config["mounts"]:
         mode = "read-only" if mount["readonly"] else "read-write"
         print("- extra mount: " + quote(mount["source"]) + " -> " + quote(mount["target"]) + " " + mode,
@@ -1295,7 +1347,9 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
             fail("project trust is required but prompting is unavailable", 3)
         print(quote(root) + " defines a custom container (trust fingerprint " + tf[:12] + ").",
               file=sys.stderr)
-        print("Approving lets it run arbitrary commands at build and run time and mount the project read-write at /work.",
+        print("Approving lets it run arbitrary commands at build and run time and mount the project read-write at "
+              + ("its own host path " + quote(root) + " (run.preserve_host_path)."
+                 if (config or default_config())["preserve_host_path"] else "/work."),
               file=sys.stderr)
         if consent_input("Allow build & run? [y/N] ").strip().lower() not in ("y", "yes"):
             fail("project trust declined", 3)
@@ -1666,21 +1720,32 @@ def launch_plan(workdir: bytes, data, args, image: str, auth: bool) -> LaunchPla
     if data:
         mount = data["root"]
         inner = os.path.relpath(os.fsdecode(workdir), os.fsdecode(data["root"]))
-        container_workdir = "/work" if inner == "." else "/work/" + inner
         pid, config = data["pid"], data["config"]
     else:
-        mount, container_workdir = workdir, "/work"
+        mount, inner = workdir, "."
         pid, config = hashlib.sha256(workdir).hexdigest(), default_config()
     generated_slug = config["name"] if data and config["name"] else slug(mount.rsplit(b"/", 1)[-1])
     name = args.container_name or "jms-%s-%s" % (generated_slug, os.urandom(4).hex())
     entry = [args.bin] if args.bin is not None else config["entry"]
     user = "root" if args.root else "isolation"
     effective_home = "/root" if user == "root" else "/home/" + user
+    # The project target is re-derived against the effective home, so a
+    # preserved host path is refused under --root on the same terms as any
+    # manifest mount rather than landing somewhere the manifest did not name.
+    project_target = project_mount_target(mount, config, effective_home)
+    container_workdir = project_target if inner == "." else project_target + "/" + inner
     for extra_mount in config["mounts"]:
         target = extra_mount["target"]
         if not valid_target(target, effective_home) or target_overlaps_reserved(target, effective_home):
             fail("manifest mount target is not allowed for the effective runtime user"
                  + (" under --root" if args.root else "") + ": " + quote(target))
+        # "/work" is a reserved target, so the check above covers the default
+        # project mount; a preserved host path is outside that set and needs
+        # its own overlap check against the same manifest targets.
+        if (target == project_target or target.startswith(project_target + "/")
+                or project_target.startswith(target + "/")):
+            fail("manifest mount target overlaps the project mount at "
+                 + quote(project_target) + ": " + quote(target))
     mount_auth = auth and (config["mount_auth"] or args.auth)
     env = []
     if mount_auth:
@@ -1697,7 +1762,7 @@ def launch_plan(workdir: bytes, data, args, image: str, auth: bool) -> LaunchPla
         inherited["TZ"] = zone
     inherited.update(config["env"])
     env += sorted(inherited.items())
-    mounts = [(mount, "/work", False)]
+    mounts = [(mount, project_target, False)]
     for extra_mount in config["mounts"]:
         mounts.append((extra_mount["source"], extra_mount["target"], extra_mount["readonly"]))
     shell_source, shell_target = shell_state_mount(user)

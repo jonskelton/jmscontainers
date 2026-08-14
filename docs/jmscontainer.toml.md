@@ -21,6 +21,7 @@ readonly = true
 [run]
 entry = ["/bin/bash", "-l"]
 mount_auth = true
+preserve_host_path = false
 ```
 
 ## Schema
@@ -37,9 +38,10 @@ coercion is performed, and floats and datetimes are accepted nowhere.
 | `mounts[].source` | string | — | Required, nonempty host path. `~`, `$VAR`, and `${VAR}` expand once from the host environment; unset or empty expansions fail. The result must be absolute and must already exist: jms canonicalizes it (resolving symlinks) while parsing, so a missing source is a manifest error. |
 | `mounts[].target` | string | — | Required, absolute container path under the allowlist in [Mount targets](#mount-targets). Targets may not overlap each other or any reserved path. |
 | `mounts[].readonly` | boolean | `true` | Set `false` only when the container must write the host path. |
-| `run` | table | defaults below | Only `entry` and `mount_auth`. |
+| `run` | table | defaults below | Only `entry`, `mount_auth`, and `preserve_host_path`. |
 | `run.entry` | array of strings | `["/bin/bash", "-l"]` | Nonempty; first element nonempty; no element contains NUL. |
 | `run.mount_auth` | boolean | `true` | The key name is historical: it gates the agent-state mount (credentials and configuration). If false, mounting requires the user to type `--auth`; it does not change the approval record or prompts. |
+| `run.preserve_host_path` | boolean | `false` | Mount the project at its own host path instead of `/work`, so a path-keyed tool resolves the same key inside and outside. See [Project mount path](#project-mount-path). |
 
 Any byte change under `.jmscontainer/` — including this manifest — changes the
 trust fingerprint and requires fresh consent.
@@ -78,6 +80,46 @@ the year and silently wrong for the rest, which is harder to notice than
 being wrong all the time. The pinned value is manifest content, so it is
 covered by the trust fingerprint and changing it requires fresh consent.
 
+## Project mount path
+
+By default the checkout mounts at `/work`, and every project therefore has
+the same path inside its container. Tools that key per-project state on the
+working directory see that as one shared project: Claude Code stores state
+under `~/.claude/projects/<cwd with slashes as dashes>`, which is `-work` for
+every jms project at once, while the same checkout on the host has a key of
+its own. State cannot be shared in either direction, and unrelated projects
+share a key inside.
+
+`run.preserve_host_path = true` mounts the checkout at its own absolute host
+path instead, so the two keys agree:
+
+```toml
+[run]
+preserve_host_path = true
+```
+
+The manifest chooses only *whether* to preserve the path, never what the path
+is — the value is the checkout location you already picked — so the key grants
+a project no target it did not already have. jms still refuses the mount when
+the resulting path would damage the container:
+
+- a path that is, contains, or sits inside `/`, `/bin`, `/boot`, `/dev`,
+  `/etc`, `/lib`, `/lib64`, `/proc`, `/root`, `/run`, `/sbin`, `/sys`,
+  `/usr`, or `/var` — a checkout under `/etc` would shadow the image's own
+  system state, and one under `/proc` would reach into kernel state;
+- a path that overlaps a reserved target (below), including `/home` itself,
+  which would swallow the agent-state mounts;
+- any manifest `[[mounts]]` target that overlaps the preserved path.
+  `/work` is a reserved target, so the default mount is already protected
+  from this; a preserved path is checked separately at launch.
+
+Because `--root` moves the effective home to `/root`, a checkout under `/root`
+is refused rather than landing somewhere the manifest did not name.
+
+The key is manifest content: turning it on changes the trust fingerprint and
+requires fresh consent, and the consent summary names the path that will be
+mounted.
+
 ## Mount targets
 
 A `target` is an absolute, normalized container path: no trailing slash, no
@@ -92,7 +134,8 @@ grammar cannot carry the first two). It must sit under one of four prefixes:
 
 and it may not be, contain, or sit inside a reserved target:
 
-- `/work` — the project mount
+- `/work` — the project mount (still reserved when
+  [`run.preserve_host_path`](#project-mount-path) moves the project elsewhere)
 - `/home/isolation/.claude`, `/home/isolation/.codex`,
   `/home/isolation/.local/share/opencode`, `/home/isolation/.config/opencode`
   — the agent-state mounts

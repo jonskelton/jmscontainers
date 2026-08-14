@@ -481,6 +481,93 @@ class ManifestTests(unittest.TestCase):
                     JMS.expand_mount_source(expression)
 
 
+class PreserveHostPathTests(unittest.TestCase):
+    """run.preserve_host_path: the project mount keeps its host path.
+
+    The manifest chooses only whether to preserve the path, never what the
+    path is, so the adversarial surface is a hostile *checkout location*
+    combined with the key -- not a hostile target string.
+    """
+    HOME = "/home/isolation"
+
+    def preserved(self, **overrides):
+        return dict(JMS.default_config(), preserve_host_path=True, **overrides)
+
+    def test_manifest_accepts_the_boolean_and_rejects_anything_else(self):
+        self.assertFalse(JMS.parse_manifest(None)["preserve_host_path"])
+        self.assertTrue(JMS.parse_manifest(b"[run]\npreserve_host_path = true\n")["preserve_host_path"])
+        self.assertFalse(JMS.parse_manifest(b"[run]\npreserve_host_path = false\n")["preserve_host_path"])
+        for raw in (b'[run]\npreserve_host_path = "yes"\n', b"[run]\npreserve_host_path = 1\n"):
+            with self.assertRaisesRegex(JMS.JMSException, "run.preserve_host_path"):
+                JMS.parse_manifest(raw)
+
+    def test_default_never_consults_the_host_path(self):
+        """Off, even a checkout at /etc must still resolve to "/work"."""
+        for root in (b"/etc/project", b"/", b"/usr/local/src"):
+            self.assertEqual(JMS.project_mount_target(root, JMS.default_config(), self.HOME), "/work")
+
+    def test_ordinary_checkout_is_preserved_verbatim(self):
+        for root in (b"/home/jskelton/git/finance", b"/opt/project", b"/srv/x", b"/tmp/scratch/p"):
+            self.assertEqual(JMS.project_mount_target(root, self.preserved(), self.HOME),
+                             os.fsdecode(root))
+
+    def test_critical_container_paths_are_refused(self):
+        for path in ("/", "/etc", "/usr", "/usr/local/src", "/dev/shm/p", "/proc/x", "/var/tmp/p"):
+            self.assertTrue(JMS.shadows_critical_path(path), path)
+        for path in ("/home/x/p", "/opt/p", "/srv/p", "/tmp/p", "/mnt/p", "/work"):
+            self.assertFalse(JMS.shadows_critical_path(path), path)
+        for root in (b"/etc/project", b"/usr/local/src/p", b"/proc/p", b"/"):
+            with self.assertRaisesRegex(JMS.JMSException, "container system state"):
+                JMS.project_mount_target(root, self.preserved(), self.HOME)
+
+    def test_a_checkout_that_would_swallow_a_reserved_mount_is_refused(self):
+        """/home shadows the agent-state mounts; .claude collides outright."""
+        for root in (b"/home", b"/home/isolation", b"/home/isolation/.claude/p", b"/work", b"/work/p"):
+            with self.assertRaisesRegex(JMS.JMSException, "reserved mount target"):
+                JMS.project_mount_target(root, self.preserved(), self.HOME)
+
+    def test_root_user_home_is_refused_under_its_own_effective_home(self):
+        """--root moves the home to /root, which is also critical: refused twice over."""
+        with self.assertRaises(JMS.JMSException):
+            JMS.project_mount_target(b"/root/git/p", self.preserved(), "/root")
+
+    def plan_for(self, root, config, root_user=False):
+        args = types.SimpleNamespace(container_name=None, bin=None, root=root_user,
+                                     auth=False, extra=[])
+        data = {"root": root, "pid": "a" * 64, "config": config}
+        with mock.patch.object(JMS, "ensure_shell_state_directory"), \
+             mock.patch.object(JMS, "ensure_agent_state_directory"):
+            return JMS.launch_plan(root, data, args, "img", False)
+
+    def test_manifest_mount_inside_the_preserved_project_is_refused(self):
+        """"/work" is reserved so it covers the default mount; a host path is not."""
+        config = self.preserved(mounts=[{"source": b"/tmp", "target": "/opt/project/inner",
+                                         "readonly": True}])
+        with self.assertRaisesRegex(JMS.JMSException, "overlaps the project mount"):
+            self.plan_for(b"/opt/project", config)
+
+    def test_manifest_mount_containing_the_preserved_project_is_refused(self):
+        config = self.preserved(mounts=[{"source": b"/tmp", "target": "/opt/project",
+                                         "readonly": True}])
+        with self.assertRaisesRegex(JMS.JMSException, "overlaps the project mount"):
+            self.plan_for(b"/opt/project/deep", config)
+
+    def test_a_disjoint_manifest_mount_still_launches(self):
+        config = self.preserved(mounts=[{"source": b"/tmp", "target": "/opt/other",
+                                         "readonly": True}])
+        plan = self.plan_for(b"/opt/project", config)
+        self.assertEqual(plan.workdir, "/opt/project")
+        self.assertEqual(plan.mounts[0], (b"/opt/project", "/opt/project", False))
+
+    def test_the_same_overlap_is_allowed_when_the_key_is_off(self):
+        """Off, the project sits at /work, so /opt/project/inner no longer collides."""
+        config = dict(JMS.default_config(),
+                      mounts=[{"source": b"/tmp", "target": "/opt/project/inner",
+                               "readonly": True}])
+        plan = self.plan_for(b"/opt/project", config)
+        self.assertEqual(plan.workdir, "/work")
+
+
 class DiscoveryTests(unittest.TestCase):
     def test_discovery_ceiling_nested_and_invalid_marker_matrix(self):
         with sandbox() as home:
@@ -1252,6 +1339,42 @@ class LaunchTests(unittest.TestCase):
                                         images={JMS.BASE: image_record(JMS.BASE)})
             self.assertIn(self.MOUNT + os.fsdecode(canonical) + ",target=/work",
                           " ".join(argv))
+
+    def test_preserve_host_path_mounts_the_project_at_its_own_path(self):
+        with sandbox() as home:
+            root = make_project(home, manifest=b"[run]\npreserve_host_path = true\n")
+            data = JMS.project_data(JMS.canon(os.fsencode(root)))
+            tag = data["tag_prefix"] + ":" + data["tf"][:12]
+            argv = self.launch_argv(home, ["launch", "--trust", "--no-auth", "-w", str(root)],
+                                    images={tag: image_record(tag)})
+            root_text = os.fsdecode(JMS.canon(os.fsencode(root)))
+            self.assertEqual(argv[argv.index("--workdir") + 1], root_text)
+            self.assertIn(self.MOUNT + root_text + ",target=" + root_text, argv)
+            self.assertNotIn("/work", " ".join(argv))
+
+    def test_preserve_host_path_keeps_the_inner_workdir_suffix(self):
+        with sandbox() as home:
+            root = make_project(home, manifest=b"[run]\npreserve_host_path = true\n")
+            inner = root / "sub" / "deeper"
+            inner.mkdir(parents=True)
+            data = JMS.project_data(JMS.canon(os.fsencode(root)))
+            tag = data["tag_prefix"] + ":" + data["tf"][:12]
+            argv = self.launch_argv(home, ["launch", "--trust", "--no-auth", "-w", str(inner)],
+                                    images={tag: image_record(tag)})
+            root_text = os.fsdecode(JMS.canon(os.fsencode(root)))
+            self.assertEqual(argv[argv.index("--workdir") + 1], root_text + "/sub/deeper")
+
+    def test_default_project_mount_is_unchanged_without_the_key(self):
+        """The opt-in is the only thing that moves the mount; absence is "/work"."""
+        with sandbox() as home:
+            root = make_project(home, manifest=b"[run]\npreserve_host_path = false\n")
+            data = JMS.project_data(JMS.canon(os.fsencode(root)))
+            tag = data["tag_prefix"] + ":" + data["tf"][:12]
+            argv = self.launch_argv(home, ["launch", "--trust", "--no-auth", "-w", str(root)],
+                                    images={tag: image_record(tag)})
+            self.assertEqual(argv[argv.index("--workdir") + 1], "/work")
+            root_text = os.fsdecode(JMS.canon(os.fsencode(root)))
+            self.assertIn(self.MOUNT + root_text + ",target=/work", argv)
 
 
     def test_launch_inherits_the_host_timezone(self):
