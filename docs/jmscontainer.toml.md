@@ -32,7 +32,7 @@ coercion is performed, and floats and datetimes are accepted nowhere.
 | --- | --- | --- | --- |
 | `schema` | integer | `1` | Must be `1`; a newer integer version fails closed and asks for a newer `jms`. |
 | `name` | string | project-directory slug | Cosmetic slug for generated container names. Must match `^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`. It does not affect the project ID, but it is manifest content: changing it changes the trust fingerprint, and the image tag ends in that fingerprint. |
-| `env` | table | empty | Environment names match `^[A-Za-z_][A-Za-z0-9_]*$`; values are strings without NUL or newline. |
+| `env` | table | empty | Environment names match `^[A-Za-z_][A-Za-z0-9_]*$`; values are strings without NUL or newline. `TZ` is special only in that `launch` supplies a default from the host: see [Time zone](#time-zone). |
 | `mounts` | array of tables | empty | Each item has `source`, `target`, and optional `readonly` only. |
 | `mounts[].source` | string | — | Required, nonempty host path. `~`, `$VAR`, and `${VAR}` expand once from the host environment; unset or empty expansions fail. The result must be absolute and must already exist: jms canonicalizes it (resolving symlinks) while parsing, so a missing source is a manifest error. |
 | `mounts[].target` | string | — | Required, absolute container path under the allowlist in [Mount targets](#mount-targets). Targets may not overlap each other or any reserved path. |
@@ -57,6 +57,26 @@ so such a mount may resolve and pass approval on the host and still be
 unreadable or unwritable inside the container. jms performs no preflight
 detection of this; the failure surfaces in the container. The same rule
 applies to the project tree itself.
+
+## Time zone
+
+`jms launch` passes the host's IANA zone into every container as `TZ`, so
+dates written inside a container are your local calendar dates rather than
+the image default of UTC (see [the CLI reference](cli.md#launch)). Setting
+`TZ` in `[env]` replaces that inherited value:
+
+```toml
+[env]
+TZ = "America/Los_Angeles"
+```
+
+Pin it when the project's dates are decisions rather than telemetry — a
+record whose dates must read the same whether the session ran on a laptop,
+a colleague's machine, or a UTC CI runner. Use an IANA zone name, never a
+fixed offset: `Etc/GMT+7` and a hardcoded `-0700` are correct for part of
+the year and silently wrong for the rest, which is harder to notice than
+being wrong all the time. The pinned value is manifest content, so it is
+covered by the trust fingerprint and changing it requires fresh consent.
 
 ## Mount targets
 

@@ -136,6 +136,11 @@ cannot read files outside it. Never put secrets there. Add
 `.jmscontainer/jmscontainer.toml` when you need extra mounts, environment
 variables, or a different entrypoint.
 
+A container runs in your host's time zone, so dates written inside it are
+your local calendar dates. Pin one with `[env] TZ` when a project's dates
+must not vary with the machine the session runs on — see
+[Time zone](docs/jmscontainer.toml.md#time-zone).
+
 - [Project image guide](docs/project-images.md): discovery, build context,
   standalone images, and the required `isolation` user ABI
 - [`jmscontainer.toml` reference](docs/jmscontainer.toml.md): complete schema

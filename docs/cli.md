@@ -131,6 +131,19 @@ in an agent session with permission prompts disabled; extra agent arguments
 go after `--`. An entrypoint bypasses the login-shell profile, and the
 container exits when the entry program does.
 
+Every launch passes the host's IANA time zone into the container as `TZ`, so
+`date`, language runtimes, and git commit stamps render your local calendar
+date rather than the image default of UTC. The zone is resolved from `TZ`,
+then the target of the `/etc/localtime` symlink, then `/etc/timezone`, and
+only a name that exists in the host's own `/usr/share/zoneinfo` is used: a
+POSIX rule string such as `PST8PDT,M3.2.0,M11.1.0` is not a zone name and the
+next source is tried instead. A host that states no resolvable zone gets no
+`TZ` argument and the container stays UTC. A project that must not vary with
+the machine it runs on pins the zone in its manifest — `[env] TZ` replaces
+the inherited value rather than competing with it, and exactly one `TZ`
+reaches the runtime. `/etc/localtime` inside the container is untouched and
+still points at UTC; `TZ` is what the C library, Python, and git read.
+
 Every launch also mounts `~/.local/share/jmscontainers/shell/` (created on
 first use) read-only at `~/.config/jms-shell` in the container; the base
 image sources `bashrc`/`zshrc` from it in interactive shells. This mount is
@@ -218,6 +231,12 @@ global sweep.
   boolean `--trust` flag never grants credential access; combined with
   `--auth` it still asks the credential question on a TTY and fails closed
   without one.
+- `TZ`: read from the host, not defined by jms. When it names a zone present
+  in the host's `/usr/share/zoneinfo`, it is the first source `launch` uses
+  for the zone it passes into the container; otherwise `/etc/localtime` and
+  `/etc/timezone` are tried in that order. Setting it changes only which zone
+  is inherited — it is never passed through unexamined, and a manifest
+  `[env] TZ` overrides it.
 - `JMS_RUNTIME_ACCEPT` (apple/container only): accept one exact `container`
   version newer than the newest runtime this jms release is qualified
   against, for one invocation, with a "not qualified" warning (e.g.

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **Containers now run in the host's time zone.** The base image selects no
+  zone, so every container labelled its instants UTC: the clock agreed with
+  the host to the minute while `date` named the wrong *day* for anyone whose
+  evening is the next UTC morning — and a tool writing dates wrote them
+  wrong, confidently. `jms launch` resolves the host's IANA zone (from `TZ`,
+  the `/etc/localtime` symlink, or `/etc/timezone`) and passes it as `TZ`,
+  so `date`, language runtimes, and git commit stamps all render your local
+  calendar date. Only a name present in the host's own zoneinfo tree is
+  accepted; a host that states no resolvable zone gets no `TZ` and behaves
+  exactly as before. A manifest `[env] TZ` replaces the inherited value
+  rather than competing with it, for a project whose dates must not vary
+  with the machine the session runs on. `/etc/localtime` inside the
+  container is unchanged and still reads UTC.
+
+- **The login banner states the day and the zone.** A container whose zone
+  did not arrive answers `date` just as confidently as one configured
+  correctly, so interactive logins now open with `Thu 2026-08-13 18:34 PDT`.
+  The base image also names `tzdata` in its package list instead of relying
+  on it arriving transitively: an inherited zone with no zoneinfo entry
+  behind it degrades silently to UTC.
+
 - **A build can no longer garbage-collect the image it just produced.**
   Runtime creation times are whole seconds, so a project build landing in
   the same second as an earlier one tied in the retention ordering and fell

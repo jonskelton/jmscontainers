@@ -204,7 +204,8 @@ class LaunchPlan:
     entrypoint: str                      # entry[0]
     image: str
     labels: tuple                        # ordered (key, value) pairs
-    env: tuple                           # ordered (key, value) pairs; CLAUDE_CONFIG_DIR first when present
+    env: tuple                           # ordered (key, value) pairs; CLAUDE_CONFIG_DIR first when present,
+                                         # then inherited TZ and manifest env merged and sorted together
     mounts: tuple                        # ordered (source, target, readonly); /work first
     command: tuple                       # entry[1:] + extra argv
 
@@ -1606,6 +1607,60 @@ def validate_launch_cli_runtime_args(args) -> None:
         runtime_argument(value)
 
 
+# Where a resolved /etc/localtime target can live.  The last two are the
+# macOS host case: /etc/localtime points into /var/db/timezone, and /var is
+# itself a symlink to /private/var, so a resolved target can take either form.
+ZONEINFO_ROOTS = ("/usr/share/zoneinfo/posix/", "/usr/share/zoneinfo/",
+                  "/private/var/db/timezone/zoneinfo/", "/var/db/timezone/zoneinfo/")
+# IANA zone names: "America/Argentina/Buenos_Aires", "Etc/GMT+7", "PST8PDT".
+# No dots, so no component can be "." or "..", and no traversal is expressible.
+ZONE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9+_-]*(?:/[A-Za-z0-9+_-]+)*")
+
+
+def zone_exists(name: str, roots) -> bool:
+    return any(os.path.isfile(root + name) for root in roots)
+
+
+def host_timezone(roots=ZONEINFO_ROOTS, localtime="/etc/localtime",
+                  timezone_file="/etc/timezone") -> str | None:
+    """The host's IANA zone name, or None when the host states no usable one.
+
+    Passed into every launch as TZ, so that dates written inside a container
+    are the user's local calendar dates rather than the image default (UTC).
+    Only a name that exists in the host's own zoneinfo tree is returned: the
+    value becomes a runtime `--env` argument, and an unchecked one would be
+    host-controlled argv.  A POSIX rule string (`PST8PDT,M3.2.0,M11.1.0`)
+    fails the grammar deliberately and the next source is tried instead; a
+    host that states no resolvable zone yields None and no TZ argument at
+    all, which is the behavior every release before this one had.
+    """
+    candidates = []
+    tz = os.environ.get("TZ", "")
+    candidates.append(tz[1:] if tz.startswith(":") else tz)  # POSIX allows a leading colon
+    try:
+        target = os.readlink(localtime)
+    except OSError:
+        pass  # absent, or a copied file rather than a symlink: try /etc/timezone
+    else:
+        # Debian links relatively (../usr/share/zoneinfo/...), so resolve
+        # against the link's own directory before matching a root.
+        if not target.startswith("/"):
+            target = os.path.normpath(os.path.join(os.path.dirname(localtime), target))
+        for root in roots:
+            if target.startswith(root):
+                candidates.append(target[len(root):])
+                break
+    try:
+        with open(timezone_file, "r", encoding="utf-8") as handle:
+            candidates.append(handle.readline().strip())
+    except OSError:
+        pass
+    for name in candidates:
+        if name and ZONE_NAME.fullmatch(name) and zone_exists(name, roots):
+            return name
+    return None
+
+
 def launch_plan(workdir: bytes, data, args, image: str, auth: bool) -> LaunchPlan:
     """Build the runtime-agnostic launch plan (all filesystem side effects live here)."""
     if data:
@@ -1630,7 +1685,18 @@ def launch_plan(workdir: bytes, data, args, image: str, auth: bool) -> LaunchPla
     env = []
     if mount_auth:
         env.append(("CLAUDE_CONFIG_DIR", effective_home + "/.claude"))
-    env += sorted(config["env"].items())
+    # The host's zone is merged into the manifest's own environment before
+    # sorting, not appended beside it: a manifest that pins TZ must replace
+    # the inherited value outright.  Emitting both and relying on a runtime's
+    # last-flag-wins would make a security-relevant argv depend on undocumented
+    # runtime behavior, and a pinned zone is exactly what a project sets when
+    # its dates must not vary with the machine the session happens to run on.
+    inherited = {}
+    zone = host_timezone()
+    if zone is not None:
+        inherited["TZ"] = zone
+    inherited.update(config["env"])
+    env += sorted(inherited.items())
     mounts = [(mount, "/work", False)]
     for extra_mount in config["mounts"]:
         mounts.append((extra_mount["source"], extra_mount["target"], extra_mount["readonly"]))
