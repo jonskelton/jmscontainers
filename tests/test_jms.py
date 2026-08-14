@@ -28,6 +28,10 @@ JMS = importlib.machinery.SourceFileLoader(
 GOLDEN_TREE_TF = "0941c3a1ee51b32eeace1fb270552a32cb8c694e2e6c3801087effc2c287742d"
 GOLDEN_SINGLE_TF = "d0004b6bc950679f0de2eedf06f9bec5c9f02442b46109af80ef1915acd5f7c7"
 DEFAULT_CONTAINERFILE = b"FROM jmscontainers-base:latest\n"
+# Launch inherits the host's zone, so every sandboxed test pins one: the suite
+# must produce the same argv on a developer's machine and on a UTC CI runner.
+# The real resolution is exercised by TimezoneTests against fake zoneinfo trees.
+SANDBOX_ZONE = "America/Los_Angeles"
 
 
 def setUpModule():
@@ -59,7 +63,8 @@ def sandbox():
         env["HOME"] = str(home)
         with mock.patch.dict(os.environ, env, clear=True), \
              mock.patch.object(JMS, "checkout_root",
-                               lambda: JMS.canon(os.fsencode(checkout))):
+                               lambda: JMS.canon(os.fsencode(checkout))), \
+             mock.patch.object(JMS, "host_timezone", lambda: SANDBOX_ZONE):
             yield home
 
 
@@ -1249,12 +1254,136 @@ class LaunchTests(unittest.TestCase):
                           " ".join(argv))
 
 
+    def test_launch_inherits_the_host_timezone(self):
+        with sandbox() as home:
+            plain = home / "git" / "plain"
+            plain.mkdir()
+            argv = self.launch_argv(home, ["launch", "--no-auth", "-w", str(plain)],
+                                    images={JMS.BASE: image_record(JMS.BASE)})
+            self.assertIn("TZ=" + SANDBOX_ZONE, argv)
+
+    def test_manifest_timezone_replaces_the_inherited_one(self):
+        """A pinned zone is emitted once: no reliance on the runtime's last-wins."""
+        with sandbox() as home:
+            root = make_project(home, manifest=b'[env]\nTZ = "Europe/Berlin"\n')
+            data = JMS.project_data(JMS.canon(os.fsencode(root)))
+            tag = data["tag_prefix"] + ":" + data["tf"][:12]
+            argv = self.launch_argv(home, ["launch", "--trust", "--no-auth", "-w", str(root)],
+                                    images={tag: image_record(tag)})
+            self.assertEqual([value for value in argv if value.startswith("TZ=")],
+                             ["TZ=Europe/Berlin"])
+
+    def test_launch_omits_tz_when_the_host_states_no_zone(self):
+        with sandbox() as home:
+            plain = home / "git" / "plain"
+            plain.mkdir()
+            with mock.patch.object(JMS, "host_timezone", lambda: None):
+                argv = self.launch_argv(home, ["launch", "--no-auth", "-w", str(plain)],
+                                        images={JMS.BASE: image_record(JMS.BASE)})
+            self.assertFalse([value for value in argv if value.startswith("TZ=")])
+
+
 class LaunchTestsPodman(LaunchTests):
     BACKEND = "podman"
     EXE = "podman"
     USER_ISOLATION = "1000:1000"
     USER_ROOT = "0:0"
     MOUNT = "type=bind,source="
+
+
+class TimezoneTests(unittest.TestCase):
+    """Host-zone resolution: every source, and nothing that is not a real zone."""
+
+    @contextlib.contextmanager
+    def zoneinfo(self, *names, prefix=""):
+        """A fake zoneinfo tree, its roots tuple, and a directory to link from."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / prefix if prefix else pathlib.Path(tmp)
+            for name in names:
+                zone = root / name
+                zone.parent.mkdir(parents=True, exist_ok=True)
+                zone.write_bytes(b"TZif2")
+            root.mkdir(parents=True, exist_ok=True)
+            yield pathlib.Path(tmp), (str(root) + "/",)
+
+    def resolve(self, roots, tmp, tz=None, link=None, timezone_file=None):
+        env = {} if tz is None else {"TZ": tz}
+        localtime = str(tmp / "localtime")
+        if link is not None:
+            os.symlink(link, localtime)
+        stamp = str(tmp / "timezone")
+        if timezone_file is not None:
+            pathlib.Path(stamp).write_text(timezone_file, encoding="utf-8")
+        with mock.patch.dict(os.environ, env, clear=True):
+            return JMS.host_timezone(roots=roots, localtime=localtime, timezone_file=stamp)
+
+    def test_tz_environment_wins_over_the_symlink(self):
+        with self.zoneinfo("America/Los_Angeles", "Europe/Berlin") as (tmp, roots):
+            self.assertEqual(
+                self.resolve(roots, tmp, tz="America/Los_Angeles",
+                             link=roots[0] + "Europe/Berlin"),
+                "America/Los_Angeles")
+
+    def test_posix_leading_colon_is_stripped(self):
+        with self.zoneinfo("America/Los_Angeles") as (tmp, roots):
+            self.assertEqual(self.resolve(roots, tmp, tz=":America/Los_Angeles"),
+                             "America/Los_Angeles")
+
+    def test_posix_rule_string_falls_through_to_the_symlink(self):
+        """TZ="PST8PDT,M3.2.0,M11.1.0" names a rule, not a zone file."""
+        with self.zoneinfo("America/Los_Angeles") as (tmp, roots):
+            self.assertEqual(
+                self.resolve(roots, tmp, tz="PST8PDT,M3.2.0,M11.1.0",
+                             link=roots[0] + "America/Los_Angeles"),
+                "America/Los_Angeles")
+
+    def test_absolute_symlink_resolves(self):
+        with self.zoneinfo("America/Los_Angeles") as (tmp, roots):
+            self.assertEqual(self.resolve(roots, tmp, link=roots[0] + "America/Los_Angeles"),
+                             "America/Los_Angeles")
+
+    def test_relative_symlink_resolves(self):
+        """Debian links /etc/localtime relatively; the target is not absolute."""
+        with self.zoneinfo("America/Los_Angeles", prefix="usr/share") as (tmp, roots):
+            self.assertEqual(self.resolve(roots, tmp, link="usr/share/America/Los_Angeles"),
+                             "America/Los_Angeles")
+
+    def test_macos_zoneinfo_root_is_stripped(self):
+        with self.zoneinfo("America/Los_Angeles",
+                           prefix="private/var/db/timezone/zoneinfo") as (tmp, roots):
+            self.assertEqual(self.resolve(roots, tmp, link=roots[0] + "America/Los_Angeles"),
+                             "America/Los_Angeles")
+
+    def test_shipped_roots_cover_both_macos_forms(self):
+        """/var is a symlink to /private/var, so a resolved target takes either form."""
+        for root in ("/var/db/timezone/zoneinfo/", "/private/var/db/timezone/zoneinfo/",
+                     "/usr/share/zoneinfo/"):
+            self.assertIn(root, JMS.ZONEINFO_ROOTS)
+
+    def test_etc_timezone_is_the_last_resort(self):
+        with self.zoneinfo("Europe/Berlin") as (tmp, roots):
+            self.assertEqual(self.resolve(roots, tmp, timezone_file="Europe/Berlin\n"),
+                             "Europe/Berlin")
+
+    def test_a_host_stating_no_zone_yields_none(self):
+        with self.zoneinfo("America/Los_Angeles") as (tmp, roots):
+            self.assertIsNone(self.resolve(roots, tmp))
+
+    def test_a_name_absent_from_the_tree_is_refused(self):
+        with self.zoneinfo("America/Los_Angeles") as (tmp, roots):
+            self.assertIsNone(self.resolve(roots, tmp, tz="Mars/Olympus"))
+
+    def test_traversal_and_injection_attempts_are_refused(self):
+        """TZ is host input that becomes runtime argv; the grammar is the gate."""
+        with self.zoneinfo("America/Los_Angeles") as (tmp, roots):
+            for hostile in ("../../etc/passwd", "/etc/passwd", "America/../../etc/passwd",
+                            "America/Los_Angeles ", "America Los_Angeles",
+                            "America/Los_Angeles\nFOO=bar", "-x", ""):
+                self.assertIsNone(self.resolve(roots, tmp, tz=hostile), hostile)
+
+    def test_a_directory_is_not_a_zone(self):
+        with self.zoneinfo("America/Los_Angeles") as (tmp, roots):
+            self.assertIsNone(self.resolve(roots, tmp, tz="America"))
 
 
 class TrustCommandTests(unittest.TestCase):
