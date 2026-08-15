@@ -36,7 +36,9 @@
   still refuses a preserved path that would shadow container system state
   (`/etc`, `/usr`, `/proc`, …), overlap a reserved mount target (including
   `/home`, which would swallow the agent-state mounts), or collide with a
-  manifest `[[mounts]]` target. `--root` re-checks against `/root`. The key
+  manifest `[[mounts]]` target. `--root` re-checks against `/root`. Those
+  refusals run before the trust prompt and the image build, so a layout
+  that can never mount costs neither consent nor a build. The key
   is manifest content, so enabling it changes the trust fingerprint and the
   consent summary names the path that will be mounted. Default behavior is
   unchanged: without the key the project still mounts at `/work`.
