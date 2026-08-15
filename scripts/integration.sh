@@ -5,9 +5,9 @@
 #
 # Usage: integration.sh [a|b|all]   (default: all)
 #
-#   Tier A -- fast, base image only: readiness, base build, the Linux
-#            launch-contract assertions, ambient-config conflicts, bwrap
-#            probes, FROM-resolution under egress denial, failure cleanup.
+#   Tier A -- fast, base image only: readiness, base build, shared launch
+#            contracts and failure cleanup, plus Linux ambient-config,
+#            nested-bwrap, and FROM-resolution-under-egress-denial probes.
 #   Tier B -- expensive, example images: per-example build/inspect/launch/
 #            clean cycle, context-escape, auth mounts, manifest env parity,
 #            survivor-set graph run, clean-store standalone external base
@@ -134,18 +134,46 @@ launch_out() {
     jms launch --trust --no-auth -w "$project" "$@"
 }
 
+host_uid() {
+    stat -c %u "$1" 2>/dev/null || stat -f %u "$1"
+}
+
+assert_container_absent() {
+    name=$1
+    if [ "$runtime" = podman ]; then
+        status=0
+        podman container exists "$name" 2>/dev/null || status=$?
+        [ "$status" = 1 ] || {
+            [ "$status" = 0 ] && fail "SIGTERM left container $name behind"
+            fail "could not determine whether SIGTERM left container $name behind"
+        }
+        return
+    fi
+    listing="$work/container-list.json"
+    container list --all --format json > "$listing" \
+        || fail "could not list containers after SIGTERM"
+    status=0
+    python3 -c '
+import json, sys
+records = json.load(open(sys.argv[1], encoding="utf-8"))
+if not isinstance(records, list):
+    raise SystemExit(2)
+raise SystemExit(0 if any(isinstance(r, dict) and r.get("id") == sys.argv[2]
+                          for r in records) else 1)
+' "$listing" "$name" || status=$?
+    case "$status" in
+        0) fail "SIGTERM left container $name behind" ;;
+        1) ;;
+        *) fail "container list returned malformed output after SIGTERM" ;;
+    esac
+}
+
 # ---------------------------------------------------------------- tier A --
 tier_a() {
     echo "== tier A: base image and launch contracts =="
     jms build --base
 
-    if [ "$runtime" = container ]; then
-        container run --rm --entrypoint /bin/sh jmscontainers-base:latest -c \
-            'command -v bwrap >/dev/null'
-        return 0
-    fi
-
-    # --- Linux launch-contract assertions (each keyed to a §9 table row) ---
+    # --- Backend-neutral launch-contract assertions (§9) ---
     proj="$work/tier-a"
     mkdir -p "$proj/.jmscontainer"
     printf 'FROM jmscontainers-base:latest\n' > "$proj/.jmscontainer/Containerfile"
@@ -153,14 +181,14 @@ tier_a() {
     # Ownership (default): host ownership of /work writes; UID 1000 inside.
     launch_out "$proj" --bin /bin/sh -- -c 'touch /work/probe-default; id -u'
     [ -f "$proj/probe-default" ] || fail "default launch did not write /work"
-    owner=$(stat -c %u "$proj/probe-default")
+    owner=$(host_uid "$proj/probe-default")
     [ "$owner" = "$(id -u)" ] || fail "default /work write owned by $owner, not invoking user"
     uid_inside=$(launch_out "$proj" --bin /bin/sh -- -c 'id -u' | tr -d '[:space:]')
     [ "$uid_inside" = 1000 ] || fail "default in-container uid is $uid_inside, not 1000"
 
     # Ownership (--root): UID 0 inside; host ownership still the invoking user.
     launch_out "$proj" --root --bin /bin/sh -- -c 'touch /work/probe-root'
-    owner=$(stat -c %u "$proj/probe-root")
+    owner=$(host_uid "$proj/probe-root")
     [ "$owner" = "$(id -u)" ] || fail "--root /work write owned by $owner, not invoking user"
     uid_inside=$(launch_out "$proj" --root --bin /bin/sh -- -c 'id -u' | tr -d '[:space:]')
     [ "$uid_inside" = 0 ] || fail "--root in-container uid is $uid_inside, not 0"
@@ -168,9 +196,10 @@ tier_a() {
     # Sudo: passwordless for isolation under keep-id.
     launch_out "$proj" --bin /bin/sh -- -c 'sudo -n true' || fail "sudo -n failed as isolation"
 
-    # Hostname: --hostname container agrees inside.
-    hostname_inside=$(launch_out "$proj" --bin /bin/sh -- -c 'echo "$HOSTNAME"' | tr -d '[:space:]')
-    [ "$hostname_inside" = container ] || fail "in-container hostname is $hostname_inside"
+    # Every supported base exposes bwrap. Linux additionally exercises its
+    # nested-user-namespace behavior below.
+    launch_out "$proj" --bin /bin/sh -- -c 'command -v bwrap >/dev/null' \
+        || fail "bwrap is missing from the base image"
 
     # Exit propagation: jms launch exits with the container's status.
     status=0
@@ -185,7 +214,7 @@ tier_a() {
     # delivery to handler-less PID 1.
     name="jms-itest-sigterm-$$"
     # Invoke the binary directly (not the jms() wrapper function): $! must be
-    # the process that exec's `podman run`, so the TERM reaches the runtime.
+    # the process that execs the runtime, so the TERM reaches it.
     "$root/bin/jms" launch --trust --no-auth -w "$proj" -n "$name" --bin /bin/sh -- \
         -c 'trap "exit 0" TERM; sleep 60 & wait' &
     launch_pid=$!
@@ -193,9 +222,7 @@ tier_a() {
     kill -TERM "$launch_pid" 2>/dev/null || true
     wait "$launch_pid" 2>/dev/null || true
     sleep 3
-    if podman container exists "$name" 2>/dev/null; then
-        fail "SIGTERM left container $name behind"
-    fi
+    assert_container_absent "$name"
 
     # Time zone: the container renders dates in the host's zone, not UTC.  The
     # offset comparison is vacuous on a UTC host, so a host that states a zone
@@ -214,6 +241,25 @@ tier_a() {
     if launch_out "$proj" --bin /bin/sh -- -c 'touch "$HOME/.config/jms-shell/x"' 2>/dev/null; then
         fail "shell-state mount was writable"
     fi
+
+    # Failed-run cleanup: a mid-run failure still cleans and sweeps (the
+    # trap-driven sweep at exit proves no leak).
+    status=0
+    launch_out "$proj" --bin /bin/sh -- -c 'touch /work/probe-fail; exit 3' || status=$?
+    [ "$status" = 3 ] || fail "deliberate failing run exited $status"
+
+    if [ "$runtime" = container ]; then
+        rm -f "$proj/probe-default" "$proj/probe-root" "$proj/probe-fail"
+        jms clean --images -w "$proj" >/dev/null 2>&1 || true
+        echo "== tier A passed =="
+        return 0
+    fi
+
+    # --- Linux/Podman-specific launch assertions ---
+    # Podman pins --hostname explicitly. apple/container has no hostname flag
+    # and derives the VM hostname from the generated container name.
+    hostname_inside=$(launch_out "$proj" --bin /bin/sh -- -c 'echo "$HOSTNAME"' | tr -d '[:space:]')
+    [ "$hostname_inside" = container ] || fail "in-container hostname is $hostname_inside"
 
     # Ambient-config conflicts: the explicit --userns flag beats PODMAN_USERNS
     # and containers.conf in both directions (R7.4).
@@ -235,12 +281,6 @@ tier_a() {
         'bwrap --unshare-pid --dev-bind / / --proc /proc /bin/true' 2>/dev/null; then
         fail "bwrap fresh-/proc mount unexpectedly succeeded (masking changed?)"
     fi
-
-    # Failed-run cleanup: a mid-run failure still cleans and sweeps (the
-    # trap-driven sweep at exit proves no leak).
-    status=0
-    launch_out "$proj" --bin /bin/sh -- -c 'touch /work/probe-fail; exit 3' || status=$?
-    [ "$status" = 3 ] || fail "deliberate failing run exited $status"
 
     # FROM resolution (R3.7/MIR-041): under egress denial, a present base
     # resolves locally with the production --pull=missing argv; an absent
@@ -311,6 +351,26 @@ tier_b() {
     grep -q "/.claude" "$agent_probe" || fail "CLAUDE_CONFIG_DIR not visible inside"
     rm -f "$agent_probe"
     jms clean --images -w "$proj"
+
+    # Preserved host path: path-keyed tools must see the canonical checkout
+    # path on both sides, and the mount remains a writable host round trip.
+    proj="$work/tier-b-preserve-path"
+    mkdir -p "$proj/.jmscontainer"
+    printf 'FROM jmscontainers-base:latest\n' > "$proj/.jmscontainer/Containerfile"
+    printf '[run]\npreserve_host_path = true\n' > "$proj/.jmscontainer/jmscontainer.toml"
+    canonical_proj=$(CDPATH='' cd -- "$proj" && pwd -P)
+    value=$(launch_out "$canonical_proj" --bin /bin/sh -- -c 'printf %s "$PWD"')
+    [ "$value" = "$canonical_proj" ] \
+        || fail "preserved project PWD is $value, host path is $canonical_proj"
+    launch_out "$canonical_proj" --bin /bin/sh -- -c 'printf container > "$PWD/preserve-path-probe"'
+    [ -f "$canonical_proj/preserve-path-probe" ] \
+        || fail "preserved project path did not write through to the host"
+    [ "$(host_uid "$canonical_proj/preserve-path-probe")" = "$(id -u)" ] \
+        || fail "preserved-path write is not owned by the invoking user"
+    [ "$(cat "$canonical_proj/preserve-path-probe")" = container ] \
+        || fail "preserved-path write did not round trip its content"
+    rm -f "$canonical_proj/preserve-path-probe"
+    jms clean --images -w "$canonical_proj"
 
     if [ "$runtime" = podman ]; then
         # Survivor-set graph run (R5.4, MIR-042/047): a manual alias outside

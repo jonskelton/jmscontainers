@@ -42,6 +42,10 @@
 - Perform the clean-host install walkthrough: a fresh Debian 13 VM plus a
   newly created user follows the README install instructions verbatim,
   recording date, Podman version, architecture, and outcome.
+- When the apple/container pin changes, perform the macOS README/Homebrew
+  walkthrough through `jms build --base` with the qualified runtime and no
+  `JMS_RUNTIME_ACCEPT`, recording the date, candidate commit, macOS version,
+  architecture, Python version, runtime version, and outcome.
 - Record in the release notes the tested Podman version, architecture
   (`uname -m`), and the remaining matrix dimensions: kernel, cgroup
   manager, OCI runtime, storage driver, network backend.

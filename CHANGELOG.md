@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **apple/container 1.2.2 is qualified on macOS.** The exact fail-closed pin
+  now matches the release installed by the documented Homebrew command, so a
+  new installation reaches `jms build --base` without
+  `JMS_RUNTIME_ACCEPT`. Later apple/container versions still require an exact
+  one-invocation override until they are qualified.
+
+- **The live macOS gate now exercises the shared launch contract.** Darwin no
+  longer returns from tier A after the base build: ownership and identity,
+  sudo, exit and signal cleanup, inherited host time zone,
+  read-only shell state, and failed-run cleanup run against both backends.
+  Podman-specific user-namespace, nested-bwrap, and nftables assertions stay
+  on Linux. Tier B also proves `run.preserve_host_path` keeps the canonical
+  `PWD` and provides a writable host round trip.
+
+- **The macOS qualification guide is release-neutral.** It no longer names a
+  historical branch, fixed unit-test count, or already-closed 1.1.0 release
+  issues; it now derives candidate facts at run time and defines the reusable
+  interactive gate, clean-install walkthrough, and evidence record.
+
+- **The macOS qualification gate is green.** The 2026-08-14 Apple Silicon
+  run used macOS 26.5.2, apple/container 1.2.2, and Python 3.14.7. `make test`
+  passed 233 tests plus compilation and shellcheck; the full interactive
+  `scripts/integration.sh all` run, credential prompt, survivor set,
+  inherited time zone, preserved host path, leak sweep, and ten-iteration
+  removal race all passed with `JMS_RUNTIME_ACCEPT` unset. The candidate tree
+  is based on `e8aeb42`; rerun the gate if later runtime-affecting changes
+  land before release.
+
 - **Containers now run in the host's time zone.** The base image selects no
   zone, so every container labelled its instants UTC: the clock agreed with
   the host to the minute while `date` named the wrong *day* for anyone whose

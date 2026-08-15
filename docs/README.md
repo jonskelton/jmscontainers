@@ -19,7 +19,8 @@ details intentionally kept out of the quick path.
 - [Contributing](../CONTRIBUTING.md)
 - [Release checklist](release-checklist.md)
 - [Release-critical issues](release-critical-issues.md)
+- [macOS support review (2026-08-14)](macos-support-review.md)
 - [Deferred work](deferred-work.md)
 - [Multi-runtime implementation record](multi-runtime-implementation.md)
 - [Standalone image ABI proposal](standalone-image-user-abi-proposal.md)
-- [macOS qualification guide](macos-qualification-guide.md)
+- [macOS qualification guide](macos-qualification-guide.md): reusable release procedure and evidence requirements

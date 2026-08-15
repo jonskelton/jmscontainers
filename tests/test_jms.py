@@ -182,7 +182,7 @@ class FakeRuntime:
 
     def apple_call(self, argv, check):
         if argv[:2] == ["container", "--version"]:
-            return self.result(stdout=b"container CLI version 1.2.0 (build: release)\n")
+            return self.result(stdout=b"container CLI version 1.2.2 (build: release)\n")
         if argv[:3] == ["container", "system", "status"]:
             return self.result()
         if argv[:3] == ["container", "image", "inspect"]:
@@ -1143,15 +1143,15 @@ class RuntimeGateTests(unittest.TestCase):
             JMS.runtime_ready()
 
     def test_version_gate(self):
-        self.probe(b"container CLI version 1.2.0 (build: release, commit: x)\n")
+        self.probe(b"container CLI version 1.2.2 (build: release, commit: x)\n")
         with self.assertRaisesRegex(JMS.JMSException, "too old"):
-            self.probe(b"container CLI version 1.1.9\n")
+            self.probe(b"container CLI version 1.2.1\n")
         with self.assertRaisesRegex(JMS.JMSException, "newer than the newest runtime"):
             self.probe(b"container CLI version 1.3.0\n")
         with self.assertRaisesRegex(JMS.JMSException, "cannot parse"):
             self.probe(b"something else\n")
         with self.assertRaisesRegex(JMS.JMSException, "cannot parse"):
-            self.probe(b"container CLI version 1.2.0\n", returncode=1)
+            self.probe(b"container CLI version 1.2.2\n", returncode=1)
 
     def test_runtime_accept_pin_admits_one_exact_newer_version(self):
         newer = b"container CLI version 1.3.0\n"
@@ -1164,9 +1164,9 @@ class RuntimeGateTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.4.0"}):
             with self.assertRaisesRegex(JMS.JMSException, "newer than the newest runtime"):
                 self.probe(newer)
-        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.1.9"}):
+        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.2.1"}):
             with self.assertRaisesRegex(JMS.JMSException, "too old"):
-                self.probe(b"container CLI version 1.1.9\n")
+                self.probe(b"container CLI version 1.2.1\n")
         with self.assertRaisesRegex(JMS.JMSException, "JMS_RUNTIME_ACCEPT=1.3.0"):
             self.probe(newer)
 
@@ -2675,6 +2675,21 @@ class ImageFactTests(unittest.TestCase):
         self.assertEqual(labelled[3].get("jms.container"), "image")
         self.assertEqual(by_ref["localhost/jmsfix-unlabeled:latest"][3], {})
         self.assertTrue(all(fact[1] for fact in facts))            # dangling dropped
+        self.assertEqual([fact[0] for fact in facts], sorted(fact[0] for fact in facts))
+
+    def test_apple_image_facts_normalizer(self):
+        # R5.2 over the qualified apple/container 1.2.2 capture.
+        records = load_fixture("apple-container-1.2.2-images.json")
+        runner = lambda argv, **kwargs: proc_result(stdout=json.dumps(records).encode())
+        with mock.patch.object(JMS, "runtime_run", runner):
+            facts = JMS.ContainerBackend().image_facts()
+        by_ref = {ref: fact for fact in facts for ref in fact[1]}
+        labelled = by_ref["jmscontainers-fixture-a87d9b9a:8155454e44ff"]
+        self.assertIn("docker.io/library/jms-fixture-alias:latest", labelled[1])
+        self.assertEqual(labelled[3]["jms.project"],
+                         "a87d9b9a1a609d627a255eb505f84eadf937ceda83efd4fe155763d758bb3ac4")
+        self.assertEqual(by_ref["jmscontainers-fixture-base:latest"][3]
+                         ["org.opencontainers.image.title"], "jms-fixture-base")
         self.assertEqual([fact[0] for fact in facts], sorted(fact[0] for fact in facts))
 
     def test_podman_ps_normalizer(self):
