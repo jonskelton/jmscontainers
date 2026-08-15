@@ -2152,6 +2152,9 @@ class OrderingAndCanonTests(unittest.TestCase):
         for manifest, pretend, expected in cases:
             with self.subTest(target=pretend), sandbox() as home:
                 root = make_project(home, manifest=manifest)
+                # BSD realpath refuses a path that does not exist, so the mount
+                # source has to be real for canon() on macOS.
+                (home / "cache").mkdir()
                 canonical = JMS.canon(os.fsencode(root))
                 real_runtime_path = JMS.runtime_path
                 # The sandbox cannot put a checkout under /etc or /opt, and the
