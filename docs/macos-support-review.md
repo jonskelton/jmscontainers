@@ -3,7 +3,36 @@
 Review target: `main` at `22286f814ef2cfc8a46af1736dc3a83634e1b762`
 (`v1.1.0-6-g22286f8`).
 
-## Verdict
+## Resolution (2026-08-14)
+
+All three findings are resolved in the follow-up candidate tree based on
+`e8aeb420881b6dab9af16686d8f846a13314f99c` (this review's commit). Evidence
+documentation was added after the live run; the release checklist still
+requires another run if any later runtime-affecting code changes.
+
+| Finding | Status | Resolution |
+| --- | --- | --- |
+| M-001 | Resolved | The exact backend pin and live fixture move to apple/container 1.2.2. Homebrew reports `container 1.2.2`; `jms build --base` and every runtime-backed integration command passed with `JMS_RUNTIME_ACCEPT` unset. |
+| M-002 | Resolved | Tier A now runs the backend-neutral ownership, identity, sudo, exit, signal-cleanup, inherited-time-zone, read-only-state, and failure-cleanup assertions on Darwin. Tier B permanently asserts preserved `PWD` equality and writable host round trip. |
+| M-003 | Resolved | The qualification guide is now version-neutral and derives the candidate, runtime, and observed test count at run time. Historical branch and RC closure instructions were removed. |
+
+Follow-up qualification used the same host matrix recorded below: macOS
+26.5.2 on Apple Silicon, Python 3.14.7, shellcheck 0.11.0, and
+apple/container CLI and service 1.2.2. The recorded outcomes were:
+
+- `make test`: 233 tests passed in 3.299 seconds; bytecode compilation and
+  shellcheck also passed.
+- Interactive `scripts/integration.sh all`: both tiers and the final leak
+  sweep passed without a runtime override, including the credential prompt,
+  inherited `America/Los_Angeles` time zone, preserved host path, and
+  survivor-set acceptance. Delete-by-ref did not cascade.
+- Manual removal race: all ten iterations exited cleanly, reported no failed
+  removal, left no project ref, and the final cleanup converged.
+- The apple/container 1.2.2 image-list fixture was recaptured from public
+  Fedora probe images. Its normalized shape matches 1.2.0; only probe build
+  annotations changed.
+
+## Original verdict
 
 The current code works on this Apple Silicon host with apple/container 1.2.2
 when the newer runtime is explicitly accepted. The unit suite, both live
@@ -39,7 +68,7 @@ pre-consent mount-layout validation (`22286f8`). It also rechecked the
 apple/container backend's version gate, mount grammar, service startup, image
 normalization, removal rechecks, and runtime-specific integration branches.
 
-## Findings
+## Original findings
 
 ### M-001 — Current Homebrew install is refused by default (High)
 
@@ -131,7 +160,7 @@ as `jmscontainers-base:latest`, matching the documented installation outcome.
   preserved paths that shadow system state, effective-home collisions for
   both users, and overlap with manifest mounts.
 
-## Release recommendation
+## Original release recommendation
 
 Do not change the trust or mount design based on this run; the implementation
 behaved correctly. Before the next release, resolve M-001 by qualifying the

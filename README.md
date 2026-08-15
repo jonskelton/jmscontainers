@@ -28,7 +28,7 @@ export PATH="$HOME/.local/bin:$PATH"
 jms build --base
 ```
 
-`jms` is qualified against apple/container 1.2.0 and starts its service when
+`jms` is qualified against apple/container 1.2.2 and starts its service when
 needed. See the [macOS guide](docs/macos.md) for PATH setup, version handling,
 and platform notes.
 

@@ -23,4 +23,4 @@ details intentionally kept out of the quick path.
 - [Deferred work](deferred-work.md)
 - [Multi-runtime implementation record](multi-runtime-implementation.md)
 - [Standalone image ABI proposal](standalone-image-user-abi-proposal.md)
-- [macOS qualification guide](macos-qualification-guide.md)
+- [macOS qualification guide](macos-qualification-guide.md): reusable release procedure and evidence requirements

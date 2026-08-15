@@ -24,9 +24,9 @@ checks the service and starts it automatically.
 
 ## Runtime version
 
-jms 1.1 is qualified against apple/container 1.2.0 and normally requires that
-exact version. Homebrew can publish a newer runtime before jms qualifies it.
-To use that version for one invocation, explicitly name it:
+This jms release is qualified against apple/container 1.2.2 and normally
+requires that exact version. Homebrew can publish a newer runtime before jms
+qualifies it. To use that version for one invocation, explicitly name it:
 
 ```sh
 JMS_RUNTIME_ACCEPT=1.3.0 jms launch ~/path/to/project

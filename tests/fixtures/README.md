@@ -8,14 +8,14 @@ Sanitization (all fixtures): the invoking username is replaced with `user`
 and the hostname with `testhost`; JSON is re-serialized with sorted keys and
 2-space indentation, values otherwise verbatim.
 
-## apple/container 1.2.0 (macOS capture)
+## apple/container 1.2.2 (macOS capture)
 
-Provenance: container CLI 1.2.0 (Homebrew), Apple Silicon (arm64),
-macOS 26.5, captured 2026-07-29.
+Provenance: container CLI 1.2.2 (Homebrew), Apple Silicon (arm64),
+macOS 26.5.2, captured 2026-08-14.
 
 | File | Command | Notes |
 | --- | --- | --- |
-| `apple-container-1.2.0-images.json` | `container image list --format json` | Whole records filtered from live output; nothing inside a record is edited (MIR-025). Top-level `id` is the OCI index digest and equals `configuration.descriptor.digest` minus `sha256:`. One ref per record: the alias-tagged image appears as two records with the same `id`. Pulled/tagged names are registry-qualified (`docker.io/library/…`); built names are unqualified. |
+| `apple-container-1.2.2-images.json` | `container image list --format json` | Whole records filtered from live output; nothing inside a record is edited (MIR-025). Top-level `id` is the OCI index digest and equals `configuration.descriptor.digest` minus `sha256:`. One ref per record: the alias-tagged image appears as two records with the same `id`. Pulled/tagged names are registry-qualified (`docker.io/library/…`); built names are unqualified. |
 
 Capture recipe (probe-built, so no private image data enters the fixture;
 synthetic label values are `sha256` of `jms-fixture-project-root` /
@@ -27,7 +27,7 @@ synthetic label values are `sha256` of `jms-fixture-project-root` /
    `FROM jmscontainers-fixture-base:latest` + a `LABEL` line setting
    `jms.project` and `jms.fingerprint` to the synthetic values.
 3. `container image tag` it as `jms-fixture-alias:latest` (stored
-   registry-qualified by the runtime — genuine 1.2.0 behavior).
+   registry-qualified by the runtime — genuine 1.2.2 behavior).
 4. Capture `container image list --format json`; keep only the whole
    records for `docker.io/library/fedora:latest` and the three probe
    refs; re-serialize per the sanitization rule above.
