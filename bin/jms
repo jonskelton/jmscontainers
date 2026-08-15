@@ -1192,6 +1192,35 @@ def project_mount_target(root: bytes, config: dict, home: str) -> str:
     return target
 
 
+def validate_mount_layout(root: bytes, config: dict, as_root: bool) -> str:
+    """Resolve the project mount target and refuse a layout that cannot mount.
+
+    Nothing here touches the filesystem or the runtime, so cmd_launch() runs it
+    as a preflight -- before the consent prompt names a host path jms would
+    then refuse, and before a build whose image that same refusal would strand
+    -- and launch_plan() runs it again as the target's real producer.  One
+    function, so the two can never drift.
+    """
+    effective_home = "/root" if as_root else "/home/isolation"
+    # The project target is re-derived against the effective home, so a
+    # preserved host path is refused under --root on the same terms as any
+    # manifest mount rather than landing somewhere the manifest did not name.
+    project_target = project_mount_target(root, config, effective_home)
+    for extra_mount in config["mounts"]:
+        target = extra_mount["target"]
+        if not valid_target(target, effective_home) or target_overlaps_reserved(target, effective_home):
+            fail("manifest mount target is not allowed for the effective runtime user"
+                 + (" under --root" if as_root else "") + ": " + quote(target))
+        # "/work" is a reserved target, so the check above covers the default
+        # project mount; a preserved host path is outside that set and needs
+        # its own overlap check against the same manifest targets.
+        if (target == project_target or target.startswith(project_target + "/")
+                or project_target.startswith(target + "/")):
+            fail("manifest mount target overlaps the project mount at "
+                 + quote(project_target) + ": " + quote(target))
+    return project_target
+
+
 def default_config():
     return {"name": None, "env": {}, "mounts": [], "entry": ["/bin/bash", "-l"],
             "mount_auth": True, "preserve_host_path": False}
@@ -1733,23 +1762,8 @@ def launch_plan(workdir: bytes, data, args, image: str, auth: bool) -> LaunchPla
     entry = [args.bin] if args.bin is not None else config["entry"]
     user = "root" if args.root else "isolation"
     effective_home = "/root" if user == "root" else "/home/" + user
-    # The project target is re-derived against the effective home, so a
-    # preserved host path is refused under --root on the same terms as any
-    # manifest mount rather than landing somewhere the manifest did not name.
-    project_target = project_mount_target(mount, config, effective_home)
+    project_target = validate_mount_layout(mount, config, args.root)
     container_workdir = project_target if inner == "." else project_target + "/" + inner
-    for extra_mount in config["mounts"]:
-        target = extra_mount["target"]
-        if not valid_target(target, effective_home) or target_overlaps_reserved(target, effective_home):
-            fail("manifest mount target is not allowed for the effective runtime user"
-                 + (" under --root" if args.root else "") + ": " + quote(target))
-        # "/work" is a reserved target, so the check above covers the default
-        # project mount; a preserved host path is outside that set and needs
-        # its own overlap check against the same manifest targets.
-        if (target == project_target or target.startswith(project_target + "/")
-                or project_target.startswith(target + "/")):
-            fail("manifest mount target overlaps the project mount at "
-                 + quote(project_target) + ": " + quote(target))
     mount_auth = auth and (config["mount_auth"] or args.auth)
     env = []
     if mount_auth:
@@ -1823,6 +1837,10 @@ def cmd_launch(args):
     validate_agent_state_sources("root" if args.root else "isolation")
     validate_shell_state_source()
     if data:
+        # Refuse an unmountable layout here, not in launch_plan(): otherwise the
+        # consent prompt offers a host path jms will not mount, and a networked
+        # build runs to produce an image the refusal immediately strands.
+        validate_mount_layout(data["root"], data["config"], args.root)
         _, auth = approve(data["root"], data["tf"], args, action="launch", config=data["config"])
         runtime_ready()
         image, _ = build_project(data, args)

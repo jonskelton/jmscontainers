@@ -2137,6 +2137,47 @@ class OrderingAndCanonTests(unittest.TestCase):
             # The grant records consent to a definition, not runtime state.
             self.assertEqual(len(JMS.read_store()["projects"]), 1)
 
+    def test_unmountable_layout_is_refused_before_consent_and_build(self):
+        """A project mount that can never be assembled fails first, not last.
+
+        The consent prompt names the preserved host path, and build_project()
+        runs a networked build; a launch whose mount layout is already invalid
+        must reach neither, and must leave no trust record behind.
+        """
+        cases = ((b"[run]\npreserve_host_path = true\n",
+                  "/etc/demo", "container system state"),
+                 (b'[run]\npreserve_host_path = true\n[[mounts]]\n'
+                  b'source = "~/cache"\ntarget = "/opt/demo/cache"\n',
+                  "/opt/demo", "overlaps the project mount"))
+        for manifest, pretend, expected in cases:
+            with self.subTest(target=pretend), sandbox() as home:
+                root = make_project(home, manifest=manifest)
+                # BSD realpath refuses a path that does not exist, so the mount
+                # source has to be real for canon() on macOS.
+                (home / "cache").mkdir()
+                canonical = JMS.canon(os.fsencode(root))
+                real_runtime_path = JMS.runtime_path
+                # The sandbox cannot put a checkout under /etc or /opt, and the
+                # refusal keys off exactly this value, so stand one in here.
+                def as_pretend(path, canonical=canonical, pretend=pretend,
+                               real=real_runtime_path):
+                    return pretend if path == canonical else real(path)
+                order = []
+                def approve(*args, **kwargs):
+                    order.append("approve"); return True, False
+                def build(*args, **kwargs):
+                    order.append("build"); return "tag:1", False
+                with mock.patch.object(JMS, "runtime_path", as_pretend), \
+                     mock.patch.object(JMS, "approve", approve), \
+                     mock.patch.object(JMS, "runtime_ready",
+                                       lambda: order.append("ready")), \
+                     mock.patch.object(JMS, "build_project", build):
+                    with self.assertRaisesRegex(JMS.JMSException, expected):
+                        JMS.cmd_launch(JMS.parse_cli(
+                            ["launch", "--no-auth", "-w", str(root)]))
+                self.assertEqual(order, [])
+                self.assertEqual(JMS.read_store()["projects"], {})
+
     def test_canon_missing_realpath_diagnostic(self):
         def missing(argv, **kwargs):
             raise FileNotFoundError(argv[0])
