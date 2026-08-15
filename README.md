@@ -60,7 +60,11 @@ jms launch
 ```
 
 You land in a shell as `isolation` with passwordless sudo. The project is at
-`/work`; writes there appear on the host with your ownership. Claude Code,
+`/work`; writes there appear on the host with your ownership. (A project that
+needs its container path to match its host path — so a path-keyed tool agrees
+on both sides — can set `run.preserve_host_path`; see
+[the manifest reference](docs/jmscontainer.toml.md#project-mount-path).)
+Claude Code,
 Codex, OpenCode, Neovim, tmux, zsh, `rg`, `fzf`, `jq`, and `gh` are already
 installed.
 

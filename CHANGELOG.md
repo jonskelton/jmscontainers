@@ -23,6 +23,24 @@
   on it arriving transitively: an inherited zone with no zoneinfo entry
   behind it degrades silently to UTC.
 
+- **A project can keep its host path inside the container.** New manifest key
+  `run.preserve_host_path` (boolean, default `false`) mounts the checkout at
+  its own absolute host path instead of `/work`. It exists for tools that key
+  per-project state on the working directory: Claude Code stores memory and
+  transcripts under `~/.claude/projects/<cwd with slashes as dashes>`, which
+  is `-work` for every jms project at once while the same checkout on the host
+  has a key of its own — so no per-project state can be shared between host
+  and container, and unrelated projects collide on one key inside. Matching
+  the paths makes the keys agree. The manifest chooses only whether to
+  preserve the path, never what it is, so no new target is reachable; jms
+  still refuses a preserved path that would shadow container system state
+  (`/etc`, `/usr`, `/proc`, …), overlap a reserved mount target (including
+  `/home`, which would swallow the agent-state mounts), or collide with a
+  manifest `[[mounts]]` target. `--root` re-checks against `/root`. The key
+  is manifest content, so enabling it changes the trust fingerprint and the
+  consent summary names the path that will be mounted. Default behavior is
+  unchanged: without the key the project still mounts at `/work`.
+
 - **A build can no longer garbage-collect the image it just produced.**
   Runtime creation times are whole seconds, so a project build landing in
   the same second as an earlier one tied in the retention ordering and fell
