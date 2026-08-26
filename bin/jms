@@ -1594,17 +1594,73 @@ def gc_project_images(pid: str, tag_prefix: str, *, keep: int, protect: str | No
     execute_removal_schedule(schedule, report)
 
 
+def containerfile_uses_base(spec: bytes) -> bool:
+    """True when a FROM line in the project Containerfile names the shared base.
+
+    Textual per the Containerfile line grammar (comments, continuations, an
+    optional --platform flag, an AS alias).  An ARG-indirected FROM is not
+    resolved; such a project keeps the fingerprint-only rebuild rule and can
+    still force a rebuild with --no-cache.
+    """
+    candidates = {BASE_REPOSITORY, BASE, "localhost/" + BASE_REPOSITORY, "localhost/" + BASE}
+    with open(os.path.join(spec, b"Containerfile"), "rb") as handle:
+        text = handle.read().decode("utf-8", "replace")
+    logical = ""
+    for raw in text.split("\n") + [""]:
+        stripped = raw.strip()
+        if stripped.startswith("#"):
+            continue
+        if stripped.endswith("\\"):
+            logical += stripped[:-1] + " "
+            continue
+        tokens = (logical + stripped).split()
+        logical = ""
+        if tokens and tokens[0].upper() == "FROM":
+            refs = [token for token in tokens[1:] if not token.startswith("--")]
+            if refs and refs[0] in candidates:
+                return True
+    return False
+
+
+def base_and_stamp(tag: str):
+    """(local base image id, the tag's jms.base label), each None when absent.
+
+    One image listing serves both sides of the staleness comparison so they
+    cannot come from different store snapshots.
+    """
+    base_id = stamp = None
+    for ident, refs, _, labels in image_facts():
+        names = {local_name(ref) for ref in refs}
+        if BASE in names:
+            base_id = ident
+        if tag in names:
+            stamp = labels.get("jms.base")
+    return base_id, stamp
+
+
 def build_project(data, args):
     tag = data["tag_prefix"] + ":" + data["tf"][:12]
+    # A base-derived project is stale when its recorded base id (stamped as
+    # the jms.base label at build time) no longer matches the local base
+    # image; a pre-stamp image has no label and counts as stale once.  With
+    # no local base there is nothing to compare (or build from): the existing
+    # image stands.  The rebuild needs no --no-cache -- a changed FROM image
+    # invalidates the runtime's layer cache by itself.
+    base_id, stamp = (base_and_stamp(tag) if containerfile_uses_base(data["spec"])
+                      else (None, None))
     if image_exists(tag) and not getattr(args, "no_cache", False):
-        return tag, False
+        if base_id is None or stamp == base_id:
+            return tag, False
+        print("base image changed; rebuilding " + quote(tag))
     # The consent decision was bound to a fingerprint; re-hash the definition
     # immediately before it reaches the runtime and fail closed on mismatch.
     if trust_fingerprint(spec_entries(data["spec"])) != data["tf"]:
         fail("project definition changed during consent -- re-run")
     print("building " + quote(tag))
-    run_build(data["spec"], tag, args,
-              {"jms.project": data["pid"], "jms.fingerprint": data["tf"]}, project=True)
+    labels = {"jms.project": data["pid"], "jms.fingerprint": data["tf"]}
+    if base_id is not None:
+        labels["jms.base"] = base_id
+    run_build(data["spec"], tag, args, labels, project=True)
     # The tag returned here is what cmd_launch() runs; retention must never
     # untag it, however the store's timestamps happen to sort.
     gc_project_images(data["pid"], data["tag_prefix"], keep=KEEP_IMAGES, protect=tag)
@@ -1801,7 +1857,7 @@ def cmd_build(args):
     if args.pull and not args.base:
         fail("--pull is valid only with --base: project Containerfiles reference the local-only "
              + BASE + "; refresh the base with `jms build --base --pull --no-cache`, "
-             "then rebuild the project with --no-cache", 2)
+             "then a plain `jms build` rebuilds the project onto it", 2)
     if args.base and args.workdir is not None:
         fail("--base cannot be combined with --workdir", 2)
     runtime()  # side-effect-free selection: refusals exit 2 before any consent prompt
