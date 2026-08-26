@@ -996,6 +996,81 @@ class BuildTests(unittest.TestCase):
                              if call["argv"][:2] == [self.EXE, "build"])
                 self.assertIn("--no-cache", build)
 
+    def base_project(self, home, stamp=..., with_base=True, containerfile=DEFAULT_CONTAINERFILE):
+        """A trusted project whose current-fingerprint image already exists.
+
+        stamp: the existing image's jms.base label (Ellipsis = the current
+        fake base id, None = no label).  with_base controls whether the shared
+        base image is present in the store.
+        """
+        root = make_project(home, containerfile=containerfile)
+        data = JMS.project_data(JMS.canon(os.fsencode(root)))
+        tag = data["tag_prefix"] + ":" + data["tf"][:12]
+        labels = {"jms.project": data["pid"], "jms.fingerprint": data["tf"]}
+        if stamp is Ellipsis:
+            stamp = fake_hex_id(JMS.BASE)
+        if stamp is not None:
+            labels["jms.base"] = stamp
+        images = {tag: image_record(tag, labels=labels)}
+        if with_base:
+            images[JMS.BASE] = image_record(JMS.BASE)
+        return data, tag, images
+
+    def test_matching_base_stamp_reuses_the_image(self):
+        with sandbox() as home:
+            data, tag, images = self.base_project(home)
+            with self.fake(images=images) as runtime, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(JMS.build_project(data, self.build_args()), (tag, False))
+            self.assertEqual(runtime.build_count, 0)
+
+    def test_changed_base_forces_a_rebuild_with_a_fresh_stamp(self):
+        with sandbox() as home:
+            data, tag, images = self.base_project(home, stamp="0" * 64)
+            with self.fake(images=images) as runtime, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(JMS.build_project(data, self.build_args()), (tag, True))
+            build = next(call["argv"] for call in runtime.calls
+                         if call["argv"][:2] == [self.EXE, "build"])
+            self.assertIn("jms.base=" + fake_hex_id(JMS.BASE), build)
+            # The changed FROM image invalidates the layer cache by itself.
+            self.assertNotIn("--no-cache", build)
+
+    def test_a_pre_stamp_image_counts_as_stale_once(self):
+        with sandbox() as home:
+            data, tag, images = self.base_project(home, stamp=None)
+            with self.fake(images=images) as runtime, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(JMS.build_project(data, self.build_args()), (tag, True))
+            self.assertEqual(runtime.images[tag]["labels"].get("jms.base"),
+                             fake_hex_id(JMS.BASE))
+
+    def test_an_absent_base_leaves_a_stale_stamp_alone(self):
+        with sandbox() as home:
+            data, tag, images = self.base_project(home, stamp="0" * 64, with_base=False)
+            with self.fake(images=images) as runtime, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(JMS.build_project(data, self.build_args()), (tag, False))
+            self.assertEqual(runtime.build_count, 0)
+
+    def test_an_external_base_project_ignores_base_changes(self):
+        with sandbox() as home:
+            data, tag, images = self.base_project(
+                home, stamp=None, containerfile=b"FROM registry.example/app:1\n")
+            with self.fake(images=images) as runtime, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(JMS.build_project(data, self.build_args()), (tag, False))
+                # A forced rebuild of such a project never stamps jms.base.
+                self.assertEqual(JMS.build_project(data, self.build_args("--no-cache")),
+                                 (tag, True))
+            self.assertNotIn("jms.base", runtime.images[tag]["labels"])
+
+    def test_a_first_build_stamps_the_current_base_id(self):
+        with sandbox() as home:
+            root = make_project(home)
+            data = JMS.project_data(JMS.canon(os.fsencode(root)))
+            tag = data["tag_prefix"] + ":" + data["tf"][:12]
+            images = {JMS.BASE: image_record(JMS.BASE)}
+            with self.fake(images=images) as runtime, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(JMS.build_project(data, self.build_args()), (tag, True))
+            self.assertEqual(runtime.images[tag]["labels"].get("jms.base"),
+                             fake_hex_id(JMS.BASE))
+
     def test_pull_without_base_is_rejected_with_the_update_recipe(self):
         with sandbox() as home:
             make_project(home)
@@ -1131,6 +1206,67 @@ class BuildTestsPodman(BuildTests):
     BACKEND = "podman"
     EXE = "podman"
     PULL_FLAG = "--pull=always"
+
+
+class ContainerfileBaseDetectionTests(unittest.TestCase):
+    def check(self, content, expected, backend=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            pathlib.Path(tmp, "Containerfile").write_bytes(content)
+            context = (mock.patch.object(JMS, "_RUNTIME", backend)
+                       if backend is not None else contextlib.nullcontext())
+            with context:
+                self.assertEqual(JMS.containerfile_uses_base(os.fsencode(tmp)), expected,
+                                 (backend.name if backend is not None else None, content))
+
+    def test_from_line_matrix(self):
+        for content, expected in [
+            (b"FROM jmscontainers-base:latest\n", True),
+            (b"FROM jmscontainers-base\n", True),
+            (b"from --platform=linux/amd64 jmscontainers-base:latest\n", True),
+            (b"FROM fedora:42\nFROM jmscontainers-base:latest AS tools\n", True),
+            (b"FROM \\\n    jmscontainers-base:latest\n", True),
+            (b"# FROM jmscontainers-base:latest\nFROM fedora:42\n", False),
+            (b"ARG BASE=jmscontainers-base:latest\nFROM $BASE\n", False),
+            (b"FROM jmscontainers-base:v2\n", False),
+            (b"FROM jmscontainers-based:latest\n", False),
+            (b"COPY jmscontainers-base:latest /x\n", False),
+            (b"", False),
+        ]:
+            self.check(content, expected)
+
+    def test_backend_qualified_base_names(self):
+        apple, podman = JMS.ContainerBackend(), JMS.PodmanBackend()
+        for backend, content, expected in [
+            (apple, b"FROM jmscontainers-base:latest\n", True),
+            (podman, b"FROM jmscontainers-base:latest\n", True),
+            (apple, b"FROM docker.io/library/jmscontainers-base:latest\n", True),
+            (apple, b"FROM localhost/jmscontainers-base:latest\n", False),
+            (podman, b"FROM localhost/jmscontainers-base:latest AS build\n", True),
+            (podman, b"FROM docker.io/library/jmscontainers-base:latest\n", False),
+        ]:
+            with self.subTest(backend=backend.name, content=content):
+                self.check(content, expected, backend)
+
+    def test_apple_qualified_base_change_rebuilds_and_stamps(self):
+        containerfile = b"FROM docker.io/library/jmscontainers-base:latest\n"
+        with sandbox() as home:
+            root = make_project(home, containerfile=containerfile)
+            data = JMS.project_data(JMS.canon(os.fsencode(root)))
+            tag = data["tag_prefix"] + ":" + data["tf"][:12]
+            images = {
+                JMS.BASE: image_record(JMS.BASE),
+                tag: image_record(tag, labels={
+                    "jms.project": data["pid"],
+                    "jms.fingerprint": data["tf"],
+                    "jms.base": "0" * 64,
+                }),
+            }
+            with fake_runtime(backend="container", images=images) as runtime, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(JMS.build_project(data, JMS.parse_cli(["build"])),
+                                 (tag, True))
+            self.assertEqual(runtime.images[tag]["labels"].get("jms.base"),
+                             fake_hex_id(JMS.BASE))
 
 
 class RuntimeGateTests(unittest.TestCase):

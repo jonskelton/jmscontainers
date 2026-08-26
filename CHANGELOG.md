@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A rebuilt base makes project images stale.** Project images built `FROM
+  jmscontainers-base` record the base image id as a `jms.base` label; `jms
+  build` and `jms launch` compare it against the current local base and
+  rebuild automatically on mismatch, so `jms build --base --pull --no-cache`
+  followed by a plain `jms build` per project is now a complete update.
+  Previously an existing fingerprint-tagged image was always reused and only
+  `--no-cache` picked up a refreshed base. Images from earlier releases have
+  no label and rebuild once. Projects whose Containerfile does not name the
+  base in a `FROM` line (external or `ARG`-indirected bases) keep the
+  fingerprint-only rule, and a missing local base never forces a rebuild.
+
 - **apple/container 1.2.2 is qualified on macOS.** The exact fail-closed pin
   now matches the release installed by the documented Homebrew command, so a
   new installation reaches `jms build --base` without

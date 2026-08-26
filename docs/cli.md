@@ -106,10 +106,14 @@ To refresh container software, run the update recipe:
 jms build --base --pull --no-cache
 ```
 
-A project image's tag derives from its definition fingerprint, so refreshing
-the base does not rebuild existing project images by itself. Run
-`jms build --no-cache` (or `jms launch --no-cache`) in a project to rebuild it
-onto the refreshed base.
+Each project image built from the shared base records the base image id it
+was built from (the `jms.base` label). A later `jms build` (or `jms launch`)
+compares that record against the current local base and rebuilds the project
+image automatically when the base has changed, so the recipe above followed
+by a plain `jms build` in each project is a complete update. The comparison
+is skipped for projects whose Containerfile does not name
+`jmscontainers-base` in a `FROM` line (including `ARG`-indirected bases);
+those rebuild only on a fingerprint change or `--no-cache`.
 
 ## launch
 

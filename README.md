@@ -166,7 +166,7 @@ the directory layout and safe setup.
 
 ```sh
 jms build --base --pull --no-cache   # rebuild the shared base from upstream
-jms build --no-cache                 # rebuild this project's image
+jms build                            # rebuild this project's image onto it
 make uninstall                       # remove the jms command and completion
 ```
 
