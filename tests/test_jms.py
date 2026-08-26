@@ -1209,17 +1209,19 @@ class BuildTestsPodman(BuildTests):
 
 
 class ContainerfileBaseDetectionTests(unittest.TestCase):
-    def check(self, content, expected):
+    def check(self, content, expected, backend=None):
         with tempfile.TemporaryDirectory() as tmp:
             pathlib.Path(tmp, "Containerfile").write_bytes(content)
-            self.assertEqual(JMS.containerfile_uses_base(os.fsencode(tmp)), expected,
-                             content)
+            context = (mock.patch.object(JMS, "_RUNTIME", backend)
+                       if backend is not None else contextlib.nullcontext())
+            with context:
+                self.assertEqual(JMS.containerfile_uses_base(os.fsencode(tmp)), expected,
+                                 (backend.name if backend is not None else None, content))
 
     def test_from_line_matrix(self):
         for content, expected in [
             (b"FROM jmscontainers-base:latest\n", True),
             (b"FROM jmscontainers-base\n", True),
-            (b"FROM localhost/jmscontainers-base:latest AS build\n", True),
             (b"from --platform=linux/amd64 jmscontainers-base:latest\n", True),
             (b"FROM fedora:42\nFROM jmscontainers-base:latest AS tools\n", True),
             (b"FROM \\\n    jmscontainers-base:latest\n", True),
@@ -1231,6 +1233,40 @@ class ContainerfileBaseDetectionTests(unittest.TestCase):
             (b"", False),
         ]:
             self.check(content, expected)
+
+    def test_backend_qualified_base_names(self):
+        apple, podman = JMS.ContainerBackend(), JMS.PodmanBackend()
+        for backend, content, expected in [
+            (apple, b"FROM jmscontainers-base:latest\n", True),
+            (podman, b"FROM jmscontainers-base:latest\n", True),
+            (apple, b"FROM docker.io/library/jmscontainers-base:latest\n", True),
+            (apple, b"FROM localhost/jmscontainers-base:latest\n", False),
+            (podman, b"FROM localhost/jmscontainers-base:latest AS build\n", True),
+            (podman, b"FROM docker.io/library/jmscontainers-base:latest\n", False),
+        ]:
+            with self.subTest(backend=backend.name, content=content):
+                self.check(content, expected, backend)
+
+    def test_apple_qualified_base_change_rebuilds_and_stamps(self):
+        containerfile = b"FROM docker.io/library/jmscontainers-base:latest\n"
+        with sandbox() as home:
+            root = make_project(home, containerfile=containerfile)
+            data = JMS.project_data(JMS.canon(os.fsencode(root)))
+            tag = data["tag_prefix"] + ":" + data["tf"][:12]
+            images = {
+                JMS.BASE: image_record(JMS.BASE),
+                tag: image_record(tag, labels={
+                    "jms.project": data["pid"],
+                    "jms.fingerprint": data["tf"],
+                    "jms.base": "0" * 64,
+                }),
+            }
+            with fake_runtime(backend="container", images=images) as runtime, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(JMS.build_project(data, JMS.parse_cli(["build"])),
+                                 (tag, True))
+            self.assertEqual(runtime.images[tag]["labels"].get("jms.base"),
+                             fake_hex_id(JMS.BASE))
 
 
 class RuntimeGateTests(unittest.TestCase):

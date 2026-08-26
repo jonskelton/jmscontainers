@@ -1602,7 +1602,6 @@ def containerfile_uses_base(spec: bytes) -> bool:
     resolved; such a project keeps the fingerprint-only rebuild rule and can
     still force a rebuild with --no-cache.
     """
-    candidates = {BASE_REPOSITORY, BASE, "localhost/" + BASE_REPOSITORY, "localhost/" + BASE}
     with open(os.path.join(spec, b"Containerfile"), "rb") as handle:
         text = handle.read().decode("utf-8", "replace")
     logical = ""
@@ -1617,7 +1616,7 @@ def containerfile_uses_base(spec: bytes) -> bool:
         logical = ""
         if tokens and tokens[0].upper() == "FROM":
             refs = [token for token in tokens[1:] if not token.startswith("--")]
-            if refs and refs[0] in candidates:
+            if refs and local_name(refs[0]) in {BASE_REPOSITORY, BASE}:
                 return True
     return False
 
