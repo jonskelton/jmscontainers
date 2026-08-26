@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Named build stages no longer look like the shared base.** A later `FROM`
+  that exactly references an alias declared by an earlier `FROM ... AS` is
+  excluded from shared-base staleness detection, preventing an unrelated base
+  refresh from rebuilding multi-stage projects.
+
 - **A rebuilt base makes project images stale.** Project images built `FROM
   jmscontainers-base` record the base image id as a `jms.base` label; `jms
   build` and `jms launch` compare it against the current local base and
