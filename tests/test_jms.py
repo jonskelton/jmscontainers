@@ -109,9 +109,10 @@ def fake_hex_id(name):
     return hashlib.sha256(name.encode()).hexdigest()
 
 
-def image_record(ref, created="2026-01-01T00:00:00Z", labels=None):
+def image_record(ref, created="2026-01-01T00:00:00Z", labels=None, ident=None):
     """Normalized fake-image state; FakeRuntime renders it per backend."""
-    return {"created": created, "labels": dict(labels or {})}
+    return {"ident": ident or fake_hex_id(ref),
+            "created": created, "labels": dict(labels or {})}
 
 
 class FakeRuntime:
@@ -142,7 +143,7 @@ class FakeRuntime:
     def apple_images_payload(self):
         records = []
         for ref, spec in self.images.items():
-            digest = fake_hex_id(ref)
+            digest = spec["ident"]
             records.append({"id": digest,
                             "configuration": {"name": ref, "creationDate": spec["created"],
                                               "descriptor": {"digest": "sha256:" + digest}},
@@ -150,12 +151,29 @@ class FakeRuntime:
         return records
 
     def podman_images_payload(self):
+        names_by_ident = {}
+        for ref, spec in self.images.items():
+            names_by_ident.setdefault(spec["ident"], []).append(ref)
         records = []
         for ref, spec in self.images.items():
             epoch = int(datetime.datetime.fromisoformat(spec["created"]).timestamp())
-            records.append({"Id": fake_hex_id(ref), "Names": [ref], "Created": epoch,
+            records.append({"Id": spec["ident"],
+                            "Names": sorted(names_by_ident[spec["ident"]]), "Created": epoch,
                             "Labels": dict(spec["labels"]) or None})
         return records
+
+    def apple_inspect_payload(self, ref):
+        spec = self.images[ref]
+        digest = spec["ident"]
+        return [{"id": digest,
+                 "configuration": {"name": ref, "creationDate": spec["created"],
+                                   "descriptor": {"digest": "sha256:" + digest}},
+                 "variants": [{"config": {"config": {
+                     "Labels": dict(spec["labels"])}}}]}]
+
+    def podman_inspect_payload(self, ref):
+        spec = self.images[ref]
+        return [{"Id": spec["ident"], "Labels": dict(spec["labels"]) or None}]
 
     def parse_build(self, argv, label_flag):
         self.build_count += 1
@@ -188,7 +206,7 @@ class FakeRuntime:
         if argv[:3] == ["container", "image", "inspect"]:
             ref = argv[3]
             if ref in self.images:
-                return self.payload(self.apple_images_payload())
+                return self.payload(self.apple_inspect_payload(ref))
             return self.result(returncode=1, stderr=("Error: image not found: " + ref).encode())
         if argv[:3] == ["container", "image", "list"]:
             return self.payload(self.apple_images_payload())
@@ -214,6 +232,13 @@ class FakeRuntime:
             return self.payload(load_fixture("podman-5.4.2-info.json"))
         if argv[:3] == ["podman", "image", "exists"]:
             return self.result(returncode=0 if argv[3] in self.images else 1)
+        if argv[:3] == ["podman", "image", "inspect"]:
+            ref = argv[3]
+            if ref in self.images:
+                return self.payload(self.podman_inspect_payload(ref))
+            return self.result(returncode=125,
+                               stderr=("Error: inspecting object: " + ref
+                                       + ": image not known\n").encode())
         if argv[:2] == ["podman", "images"]:
             return self.payload(self.podman_images_payload())
         if argv[:3] == ["podman", "image", "rm"]:
@@ -954,6 +979,7 @@ class BuildTests(unittest.TestCase):
     BACKEND = "container"
     EXE = "container"
     PULL_FLAG = "--pull"
+    QUALIFIED_PREFIX = "docker.io/library/"
 
     def build_args(self, *extra):
         return JMS.parse_cli(["build", *extra])
@@ -1019,9 +1045,14 @@ class BuildTests(unittest.TestCase):
     def test_matching_base_stamp_reuses_the_image(self):
         with sandbox() as home:
             data, tag, images = self.base_project(home)
-            with self.fake(images=images) as runtime, contextlib.redirect_stdout(io.StringIO()):
+            with self.fake(images=images) as runtime, \
+                 mock.patch.object(JMS, "image_facts", forbid), \
+                 contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(JMS.build_project(data, self.build_args()), (tag, False))
             self.assertEqual(runtime.build_count, 0)
+            inspections = [call["argv"][-1] for call in runtime.calls
+                           if call["argv"][1:3] == ["image", "inspect"]]
+            self.assertEqual(inspections, [JMS.BASE, tag])
 
     def test_changed_base_forces_a_rebuild_with_a_fresh_stamp(self):
         with sandbox() as home:
@@ -1081,6 +1112,81 @@ class BuildTests(unittest.TestCase):
                 self.assertEqual(JMS.build_project(data, self.build_args()), (tag, True))
             self.assertEqual(runtime.images[tag]["labels"].get("jms.base"),
                              fake_hex_id(JMS.BASE))
+
+    def test_qualified_candidate_tracks_only_a_shared_exact_identity(self):
+        qualified = self.QUALIFIED_PREFIX + JMS.BASE
+        containerfile = ("FROM " + qualified + "\n").encode()
+        with sandbox() as home:
+            data, tag, images = self.base_project(
+                home, stamp="0" * 64, containerfile=containerfile)
+            canonical_id = images[JMS.BASE]["ident"]
+            images[qualified] = image_record(qualified, ident=canonical_id)
+            with self.fake(images=images) as runtime, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(JMS.build_project(data, self.build_args()), (tag, True))
+            self.assertEqual(runtime.images[tag]["labels"].get("jms.base"), canonical_id)
+
+    def test_divergent_qualified_candidate_is_independent(self):
+        qualified = self.QUALIFIED_PREFIX + JMS.BASE
+        containerfile = ("FROM " + qualified + "\n").encode()
+        with sandbox() as home:
+            data, tag, images = self.base_project(
+                home, stamp=fake_hex_id(JMS.BASE), containerfile=containerfile)
+            images[qualified] = image_record(qualified, ident="f" * 64)
+            with self.fake(images=images) as runtime, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(JMS.build_project(data, self.build_args()), (tag, False))
+                self.assertEqual(JMS.build_project(data, self.build_args("--no-cache")),
+                                 (tag, True))
+            self.assertNotIn("jms.base", runtime.images[tag]["labels"])
+
+    def test_collision_digest_order_never_selects_the_lookalike(self):
+        qualified = self.QUALIFIED_PREFIX + JMS.BASE
+        for canonical_id, qualified_id in (("0" * 64, "f" * 64),
+                                            ("f" * 64, "0" * 64)):
+            with self.subTest(canonical_id=canonical_id), sandbox() as home:
+                data, tag, images = self.base_project(home, stamp="1" * 64)
+                images[JMS.BASE] = image_record(JMS.BASE, ident=canonical_id)
+                images[qualified] = image_record(qualified, ident=qualified_id)
+                with self.fake(images=images) as runtime, \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(JMS.build_project(data, self.build_args()), (tag, True))
+                self.assertEqual(runtime.images[tag]["labels"].get("jms.base"), canonical_id)
+
+    def test_exact_project_tag_supplies_the_stamp_despite_a_name_collision(self):
+        with sandbox() as home:
+            data, tag, images = self.base_project(home)
+            collision = self.QUALIFIED_PREFIX + tag
+            images[collision] = image_record(collision, labels={"jms.base": "0" * 64})
+            with self.fake(images=images) as runtime, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(JMS.build_project(data, self.build_args()), (tag, False))
+            self.assertEqual(runtime.build_count, 0)
+
+    def test_qualified_lookalike_does_not_defeat_missing_canonical_rule(self):
+        qualified = self.QUALIFIED_PREFIX + JMS.BASE
+        with sandbox() as home:
+            data, tag, images = self.base_project(
+                home, stamp="0" * 64, with_base=False)
+            images[qualified] = image_record(qualified)
+            with self.fake(images=images) as runtime, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(JMS.build_project(data, self.build_args()), (tag, False))
+            self.assertEqual(runtime.build_count, 0)
+
+    def test_later_canonical_candidate_wins_after_a_divergent_candidate(self):
+        qualified = self.QUALIFIED_PREFIX + JMS.BASE
+        containerfile = ("FROM " + qualified + " AS divergent\n"
+                         "FROM " + JMS.BASE + "\n").encode()
+        with sandbox() as home:
+            data, tag, images = self.base_project(
+                home, stamp="0" * 64, containerfile=containerfile)
+            images[qualified] = image_record(qualified, ident="f" * 64)
+            with self.fake(images=images) as runtime, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(JMS.build_project(data, self.build_args()), (tag, True))
+            self.assertEqual(runtime.images[tag]["labels"].get("jms.base"),
+                             images[JMS.BASE]["ident"])
 
     def test_pull_without_base_is_rejected_with_the_update_recipe(self):
         with sandbox() as home:
@@ -1217,6 +1323,7 @@ class BuildTestsPodman(BuildTests):
     BACKEND = "podman"
     EXE = "podman"
     PULL_FLAG = "--pull=always"
+    QUALIFIED_PREFIX = "localhost/"
 
 
 class ContainerfileBaseDetectionTests(unittest.TestCase):
@@ -1226,40 +1333,40 @@ class ContainerfileBaseDetectionTests(unittest.TestCase):
             context = (mock.patch.object(JMS, "_RUNTIME", backend)
                        if backend is not None else contextlib.nullcontext())
             with context:
-                self.assertEqual(JMS.containerfile_uses_base(os.fsencode(tmp)), expected,
+                self.assertEqual(JMS.containerfile_base_sources(os.fsencode(tmp)), expected,
                                  (backend.name if backend is not None else None, content))
 
     def test_from_line_matrix(self):
         for content, expected in [
-            (b"FROM jmscontainers-base:latest\n", True),
-            (b"FROM jmscontainers-base\n", True),
-            (b"from --platform=linux/amd64 jmscontainers-base:latest\n", True),
-            (b"FROM fedora:42\nFROM jmscontainers-base:latest AS tools\n", True),
-            (b"FROM \\\n    jmscontainers-base:latest\n", True),
-            (b"# FROM jmscontainers-base:latest\nFROM fedora:42\n", False),
-            (b"ARG BASE=jmscontainers-base:latest\nFROM $BASE\n", False),
-            (b"FROM jmscontainers-base:v2\n", False),
-            (b"FROM jmscontainers-based:latest\n", False),
-            (b"COPY jmscontainers-base:latest /x\n", False),
-            (b"", False),
+            (b"FROM jmscontainers-base:latest\n", (JMS.BASE,)),
+            (b"FROM jmscontainers-base\n", (JMS.BASE_REPOSITORY,)),
+            (b"from --platform=linux/amd64 jmscontainers-base:latest\n", (JMS.BASE,)),
+            (b"FROM fedora:42\nFROM jmscontainers-base:latest AS tools\n", (JMS.BASE,)),
+            (b"FROM \\\n    jmscontainers-base:latest\n", (JMS.BASE,)),
+            (b"# FROM jmscontainers-base:latest\nFROM fedora:42\n", ()),
+            (b"ARG BASE=jmscontainers-base:latest\nFROM $BASE\n", ()),
+            (b"FROM jmscontainers-base:v2\n", ()),
+            (b"FROM jmscontainers-based:latest\n", ()),
+            (b"COPY jmscontainers-base:latest /x\n", ()),
+            (b"", ()),
         ]:
             self.check(content, expected)
 
     def test_earlier_stage_aliases_are_not_image_references(self):
         for content, expected in [
             (b"FROM fedora:42 AS jmscontainers-base\n"
-             b"FROM jmscontainers-base\n", False),
+             b"FROM jmscontainers-base\n", ()),
             (b"FROM fedora:42 AS other\n"
-             b"FROM jmscontainers-base\n", True),
+             b"FROM jmscontainers-base\n", (JMS.BASE_REPOSITORY,)),
             (b"FROM jmscontainers-base:latest AS build\n"
-             b"FROM build\n", True),
+             b"FROM build\n", (JMS.BASE,)),
             (b"FROM fedora:42 \\\n"
              b"    AS jmscontainers-base\n"
-             b"FROM jmscontainers-base\n", False),
+             b"FROM jmscontainers-base\n", ()),
             (b"FROM fedora:42 AS jmscontainers-base\n"
-             b"FROM jmscontainers-base:latest\n", True),
+             b"FROM jmscontainers-base:latest\n", (JMS.BASE,)),
             (b"FROM jmscontainers-base\n"
-             b"FROM fedora:42 AS jmscontainers-base\n", True),
+             b"FROM fedora:42 AS jmscontainers-base\n", (JMS.BASE_REPOSITORY,)),
         ]:
             with self.subTest(content=content):
                 self.check(content, expected)
@@ -1267,15 +1374,25 @@ class ContainerfileBaseDetectionTests(unittest.TestCase):
     def test_backend_qualified_base_names(self):
         apple, podman = JMS.ContainerBackend(), JMS.PodmanBackend()
         for backend, content, expected in [
-            (apple, b"FROM jmscontainers-base:latest\n", True),
-            (podman, b"FROM jmscontainers-base:latest\n", True),
-            (apple, b"FROM docker.io/library/jmscontainers-base:latest\n", True),
-            (apple, b"FROM localhost/jmscontainers-base:latest\n", False),
-            (podman, b"FROM localhost/jmscontainers-base:latest AS build\n", True),
-            (podman, b"FROM docker.io/library/jmscontainers-base:latest\n", False),
+            (apple, b"FROM jmscontainers-base:latest\n", (JMS.BASE,)),
+            (podman, b"FROM jmscontainers-base:latest\n", (JMS.BASE,)),
+            (apple, b"FROM docker.io/library/jmscontainers-base:latest\n",
+             ("docker.io/library/" + JMS.BASE,)),
+            (apple, b"FROM localhost/jmscontainers-base:latest\n", ()),
+            (podman, b"FROM localhost/jmscontainers-base:latest AS build\n",
+             ("localhost/" + JMS.BASE,)),
+            (podman, b"FROM docker.io/library/jmscontainers-base:latest\n", ()),
         ]:
             with self.subTest(backend=backend.name, content=content):
                 self.check(content, expected, backend)
+
+    def test_candidates_are_ordered_and_deduplicated(self):
+        qualified = "docker.io/library/" + JMS.BASE
+        content = ("FROM " + qualified + " AS divergent\n"
+                   "FROM " + JMS.BASE + " AS direct\n"
+                   "FROM " + qualified + " AS repeated\n"
+                   "FROM direct\n").encode()
+        self.check(content, (qualified, JMS.BASE), JMS.ContainerBackend())
 
     def test_apple_qualified_base_change_rebuilds_and_stamps(self):
         containerfile = b"FROM docker.io/library/jmscontainers-base:latest\n"
@@ -1285,6 +1402,8 @@ class ContainerfileBaseDetectionTests(unittest.TestCase):
             tag = data["tag_prefix"] + ":" + data["tf"][:12]
             images = {
                 JMS.BASE: image_record(JMS.BASE),
+                "docker.io/library/" + JMS.BASE: image_record(
+                    "docker.io/library/" + JMS.BASE, ident=fake_hex_id(JMS.BASE)),
                 tag: image_record(tag, labels={
                     "jms.project": data["pid"],
                     "jms.fingerprint": data["tf"],
@@ -2622,6 +2741,135 @@ def proc_result(returncode=0, stdout=b"", stderr=b""):
     return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
+class ResolveImageTests(unittest.TestCase):
+    """Exact runtime reference resolution, independent of list normalization."""
+
+    def apple_record(self, ident="a" * 64, labels=None):
+        return {"id": ident,
+                "configuration": {"descriptor": {"digest": "sha256:" + ident}},
+                "variants": [{"config": {"config": {"Labels": labels}}}]}
+
+    def podman_record(self, ident="a" * 64, labels=None):
+        return {"Id": ident, "Labels": labels}
+
+    def runner(self, payloads):
+        def run(argv, **kwargs):
+            value = payloads[argv[-1]]
+            if isinstance(value, tuple):
+                return proc_result(*value)
+            return proc_result(stdout=json.dumps(value).encode())
+        return run
+
+    def test_present_refs_return_exact_ids_and_labels(self):
+        cases = [
+            (JMS.ContainerBackend(), self.apple_record),
+            (JMS.PodmanBackend(), self.podman_record),
+        ]
+        for backend, record in cases:
+            payloads = {
+                "same:1": [record("a" * 64, {"jms.base": "b" * 64})],
+                "alias:1": [record("a" * 64, {"jms.base": "b" * 64})],
+                "different:1": [record("f" * 64, {})],
+            }
+            with self.subTest(backend=backend.name), \
+                 mock.patch.object(JMS, "runtime_run", self.runner(payloads)):
+                same = backend.resolve_image("same:1")
+                alias = backend.resolve_image("alias:1")
+                different = backend.resolve_image("different:1")
+            self.assertEqual(same, JMS.ResolvedImage("a" * 64,
+                                                    {"jms.base": "b" * 64}))
+            self.assertEqual(alias.ident, same.ident)
+            self.assertEqual(different.ident, "f" * 64)
+
+    def test_backend_resolution_argv_is_exact(self):
+        cases = [
+            (JMS.ContainerBackend(), [self.apple_record()]),
+            (JMS.PodmanBackend(), [self.podman_record()]),
+        ]
+        for backend, payload in cases:
+            seen = []
+            def run(argv, **kwargs):
+                seen.append(argv)
+                self.assertFalse(kwargs["check"])
+                return proc_result(stdout=json.dumps(payload).encode())
+            with self.subTest(backend=backend.name), \
+                 mock.patch.object(JMS, "runtime_run", run):
+                backend.resolve_image("exact:1")
+            self.assertEqual(seen, [[backend.exe, "image", "inspect", "exact:1"]])
+
+    def test_apple_qualified_fixture_resolves_and_absence_fixture_is_none(self):
+        payload = load_fixture("apple-container-1.2.2-image-inspect.json")
+        stderr = (FIXTURES / "apple-container-1.2.2-image-inspect-absent.stderr").read_bytes()
+        def run(argv, **kwargs):
+            if argv[-1] == "jms-resolve-fixture:latest":
+                return proc_result(stdout=json.dumps(payload).encode())
+            return proc_result(returncode=1, stderr=stderr)
+        backend = JMS.ContainerBackend()
+        with mock.patch.object(JMS, "runtime_run", run):
+            resolved = backend.resolve_image("jms-resolve-fixture:latest")
+            absent = backend.resolve_image("jms-resolve-fixture-absent:latest")
+        self.assertEqual(resolved.ident,
+                         "e11d120a4abc5b752be4e129550800c8333e3b9bb45022d6ce5b40d686069227")
+        self.assertEqual(resolved.labels, {"jms.fixture": "exact-resolve"})
+        self.assertIsNone(absent)
+
+    def test_absence_is_narrowly_classified_per_backend(self):
+        apple = JMS.ContainerBackend()
+        with mock.patch.object(JMS, "runtime_run", self.runner({
+                "x:1": (1, b"", b"Error: image not found: x:1\n")})):
+            self.assertIsNone(apple.resolve_image("x:1"))
+        podman = JMS.PodmanBackend()
+        with mock.patch.object(JMS, "runtime_run", self.runner({
+                "x:1": (125, b"", b"Error: inspecting object: x:1: image not known\n")})):
+            self.assertIsNone(podman.resolve_image("x:1"))
+        failures = [
+            (apple, (1, b"", b"Error: connection refused\n")),
+            (podman, (125, b"", b"Error: storage corrupt\n")),
+            (podman, (1, b"", b"Error: inspecting object: x:1: image not known\n")),
+        ]
+        for backend, result in failures:
+            with self.subTest(backend=backend.name, result=result), \
+                 mock.patch.object(JMS, "runtime_run", self.runner({"x:1": result})):
+                with self.assertRaisesRegex(JMS.JMSException, "image inspect failed"):
+                    backend.resolve_image("x:1")
+
+    def test_success_requires_one_valid_unambiguous_record(self):
+        ident = "a" * 64
+        other = "b" * 64
+        apple_record = self.apple_record(ident, {})
+        bad_digest = self.apple_record(ident, {})
+        bad_digest["configuration"]["descriptor"]["digest"] = "sha256:" + other
+        cases = [
+            (JMS.ContainerBackend(), []),
+            (JMS.ContainerBackend(), [apple_record, apple_record]),
+            (JMS.ContainerBackend(), [bad_digest]),
+            (JMS.ContainerBackend(), [self.apple_record(ident, {"bad": 7})]),
+            (JMS.PodmanBackend(), []),
+            (JMS.PodmanBackend(), [self.podman_record(ident), self.podman_record(ident)]),
+            (JMS.PodmanBackend(), [self.podman_record("A" * 64)]),
+            (JMS.PodmanBackend(), [self.podman_record(ident, {"bad": 7})]),
+        ]
+        for backend, payload in cases:
+            with self.subTest(backend=backend.name, payload=payload), \
+                 mock.patch.object(JMS, "runtime_run", self.runner({"x:1": payload})):
+                with self.assertRaises(JMS.JMSException):
+                    backend.resolve_image("x:1")
+
+    def test_invalid_json_and_diagnostics_are_terminal_safe(self):
+        for backend in (JMS.ContainerBackend(), JMS.PodmanBackend()):
+            def invalid_json(argv, **kwargs):
+                return proc_result(stdout=b"not-json\xff")
+            with self.subTest(backend=backend.name), \
+                 mock.patch.object(JMS, "runtime_run", invalid_json):
+                with self.assertRaisesRegex(JMS.JMSException, r"invalid JSON.*\\xff"):
+                    backend.resolve_image("x:1")
+            def invalid_error(argv, **kwargs):
+                return proc_result(returncode=1, stderr=b"bad\xff")
+            with mock.patch.object(JMS, "runtime_run", invalid_error):
+                with self.assertRaisesRegex(JMS.JMSException, r"invalid output.*\\xff"):
+                    backend.resolve_image("x:1")
+
+
 class RemovalClassificationTests(unittest.TestCase):
     """R5.9: normalized RemovalResult outcomes on both backends."""
 
@@ -3028,11 +3276,11 @@ class SeamTests(unittest.TestCase):
         "name", "exe", "install_hint", "version_min", "version_max",
         "version_argv", "parse_version", "local_name", "mount_argument",
         "build_argv", "run_argv",
-        "validate_version", "ensure_started", "image_exists", "image_facts",
+        "validate_version", "ensure_started", "image_exists", "resolve_image", "image_facts",
         "ps", "stop_container", "remove_container", "remove_image",
     })
 
-    def test_no_backend_exposes_an_image_inspection_operation(self):
+    def test_backends_expose_only_the_normalized_resolution_operation(self):
         # R3.2 (conformance half): the public surface of each backend is
         # exactly the protocol -- in particular, no verify_image_abi and no
         # operation that reads an image's filesystem exists on any backend.

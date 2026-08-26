@@ -115,6 +115,14 @@ is skipped for projects whose Containerfile does not name
 `jmscontainers-base` in a `FROM` line (including `ARG`-indirected bases);
 those rebuild only on a fingerprint change or `--no-cache`.
 
+The runtime resolves every candidate `FROM` reference exactly. A qualified
+spelling such as `docker.io/library/jmscontainers-base:latest` counts as the
+shared base only when it resolves to the same image ID as the canonical local
+`jmscontainers-base:latest` reference. If the two spellings resolve to
+different images, the qualified image is treated as an independent external
+base and the project is not stamped with the canonical ID. An absent
+canonical local base never forces an existing project image to rebuild.
+
 ## launch
 
 `launch` discovers the nearest definition, applies the consent gate, builds
