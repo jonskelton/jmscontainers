@@ -1060,6 +1060,17 @@ class BuildTests(unittest.TestCase):
                                  (tag, True))
             self.assertNotIn("jms.base", runtime.images[tag]["labels"])
 
+    def test_a_stage_alias_named_like_the_base_does_not_force_a_rebuild(self):
+        containerfile = (b"FROM fedora:42 AS jmscontainers-base\n"
+                         b"FROM jmscontainers-base\n")
+        with sandbox() as home:
+            data, tag, images = self.base_project(
+                home, stamp=None, containerfile=containerfile)
+            with self.fake(images=images) as runtime, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(JMS.build_project(data, self.build_args()), (tag, False))
+            self.assertEqual(runtime.build_count, 0)
+            self.assertNotIn("jms.base", runtime.images[tag]["labels"])
+
     def test_a_first_build_stamps_the_current_base_id(self):
         with sandbox() as home:
             root = make_project(home)
@@ -1233,6 +1244,25 @@ class ContainerfileBaseDetectionTests(unittest.TestCase):
             (b"", False),
         ]:
             self.check(content, expected)
+
+    def test_earlier_stage_aliases_are_not_image_references(self):
+        for content, expected in [
+            (b"FROM fedora:42 AS jmscontainers-base\n"
+             b"FROM jmscontainers-base\n", False),
+            (b"FROM fedora:42 AS other\n"
+             b"FROM jmscontainers-base\n", True),
+            (b"FROM jmscontainers-base:latest AS build\n"
+             b"FROM build\n", True),
+            (b"FROM fedora:42 \\\n"
+             b"    AS jmscontainers-base\n"
+             b"FROM jmscontainers-base\n", False),
+            (b"FROM fedora:42 AS jmscontainers-base\n"
+             b"FROM jmscontainers-base:latest\n", True),
+            (b"FROM jmscontainers-base\n"
+             b"FROM fedora:42 AS jmscontainers-base\n", True),
+        ]:
+            with self.subTest(content=content):
+                self.check(content, expected)
 
     def test_backend_qualified_base_names(self):
         apple, podman = JMS.ContainerBackend(), JMS.PodmanBackend()

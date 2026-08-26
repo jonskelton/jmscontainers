@@ -1598,13 +1598,15 @@ def containerfile_uses_base(spec: bytes) -> bool:
     """True when a FROM line in the project Containerfile names the shared base.
 
     Textual per the Containerfile line grammar (comments, continuations, an
-    optional --platform flag, an AS alias).  An ARG-indirected FROM is not
-    resolved; such a project keeps the fingerprint-only rebuild rule and can
-    still force a rebuild with --no-cache.
+    optional --platform flag, an AS alias). References to exact aliases from
+    earlier stages are excluded. An ARG-indirected FROM is not resolved; such
+    a project keeps the fingerprint-only rebuild rule and can still force a
+    rebuild with --no-cache.
     """
     with open(os.path.join(spec, b"Containerfile"), "rb") as handle:
         text = handle.read().decode("utf-8", "replace")
     logical = ""
+    aliases = set()
     for raw in text.split("\n") + [""]:
         stripped = raw.strip()
         if stripped.startswith("#"):
@@ -1616,8 +1618,13 @@ def containerfile_uses_base(spec: bytes) -> bool:
         logical = ""
         if tokens and tokens[0].upper() == "FROM":
             refs = [token for token in tokens[1:] if not token.startswith("--")]
-            if refs and local_name(refs[0]) in {BASE_REPOSITORY, BASE}:
+            if not refs:
+                continue
+            source = refs[0]
+            if source not in aliases and local_name(source) in {BASE_REPOSITORY, BASE}:
                 return True
+            if len(refs) == 3 and refs[1].upper() == "AS":
+                aliases.add(refs[2])
     return False
 
 
