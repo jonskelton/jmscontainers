@@ -6,8 +6,9 @@
 # Usage: integration.sh [a|b|all]   (default: all)
 #
 #   Tier A -- fast, base image only: readiness, base build, shared launch
-#            contracts and failure cleanup, plus Linux ambient-config,
-#            nested-bwrap, and FROM-resolution-under-egress-denial probes.
+#            contracts and failure cleanup, plus the Apple exact-base
+#            collision regression or Linux ambient-config, nested-bwrap,
+#            and FROM-resolution-under-egress-denial probes.
 #   Tier B -- expensive, example images: per-example build/inspect/launch/
 #            clean cycle, context-escape, auth mounts, manifest env parity,
 #            survivor-set graph run, clean-store standalone external base
@@ -69,6 +70,11 @@ mkdir -p "$HOME/.cache/odin" "$HOME/.cache/pip" \
 work=$(mktemp -d)
 nft_table="jms-integration-$$"
 nft_installed=0
+apple_collision_active=0
+apple_collision_had_qualified=0
+apple_collision_qualified="docker.io/library/jmscontainers-base:latest"
+apple_collision_saved="docker.io/library/jms-itest-base-save-$$:keep"
+apple_collision_probes=""
 
 install_egress_denial() {
     # Harness-owned nftables table dropping all non-loopback output whose
@@ -98,10 +104,92 @@ remove_egress_denial() {
     fi
 }
 
+apple_image_id() {
+    container image inspect "$1" | python3 -c '
+import json, re, sys
+records = json.load(sys.stdin)
+if not isinstance(records, list) or len(records) != 1:
+    raise SystemExit(2)
+record = records[0]
+ident = record.get("id") if isinstance(record, dict) else None
+configuration = record.get("configuration") if isinstance(record, dict) else None
+descriptor = configuration.get("descriptor") if isinstance(configuration, dict) else None
+digest = descriptor.get("digest") if isinstance(descriptor, dict) else None
+if not isinstance(ident, str) or re.fullmatch("[0-9a-f]{64}", ident) is None \
+        or digest != "sha256:" + ident:
+    raise SystemExit(2)
+print(ident)
+'
+}
+
+apple_base_label() {
+    container image inspect "$1" | python3 -c '
+import json, sys
+records = json.load(sys.stdin)
+if not isinstance(records, list) or len(records) != 1:
+    raise SystemExit(2)
+record = records[0]
+variants = record.get("variants") if isinstance(record, dict) else None
+if not isinstance(variants, list) or not variants or not isinstance(variants[0], dict):
+    raise SystemExit(2)
+outer = variants[0].get("config")
+inner = outer.get("config") if isinstance(outer, dict) else None
+labels = inner.get("Labels") if isinstance(inner, dict) else None
+if labels is None:
+    labels = {}
+if not isinstance(labels, dict):
+    raise SystemExit(2)
+value = labels.get("jms.base")
+if value is not None and not isinstance(value, str):
+    raise SystemExit(2)
+print(value if value is not None else "<absent>")
+'
+}
+
+restore_apple_collision() {
+    [ "$apple_collision_active" = 1 ] || return 0
+    restored=1
+    if [ "$apple_collision_had_qualified" = 1 ]; then
+        if ! container image tag "$apple_collision_saved" "$apple_collision_qualified" \
+                >/dev/null 2>&1; then
+            restored=0
+        elif current=$(apple_image_id "$apple_collision_qualified" 2>/dev/null); then
+            [ "$current" = "$apple_collision_original_id" ] || restored=0
+        else
+            restored=0
+        fi
+    else
+        container image delete --force "$apple_collision_qualified" >/dev/null 2>&1 || restored=0
+        if apple_image_id "$apple_collision_qualified" >/dev/null 2>&1; then
+            restored=0
+        fi
+    fi
+    if [ "$restored" -ne 1 ]; then
+        echo "harness failure: could not restore the pre-test qualified shared-base ref" >&2
+        echo "preservation alias retained as $apple_collision_saved" >&2
+        harness_failed=1
+        return 0
+    fi
+    if [ "$apple_collision_had_qualified" = 1 ]; then
+        container image delete --force "$apple_collision_saved" >/dev/null 2>&1 || {
+            echo "harness failure: could not remove collision preservation alias" >&2
+            harness_failed=1
+        }
+    fi
+    for probe in $apple_collision_probes; do
+        container image delete --force "$probe" >/dev/null 2>&1 || {
+            echo "harness failure: could not remove collision probe $probe" >&2
+            harness_failed=1
+        }
+    done
+    apple_collision_active=0
+}
+
 harness_failed=0
 on_exit() {
     status=$?
     remove_egress_denial
+    restore_apple_collision
     for project in "$work"/*; do
         [ -d "$project" ] || continue
         "$root/bin/jms" clean --images -w "$project" >/dev/null 2>&1 || true
@@ -168,10 +256,102 @@ raise SystemExit(0 if any(isinstance(r, dict) and r.get("id") == sys.argv[2]
     esac
 }
 
+apple_exact_base_collision() {
+    echo "== apple exact shared-base identity collision =="
+    canonical_id=$(apple_image_id jmscontainers-base:latest) \
+        || fail "could not resolve the canonical base before collision test"
+
+    # Temporary aliases are fully qualified because apple/container qualifies
+    # manually tagged names. Refuse to overwrite a leftover harness alias.
+    if apple_image_id "$apple_collision_saved" >/dev/null 2>&1; then
+        fail "collision preservation alias already exists: $apple_collision_saved"
+    fi
+    apple_collision_active=1
+    if apple_collision_original_id=$(apple_image_id "$apple_collision_qualified" 2>/dev/null); then
+        apple_collision_had_qualified=1
+        container image tag "$apple_collision_qualified" "$apple_collision_saved" >/dev/null \
+            || fail "could not preserve the pre-test qualified shared-base ref"
+        saved_id=$(apple_image_id "$apple_collision_saved") \
+            || fail "could not inspect the collision preservation alias"
+        [ "$saved_id" = "$apple_collision_original_id" ] \
+            || fail "collision preservation alias changed image identity"
+    fi
+
+    generator="$work/apple-collision-generator"
+    mkdir -p "$generator"
+    lower_ref=""
+    higher_ref=""
+    attempt=0
+    while [ -z "$lower_ref" ] || [ -z "$higher_ref" ]; do
+        attempt=$((attempt + 1))
+        [ "$attempt" -le 64 ] \
+            || fail "could not generate probe IDs on both sides of the canonical digest"
+        probe="jms-itest-base-probe-$$-$attempt:latest"
+        printf 'FROM scratch\nLABEL jms.itest.collision=%s\n' "$attempt" \
+            > "$generator/Containerfile"
+        container build --tag "$probe" --file "$generator/Containerfile" "$generator" \
+            >/dev/null || fail "could not build collision probe $attempt"
+        apple_collision_probes="$apple_collision_probes $probe"
+        probe_id=$(apple_image_id "$probe") || fail "could not inspect collision probe $attempt"
+        relation=$(python3 -c 'import sys; print("lower" if sys.argv[1] < sys.argv[2] else "higher" if sys.argv[1] > sys.argv[2] else "equal")' "$probe_id" "$canonical_id")
+        case "$relation" in
+            lower)  [ -n "$lower_ref" ] || lower_ref=$probe ;;
+            higher) [ -n "$higher_ref" ] || higher_ref=$probe ;;
+            equal)  ;;
+            *) fail "could not compare collision probe identity" ;;
+        esac
+    done
+
+    for relation in lower higher; do
+        if [ "$relation" = lower ]; then probe=$lower_ref; else probe=$higher_ref; fi
+        probe_id=$(apple_image_id "$probe") || fail "could not re-inspect $relation probe"
+        container image tag "$probe" "$apple_collision_qualified" >/dev/null \
+            || fail "could not install $relation qualified collision probe"
+        selected=$(apple_image_id "$apple_collision_qualified") \
+            || fail "could not resolve installed $relation qualified collision probe"
+        [ "$selected" = "$probe_id" ] \
+            || fail "$relation qualified collision resolved to an unexpected identity"
+
+        unqualified="$work/apple-collision-unqualified-$relation"
+        mkdir -p "$unqualified/.jmscontainer"
+        printf 'FROM jmscontainers-base:latest\nLABEL jms.itest=collision-unqualified-%s\n' \
+            "$relation" > "$unqualified/.jmscontainer/Containerfile"
+        output=$(jms build --trust --no-auth -w "$unqualified") \
+            || fail "$relation unqualified collision project did not build"
+        tag=$(printf '%s\n' "$output" | sed -n 's/^built project image //p')
+        [ -n "$tag" ] \
+            || fail "$relation unqualified collision build did not report its project tag"
+        stamp=$(apple_base_label "$tag") \
+            || fail "could not inspect $relation unqualified collision project"
+        [ "$stamp" = "$canonical_id" ] \
+            || fail "$relation unqualified collision project recorded $stamp, expected $canonical_id"
+
+        project="$work/apple-collision-qualified-$relation"
+        mkdir -p "$project/.jmscontainer"
+        printf 'FROM docker.io/library/jmscontainers-base:latest\nLABEL jms.itest=collision-qualified-%s\n' \
+            "$relation" > "$project/.jmscontainer/Containerfile"
+        output=$(jms build --trust --no-auth -w "$project") \
+            || fail "$relation qualified collision project did not build"
+        tag=$(printf '%s\n' "$output" | sed -n 's/^built project image //p')
+        [ -n "$tag" ] || fail "$relation collision build did not report its project tag"
+        stamp=$(apple_base_label "$tag") \
+            || fail "could not inspect $relation qualified collision project"
+        [ "$stamp" = "<absent>" ] \
+            || fail "$relation qualified collision project was stamped with $stamp"
+    done
+
+    restore_apple_collision
+    [ "$harness_failed" -eq 0 ] || exit 3
+    echo "== apple exact shared-base identity collision passed =="
+}
+
 # ---------------------------------------------------------------- tier A --
 tier_a() {
     echo "== tier A: base image and launch contracts =="
     jms build --base
+    if [ "$runtime" = container ]; then
+        apple_exact_base_collision
+    fi
 
     # --- Backend-neutral launch-contract assertions (§9) ---
     proj="$work/tier-a"

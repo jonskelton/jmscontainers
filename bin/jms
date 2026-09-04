@@ -195,6 +195,13 @@ class RemovalResult:
 
 
 @dataclass(frozen=True)
+class ResolvedImage:
+    """The exact identity and labels selected by a runtime image reference."""
+    ident: str
+    labels: dict[str, str]
+
+
+@dataclass(frozen=True)
 class LaunchPlan:
     """Runtime-agnostic launch description consumed by each backend's run_argv()."""
     name: str                            # container name (given or generated)
@@ -304,17 +311,39 @@ class ContainerBackend:
                 detail = recheck.stderr or recheck.stdout or started.stderr or started.stdout or b""
                 fail("container runtime did not start: " + quote(detail))
 
-    def image_exists(self, image):
-        proc = runtime_run([self.exe, "image", "inspect", image], check=False)
+    def resolve_image(self, ref):
+        source = self.exe + " image inspect"
+        proc = runtime_run([self.exe, "image", "inspect", ref], check=False)
         if proc.returncode == 0:
-            return True
+            try:
+                records = json.loads(proc.stdout.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                fail(source + " returned invalid JSON for " + quote(ref) + ": "
+                     + quote(proc.stdout))
+            if not isinstance(records, list) or len(records) != 1:
+                fail(source + " did not return exactly one image record for " + quote(ref))
+            record = records[0]
+            if not isinstance(record, dict) or not isinstance(record.get("configuration"), dict):
+                fail(source + " returned a malformed image record for " + quote(ref))
+            configuration = record["configuration"]
+            ident = record.get("id")
+            descriptor = configuration.get("descriptor")
+            digest = descriptor.get("digest") if isinstance(descriptor, dict) else None
+            if not valid_hex64(ident) or digest != "sha256:" + ident:
+                fail(source + " returned an image record whose id does not match its descriptor digest")
+            labels = normalized_labels(self._raw_labels(record, source), source)
+            return ResolvedImage(ident, labels)
         try:
             first_line = proc.stderr.decode("utf-8").split("\n", 1)[0]
         except UnicodeDecodeError:
-            fail("container image inspect failed with invalid output for " + quote(image) + ": " + quote(proc.stderr))
-        if first_line == "Error: image not found: " + image:
-            return False
-        fail("container image inspect failed for " + quote(image) + ": " + quote(proc.stderr))
+            fail(source + " failed with invalid output for " + quote(ref) + ": "
+                 + quote(proc.stderr))
+        if first_line == "Error: image not found: " + ref:
+            return None
+        fail(source + " failed for " + quote(ref) + ": " + quote(proc.stderr))
+
+    def image_exists(self, image):
+        return self.resolve_image(image) is not None
 
     def _parse_creation_date(self, value, source):
         # Strict ISO-8601 with an explicit UTC offset; naive, unparseable, or
@@ -608,6 +637,37 @@ class PodmanBackend:
         if proc.returncode == 1:
             return False
         fail("podman image exists failed for " + quote(image) + ": "
+             + quote(proc.stderr or proc.stdout or b""))
+
+    def resolve_image(self, ref):
+        source = self.exe + " image inspect"
+        proc = runtime_run([self.exe, "image", "inspect", ref], check=False)
+        if proc.returncode == 0:
+            try:
+                records = json.loads(proc.stdout.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                fail(source + " returned invalid JSON for " + quote(ref) + ": "
+                     + quote(proc.stdout))
+            if not isinstance(records, list) or len(records) != 1:
+                fail(source + " did not return exactly one image record for " + quote(ref))
+            record = records[0]
+            if not isinstance(record, dict):
+                fail(source + " returned a malformed image record for " + quote(ref))
+            ident = record.get("Id")
+            if not valid_hex64(ident):
+                fail(source + " returned a malformed image id")
+            return ResolvedImage(ident, normalized_labels(record.get("Labels"), source))
+        try:
+            first_line = proc.stderr.decode("utf-8").split("\n", 1)[0]
+        except UnicodeDecodeError:
+            fail(source + " failed with invalid output for " + quote(ref) + ": "
+                 + quote(proc.stderr))
+        # Synthetic until recaptured on the qualified Podman 5.4.2 host.
+        # The release gate must pin this diagnostic before accepting the parser.
+        if (proc.returncode == 125
+                and first_line == "Error: inspecting object: " + ref + ": image not known"):
+            return None
+        fail(source + " failed for " + quote(ref) + ": "
              + quote(proc.stderr or proc.stdout or b""))
 
     def image_facts(self):
@@ -1423,6 +1483,10 @@ def image_exists(image: str) -> bool:
     return runtime().image_exists(image)
 
 
+def resolve_image(ref: str) -> ResolvedImage | None:
+    return runtime().resolve_image(ref)
+
+
 def image_facts() -> list:
     """Normalized (id, refs, created, labels) facts, one per image identity (§5)."""
     return runtime().image_facts()
@@ -1594,8 +1658,8 @@ def gc_project_images(pid: str, tag_prefix: str, *, keep: int, protect: str | No
     execute_removal_schedule(schedule, report)
 
 
-def containerfile_uses_base(spec: bytes) -> bool:
-    """True when a FROM line in the project Containerfile names the shared base.
+def containerfile_base_sources(spec: bytes) -> tuple[str, ...]:
+    """Ordered exact FROM refs whose spelling can denote the shared base.
 
     Textual per the Containerfile line grammar (comments, continuations, an
     optional --platform flag, an AS alias). References to exact aliases from
@@ -1607,6 +1671,8 @@ def containerfile_uses_base(spec: bytes) -> bool:
         text = handle.read().decode("utf-8", "replace")
     logical = ""
     aliases = set()
+    sources = []
+    seen = set()
     for raw in text.split("\n") + [""]:
         stripped = raw.strip()
         if stripped.startswith("#"):
@@ -1621,27 +1687,38 @@ def containerfile_uses_base(spec: bytes) -> bool:
             if not refs:
                 continue
             source = refs[0]
-            if source not in aliases and local_name(source) in {BASE_REPOSITORY, BASE}:
-                return True
+            if (source not in aliases
+                    and local_name(source) in {BASE_REPOSITORY, BASE}
+                    and source not in seen):
+                sources.append(source)
+                seen.add(source)
             if len(refs) == 3 and refs[1].upper() == "AS":
                 aliases.add(refs[2])
-    return False
+    return tuple(sources)
 
 
-def base_and_stamp(tag: str):
-    """(local base image id, the tag's jms.base label), each None when absent.
+def shared_base_dependency(spec: bytes) -> ResolvedImage | None:
+    """Return the canonical base only when an exact candidate resolves to it.
 
-    One image listing serves both sides of the staleness comparison so they
-    cannot come from different store snapshots.
+    Requests are deduplicated within this decision. Runtime inspection cannot
+    make a concurrent base rebuild and project build atomic: a race can stamp
+    the earlier identity and cause one conservative rebuild on the next run,
+    preserving eventual convergence without false up-to-date reuse.
     """
-    base_id = stamp = None
-    for ident, refs, _, labels in image_facts():
-        names = {local_name(ref) for ref in refs}
-        if BASE in names:
-            base_id = ident
-        if tag in names:
-            stamp = labels.get("jms.base")
-    return base_id, stamp
+    sources = containerfile_base_sources(spec)
+    if not sources:
+        return None
+    cache = {BASE: resolve_image(BASE)}
+    canonical = cache[BASE]
+    if canonical is None:
+        return None
+    for source in sources:
+        if source not in cache:
+            cache[source] = resolve_image(source)
+        candidate = cache[source]
+        if candidate is not None and candidate.ident == canonical.ident:
+            return canonical
+    return None
 
 
 def build_project(data, args):
@@ -1652,10 +1729,10 @@ def build_project(data, args):
     # no local base there is nothing to compare (or build from): the existing
     # image stands.  The rebuild needs no --no-cache -- a changed FROM image
     # invalidates the runtime's layer cache by itself.
-    base_id, stamp = (base_and_stamp(tag) if containerfile_uses_base(data["spec"])
-                      else (None, None))
-    if image_exists(tag) and not getattr(args, "no_cache", False):
-        if base_id is None or stamp == base_id:
+    base = shared_base_dependency(data["spec"])
+    project = resolve_image(tag)
+    if project is not None and not getattr(args, "no_cache", False):
+        if base is None or project.labels.get("jms.base") == base.ident:
             return tag, False
         print("base image changed; rebuilding " + quote(tag))
     # The consent decision was bound to a fingerprint; re-hash the definition
@@ -1664,8 +1741,8 @@ def build_project(data, args):
         fail("project definition changed during consent -- re-run")
     print("building " + quote(tag))
     labels = {"jms.project": data["pid"], "jms.fingerprint": data["tf"]}
-    if base_id is not None:
-        labels["jms.base"] = base_id
+    if base is not None:
+        labels["jms.base"] = base.ident
     run_build(data["spec"], tag, args, labels, project=True)
     # The tag returned here is what cmd_launch() runs; retention must never
     # untag it, however the store's timestamps happen to sort.

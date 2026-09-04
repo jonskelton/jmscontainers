@@ -1,0 +1,63 @@
+[
+  {
+    "configuration": {
+      "creationDate": "2026-08-26T19:17:39Z",
+      "descriptor": {
+        "annotations": {
+          "com.apple.containerization.image.name": "jms-resolve-fixture:latest",
+          "io.containerd.image.name": "docker.io/library/jms-resolve-fixture:latest",
+          "org.opencontainers.image.created": "2026-08-26T19:17:39Z",
+          "org.opencontainers.image.ref.name": "latest"
+        },
+        "digest": "sha256:e11d120a4abc5b752be4e129550800c8333e3b9bb45022d6ce5b40d686069227",
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "size": 374
+      },
+      "name": "jms-resolve-fixture:latest"
+    },
+    "id": "e11d120a4abc5b752be4e129550800c8333e3b9bb45022d6ce5b40d686069227",
+    "variants": [
+      {
+        "config": {
+          "architecture": "arm64",
+          "config": {
+            "Env": [
+              "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ],
+            "Labels": {
+              "jms.fixture": "exact-resolve"
+            },
+            "WorkingDir": "/"
+          },
+          "created": "2026-08-26T19:17:39.501426334Z",
+          "history": [
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-08-26T19:17:39.501426334Z",
+              "created_by": "LABEL jms.fixture=exact-resolve",
+              "empty_layer": true
+            },
+            {
+              "comment": "buildkit.exporter.image.v0",
+              "created": "2026-08-26T19:17:39.501426334Z",
+              "created_by": "mkfile /.container-metadata-only"
+            }
+          ],
+          "os": "linux",
+          "rootfs": {
+            "diff_ids": [
+              "sha256:8c0e2dedfcc181e663ab41eb9f6952a16e013cb3e18087233a15ef8261c53529"
+            ],
+            "type": "layers"
+          }
+        },
+        "digest": "sha256:9588b532eecbdc2852f831b996fb6f47fb5521db3dda48c2f86155fdeb32dec6",
+        "platform": {
+          "architecture": "arm64",
+          "os": "linux"
+        },
+        "size": 1265
+      }
+    ]
+  }
+]

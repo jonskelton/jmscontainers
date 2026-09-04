@@ -16,6 +16,8 @@ macOS 26.5.2, captured 2026-08-14.
 | File | Command | Notes |
 | --- | --- | --- |
 | `apple-container-1.2.2-images.json` | `container image list --format json` | Whole records filtered from live output; nothing inside a record is edited (MIR-025). Top-level `id` is the OCI index digest and equals `configuration.descriptor.digest` minus `sha256:`. One ref per record: the alias-tagged image appears as two records with the same `id`. Pulled/tagged names are registry-qualified (`docker.io/library/…`); built names are unqualified. |
+| `apple-container-1.2.2-image-inspect.json` | `container image inspect jms-resolve-fixture:latest` | Whole single-record output for a scratch-based, label-only probe. It pins the exact resolver's array cardinality, index ID/descriptor agreement, and nested label location. |
+| `apple-container-1.2.2-image-inspect-absent.stderr` | `container image inspect jms-resolve-fixture-absent:latest` | Raw stderr for an absent exact ref; the command exited 1 with empty stdout. |
 
 Capture recipe (probe-built, so no private image data enters the fixture;
 synthetic label values are `sha256` of `jms-fixture-project-root` /
@@ -32,6 +34,12 @@ synthetic label values are `sha256` of `jms-fixture-project-root` /
    records for `docker.io/library/fedora:latest` and the three probe
    refs; re-serialize per the sanitization rule above.
 5. Delete the probe images.
+
+The image-inspect fixtures were captured on the same qualified host on
+2026-08-26. The successful probe used `FROM scratch` and
+`LABEL jms.fixture=exact-resolve`; its whole inspect record was re-serialized
+per the sanitization rule. The absent fixture preserves the one emitted
+stderr line verbatim. Both probe refs were deleted after capture.
 
 Note: both probe builds are label-only, so their `creationDate` is
 inherited from the fedora parent's OCI config — evidence that
@@ -51,6 +59,12 @@ captured record).
 | `podman-5.4.2-images.json` | `podman images --format json` | Raw 5.4.2 shape: uppercase `Id`, `Names` array-or-null, integer `Created`, RFC3339 `CreatedAt`, top-level `Labels` map-or-null. Variants: named (`fedora`), multi-named jms-labelled (`jmsfix-labelled` `:latest` + `:alias`), unlabeled named (`"Labels": null`, MIR-053), and dangling (`"Names": null`, `"Labels": null`). |
 | `podman-5.4.2-ps.json` | `podman ps --all --format json` | Three containers: running with the `jms.container=launch` override and a bind mount; exited with inherited image labels only (marker stays `image`); exited with no jms labels at all (marker absent). Full 64-char `Id`; `Mounts` lists target paths only — no sources (MIR-007). |
 | `podman-5.4.2-inspect.json` | `podman inspect --type container --format json <running-id>` | Single-element array; `Mounts[]` carries string `Source` and `Destination` — the leak-sweep contract's source of truth (§9). |
+
+An image-inspect fixture is intentionally still pending. Exact image
+resolution currently has synthetic conformance coverage based on Podman's
+documented single-record `Id`/`Labels` shape and expected 5.4.2 absence
+diagnostic; neither is release-qualified until recaptured on the Debian 13
+rootless Podman 5.4.2 host and recorded here.
 
 **Engine-reality notes pinned by this capture:**
 

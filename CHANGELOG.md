@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Shared-base freshness now follows exact runtime image identity.** Qualified
+  and unqualified image names that normalize alike can coexist on
+  apple/container while resolving to different images. Project builds now
+  inspect the exact canonical base, each candidate `FROM` ref, and the exact
+  project tag; `jms.base` is stamped only when a candidate resolves to the
+  canonical identity. Digest ordering can no longer select an unrelated
+  image or defeat the missing-base reuse rule.
+
 - **Named build stages no longer look like the shared base.** A later `FROM`
   that exactly references an alias declared by an earlier `FROM ... AS` is
   excluded from shared-base staleness detection, preventing an unrelated base

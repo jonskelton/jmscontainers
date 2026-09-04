@@ -24,4 +24,6 @@ details intentionally kept out of the quick path.
 - [Multi-runtime implementation record](multi-runtime-implementation.md)
 - [Standalone image ABI proposal](standalone-image-user-abi-proposal.md)
 - [Containerfile stage-alias proposal](containerfile-stage-alias-proposal.md)
+- [Exact shared-base identity proposal](exact-base-identity-proposal.md)
+- [Podman image-inspect qualification project](podman-image-inspect-qualification.md)
 - [macOS qualification guide](macos-qualification-guide.md): reusable release procedure and evidence requirements

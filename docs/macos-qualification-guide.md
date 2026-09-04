@@ -63,11 +63,16 @@ valid initial state and should be recorded.
    script -q /tmp/jms-itest-$(date +%Y%m%d).log scripts/integration.sh all
    ```
 
-   Answer the credential prompt affirmatively. Success requires both
-   `== tier A passed ==` and `== tier B passed ==`, followed by
+   Answer the credential prompt affirmatively. Success requires
+   `== apple exact shared-base identity collision passed ==`,
+   `== tier A passed ==`, and `== tier B passed ==`, followed by
    `integration tier(s) 'all' passed on container`. The EXIT trap's leak sweep
-   must also pass. Do not substitute ad hoc probes for a failed harness
-   assertion.
+   must also pass. The collision case temporarily replaces only the qualified
+   lookalike ref, tests identities on both sides of the canonical digest, and
+   restores any pre-test qualified ref through a preservation alias. A
+   restoration failure is a harness failure and deliberately retains the
+   alias named in the diagnostic. Do not substitute ad hoc probes for a
+   failed harness assertion.
 
 3. Whenever the apple/container pin or cleanup interaction changes, run the
    [manual removal-race procedure](release-checklist.md#appendix-manual-removal-race-test-r59-mir-043).
