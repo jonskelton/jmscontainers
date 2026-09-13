@@ -1731,11 +1731,17 @@ def build_project(data, args):
     # image stands.  The rebuild needs no --no-cache -- a changed FROM image
     # invalidates the runtime's layer cache by itself.
     base = shared_base_dependency(data["spec"])
-    project = resolve_image(tag)
-    if project is not None and not getattr(args, "no_cache", False):
-        if base is None or project.labels.get("jms.base") == base.ident:
-            return tag, False
-        print("base image changed; rebuilding " + quote(tag))
+    # --no-cache rebuilds unconditionally, so the project tag is never
+    # inspected under it: the query only costs runtime invocations, and an
+    # inspect failure must not abort an explicitly requested rebuild.  The
+    # shared_base_dependency() resolutions above stay either way; they feed
+    # the jms.base label.
+    if not getattr(args, "no_cache", False):
+        project = resolve_image(tag)
+        if project is not None:
+            if base is None or project.labels.get("jms.base") == base.ident:
+                return tag, False
+            print("base image changed; rebuilding " + quote(tag))
     # The consent decision was bound to a fingerprint; re-hash the definition
     # immediately before it reaches the runtime and fail closed on mismatch.
     if trust_fingerprint(spec_entries(data["spec"])) != data["tf"]:

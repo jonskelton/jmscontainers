@@ -1021,6 +1021,24 @@ class BuildTests(unittest.TestCase):
                              if call["argv"][:2] == [self.EXE, "build"])
                 self.assertIn("--no-cache", build)
 
+    def test_no_cache_never_resolves_the_project_tag(self):
+        # An explicitly requested rebuild must not depend on resolving the
+        # image it is about to replace: the query is pure cost, and an
+        # inspect failure would abort the rebuild.  The shared-base
+        # resolutions stay, because they decide the jms.base label.
+        with sandbox() as home:
+            root = make_project(home)
+            data = JMS.project_data(JMS.canon(os.fsencode(root)))
+            tag = data["tag_prefix"] + ":" + data["tf"][:12]
+            with self.fake(images={tag: image_record(tag)}) as runtime, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(JMS.build_project(data, self.build_args("--no-cache")),
+                                 (tag, True))
+            queries = [call["argv"] for call in runtime.calls
+                       if call["argv"][1:3] in (["image", "inspect"], ["image", "exists"])]
+            self.assertNotIn(tag, [argv[-1] for argv in queries])
+            self.assertIn(JMS.BASE, [argv[-1] for argv in queries])
+
     def base_project(self, home, stamp=..., with_base=True, containerfile=DEFAULT_CONTAINERFILE):
         """A trusted project whose current-fingerprint image already exists.
 

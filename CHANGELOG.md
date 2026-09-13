@@ -18,6 +18,12 @@
   outputs are now checked in as fixtures. Inspect failures on both backends
   report the exit status alongside the diagnostic.
 
+- **`jms build --no-cache` no longer resolves the project tag.** An
+  explicitly requested rebuild replaces that image regardless, so querying
+  the runtime for it only cost invocations and gave an inspect failure a way
+  to abort the rebuild. The shared-base resolutions still run; they decide
+  the `jms.base` label.
+
 - **Named build stages no longer look like the shared base.** A later `FROM`
   that exactly references an alias declared by an earlier `FROM ... AS` is
   excluded from shared-base staleness detection, preventing an unrelated base

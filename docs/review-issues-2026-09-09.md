@@ -12,8 +12,9 @@ runtime behavior.
 
 Updated 2026-09-12: RI-001, RI-005, and RI-006 were resolved in the same
 working tree before it was committed, since each was internal to this
-change. RI-002, RI-003, and RI-004 remain open as separable follow-ups, and
-RI-007 remains the release gate.
+change. RI-004 was fixed immediately afterwards in its own commit. RI-002
+and RI-003 remain open as separable follow-ups, and RI-007 remains the
+release gate.
 
 This register follows the conventions of
 [release-critical-issues.md](release-critical-issues.md), which is closed
@@ -180,7 +181,7 @@ disposition of every proposed fix.
 ## RI-004 — `build_project()` still resolves the target tag under `--no-cache`
 
 - **Severity:** Low
-- **Status:** Open
+- **Status:** Closed 2026-09-12
 - **Affected:** `bin/jms:1724-1746` (`build_project`)
 
 ### Finding
@@ -204,6 +205,18 @@ label regardless of cache mode.
 
 The test exists and passes, and `--no-cache` reaches `run_build()` without
 inspecting the project tag.
+
+### Resolution (2026-09-12)
+
+`resolve_image(tag)` moved inside the `not args.no_cache` branch, so an
+explicitly requested rebuild never resolves the image it is about to
+replace. `shared_base_dependency()` still runs unconditionally, since its
+result becomes the `jms.base` label on the new image.
+`test_no_cache_never_resolves_the_project_tag` in `BuildTests` (so on both
+backends, via `BuildTestsPodman`) asserts that no `image inspect` or
+`image exists` call names the project tag during a `--no-cache` build, and
+that the shared base is still resolved. It fails on both backends without
+the change. `make test` passes (274 tests).
 
 ## RI-005 — The fixture-backed absence test never routes the absence fixture through the resolver
 
@@ -341,5 +354,6 @@ on the tagged commit.
 | --- | --- | --- |
 | `make test` at working tree (2026-09-09) | Pass | 272 tests, 69 subtests, Python 3.13 on Debian 13; two `load_module` deprecation warnings from the test loader, unrelated |
 | `make test` after RI-001/005/006 (2026-09-12) | Pass | 272 tests, 69 subtests; same host and interpreter. The RI-005 rewrite changed test bodies and one test name, not the count |
+| `make test` after RI-004 (2026-09-12) | Pass | 274 tests, 69 subtests; the two new tests are the per-backend `--no-cache` resolution assertions |
 | Podman integration on this candidate | Not run | See RI-007 |
 | apple/container integration on this candidate | Not run | The change does not touch `ContainerBackend` argv or parsing; only its failure message gained the exit status |
