@@ -19,6 +19,7 @@ details intentionally kept out of the quick path.
 - [Contributing](../CONTRIBUTING.md)
 - [Release checklist](release-checklist.md)
 - [Release-critical issues](release-critical-issues.md)
+- [Project review (2026-09-13)](project-review-2026-09-13.md)
 - [Host information-outflow register](host-outflow-register.md)
 - [Review issues: Podman image-inspect qualification (2026-09-09)](review-issues-2026-09-09.md)
 - [macOS support review (2026-08-14)](macos-support-review.md)
