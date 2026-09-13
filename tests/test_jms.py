@@ -968,10 +968,20 @@ class CliSurfaceTests(unittest.TestCase):
                 resolve.assert_not_called()
 
     def test_version_is_reported(self):
+        # Asserted against __version__ rather than a literal: a literal here
+        # was the copy that went stale, and it cannot catch the failure that
+        # matters anyway (a tree identifying as a release it is not).
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout), self.assertRaises(SystemExit):
             JMS.parse_cli(["--version"])
-        self.assertEqual(stdout.getvalue().strip(), "1.1.0")
+        self.assertEqual(stdout.getvalue().strip(), JMS.__version__)
+
+    def test_version_is_a_release_triple_or_a_development_marker(self):
+        # Between tags the tree carries the next patch version plus `.dev`,
+        # and the release commit strips the marker.  This only keeps the
+        # string well formed; the post-tag bump itself is a release-checklist
+        # step, since no in-process test can know which tags exist.
+        self.assertRegex(JMS.__version__, r"^[0-9]+\.[0-9]+\.[0-9]+(\.dev)?$")
 
 
 class BuildTests(unittest.TestCase):

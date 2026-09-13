@@ -28,7 +28,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-__version__ = "1.1.0"
+# A `.dev` suffix marks a working tree that is not a release.  The first
+# runtime-affecting commit after a tag carries the next patch version plus
+# the marker, and the release commit strips it (docs/release-checklist.md),
+# so `jms --version` and the `jms_version` stamped into trust records can
+# never claim to be a tagged release they are not.
+__version__ = "1.1.1.dev"
 BASE_REPOSITORY = "jmscontainers-base"
 BASE = BASE_REPOSITORY + ":latest"
 UTC_SECONDS = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
