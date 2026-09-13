@@ -325,3 +325,49 @@ The likely implementation area is small: `PodmanBackend.resolve_image()` in
 `tests/fixtures/`, and the status/provenance documentation named above. The
 essential work is obtaining and preserving qualified-host evidence before
 deciding whether the existing parser needs to change.
+
+## Appendix: captured absent-reference diagnostics (2026-09-09)
+
+Preserved from the working incident write-up that led to this change. That
+file lived untracked at the repository root and was not committed: its line
+references described the pre-fix tree, and it carried another project's
+details, absolute paths containing the developer's username, and a
+`podman run` recipe that bypasses the jms trust gate and provenance labels.
+The table below is the part with durable value, and it is reproduced with no
+edits — the commands carry no usernames or host paths, so the fixture
+sanitization rule leaves them unchanged.
+
+Captured on the qualified host (Podman 5.4.2, rootless, Debian 13 (trixie),
+amd64, overlay storage driver) against references that do not exist:
+
+| Command | Exit | stdout | stderr (first line) |
+|---|---|---|---|
+| `podman image inspect nonexistent:zz` | 125 | `[]` | `Error: nonexistent:zz: image not known` |
+| `podman image inspect localhost/nonexistent:zz` | 125 | `[]` | `Error: localhost/nonexistent:zz: image not known` |
+| `podman inspect --type image nonexistent:zz` | 125 | `[]` | `Error: nonexistent:zz: image not known` |
+| `podman image inspect sha256:000…000` | 125 | `[]` | `Error: sha256:000…000: image not known` |
+| `podman inspect nonexistent:zz` (untyped) | 125 | `[]` | `Error: no such object: "nonexistent:zz"` |
+
+Two things are pinned here that the single-line
+`podman-5.4.2-image-inspect-absent.stderr` fixture cannot show on its own.
+The `inspecting object:` prefix assumed by the original parser appears in
+none of the four typed forms, whether the reference is a bare tag, a
+`localhost/`-qualified tag, or a digest. And the untyped `podman inspect`
+emits an entirely different diagnostic (`no such object:`, quoted
+reference), which is one reason this backend always inspects with the
+`image` subcommand: the two spellings do not share an error contract.
+
+The write-up proposed five fixes. Their disposition:
+
+| Proposed | Disposition |
+|---|---|
+| 1 — probe absence with `podman image exists` before inspecting | Adopted. The shipped `PodmanBackend.resolve_image()` contract; see Resolution above. |
+| 2 — keep a tolerant regex parse as defence in depth | Rejected by design. See "Rejected shortcuts": absence must not be derived from diagnostic wording at all once a typed probe decides it, and a second path that can report absence reintroduces exactly the coupling the probe removes. |
+| 3 — recapture the fixture, retire the "synthetic" comment | Adopted, and generalized: the fixtures are checked in with provenance, the comment is gone, and the release checklist now requires a live absent-ref capture per qualified Podman version. |
+| 4 — report the exit status alongside the diagnostic | Adopted, on both backends. |
+| 5 — skip the target-tag resolution under `--no-cache` | Adopted later, tracked as RI-004 in [review-issues-2026-09-09.md](review-issues-2026-09-09.md) and fixed in its own commit. |
+
+The write-up's header attributed the defect to "1.1.0". It did not exist in
+any tagged release — only on unreleased `main`, on the tree carrying the
+parser introduced by `6102bd9`. The wrong version came from `__version__`
+still reading `1.1.0` after the tag, which is RI-002 in the same register.

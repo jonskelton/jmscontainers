@@ -12,9 +12,9 @@ runtime behavior.
 
 Updated 2026-09-12: RI-001, RI-005, and RI-006 were resolved in the same
 working tree before it was committed, since each was internal to this
-change. RI-004 and then RI-002 were fixed afterwards, each in its own
-commit. RI-003 remains open as a separable follow-up, and RI-007 remains
-the release gate.
+change. RI-004, RI-002, and RI-003 were resolved afterwards, each in its
+own commit. RI-007 remains the release gate and is the only item still
+open.
 
 This register follows the conventions of
 [release-critical-issues.md](release-critical-issues.md), which is closed
@@ -163,7 +163,7 @@ change.
 ## RI-003 — `JMS_BUILD_FIXES.md` should not be committed at the repository root as written
 
 - **Severity:** Medium (if committed as-is)
-- **Status:** Open
+- **Status:** Closed 2026-09-12
 - **Affected:** `JMS_BUILD_FIXES.md` (untracked)
 
 ### Finding
@@ -204,6 +204,31 @@ or tracked.
 `git status` no longer shows the file untracked at the root, and any
 surviving copy under `docs/` meets the sanitization rule and states the
 disposition of every proposed fix.
+
+### Resolution (2026-09-12)
+
+The file was never committed and is now absent from the working tree, from
+every branch, and from all of history (`git log --all -- JMS_BUILD_FIXES.md`
+is empty; no blob of that name exists in the object store). The first close
+condition is therefore met permanently rather than by an action taken here.
+
+Its durable content was recovered from the 2026-09-09 session transcript
+before closing, so the judgment about what to keep was made against the real
+text rather than from memory. The §2 diagnostic table — the one part the
+review identified as not preserved elsewhere — is now
+[an appendix to the qualification
+doc](podman-image-inspect-qualification.md#appendix-captured-absent-reference-diagnostics-2026-09-09),
+with the disposition of all five proposed fixes recorded as adopted (1, 3,
+4), rejected by design (2), or tracked and since fixed (5, RI-004). The
+appendix also corrects the write-up's "1.1.0" attribution and points at
+RI-002 for its cause.
+
+Everything the review objected to was dropped rather than sanitized: the
+beadrail sections, the absolute paths containing the developer's username,
+the stale `bin/jms:NNN` references, and the §6 `podman run` workaround. The
+appendix's own table needed no sanitization — its commands contain no
+username or host path — and that is stated where it could otherwise be
+assumed to have been edited.
 
 ## RI-004 — `build_project()` still resolves the target tag under `--no-cache`
 
@@ -383,5 +408,6 @@ on the tagged commit.
 | `make test` after RI-001/005/006 (2026-09-12) | Pass | 272 tests, 69 subtests; same host and interpreter. The RI-005 rewrite changed test bodies and one test name, not the count |
 | `make test` after RI-004 (2026-09-12) | Pass | 274 tests, 69 subtests; the two new tests are the per-backend `--no-cache` resolution assertions |
 | `make test` after RI-002 (2026-09-12) | Pass | 275 tests, 69 subtests; the new test is the `__version__` format assertion. `./bin/jms --version` prints `1.1.1.dev` |
+| `make test` after RI-003 (2026-09-12) | Pass | 275 tests, 69 subtests; documentation only, no code or test change |
 | Podman integration on this candidate | Not run | See RI-007 |
 | apple/container integration on this candidate | Not run | The change does not touch `ContainerBackend` argv or parsing; only its failure message gained the exit status |
