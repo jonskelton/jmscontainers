@@ -1,6 +1,10 @@
 # Release checklist
 
-- Set and review `__version__` in `bin/jms`.
+- Set and review `__version__` in `bin/jms`: strip the `.dev` marker the
+  working tree carries between releases, so the release commit is the only
+  commit whose version is a bare `X.Y.Z`. Confirm the number still matches
+  the scope of the CHANGELOG entry below (a release that outgrew the patch
+  version the marker guessed is renumbered here, not left as guessed).
 - Add a dated entry to [CHANGELOG.md](../CHANGELOG.md) describing user-visible
   changes; breaking changes bump the major version.
 - Run `make test` (the CI matrix covers the supported Python floor and current
@@ -56,6 +60,14 @@
   (`uname -m`), and the remaining matrix dimensions: kernel, cgroup
   manager, OCI runtime, storage driver, network backend.
 - Tag the release commit `vX.Y.Z` and push the tag with the release.
+- Immediately after tagging, restore the development marker: set
+  `__version__` to the next patch version plus `.dev` (for example
+  `1.1.1.dev` after `v1.1.0`) and commit it. This closes the window in
+  which `main` reports itself as the release just cut — a window that once
+  stamped every trust record written by a development install with a
+  released version number, and misattributed a defect on unreleased `main`
+  to the tag (RI-001, RI-002 in
+  [review-issues-2026-09-09.md](review-issues-2026-09-09.md)).
 
 ## Appendix: manual removal-race test (R5.9, MIR-043)
 

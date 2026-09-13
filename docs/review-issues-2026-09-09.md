@@ -12,9 +12,9 @@ runtime behavior.
 
 Updated 2026-09-12: RI-001, RI-005, and RI-006 were resolved in the same
 working tree before it was committed, since each was internal to this
-change. RI-004 was fixed immediately afterwards in its own commit. RI-002
-and RI-003 remain open as separable follow-ups, and RI-007 remains the
-release gate.
+change. RI-004 and then RI-002 were fixed afterwards, each in its own
+commit. RI-003 remains open as a separable follow-up, and RI-007 remains
+the release gate.
 
 This register follows the conventions of
 [release-critical-issues.md](release-critical-issues.md), which is closed
@@ -102,7 +102,7 @@ tag. RI-002 (the `__version__` window) stays open separately.
 ## RI-002 — Post-tag `main` reports `__version__ = "1.1.0"`
 
 - **Severity:** Low
-- **Status:** Open
+- **Status:** Closed 2026-09-12
 - **Affected:** `bin/jms:31`, the `jms_version` field stamped into trust
   records (`bin/jms:1430`), `docs/release-checklist.md`
 
@@ -132,6 +132,33 @@ release rather than something remembered later.
 
 `bin/jms` on `main` reports a version that is not an existing tag, and the
 release checklist names the post-tag step.
+
+### Resolution (2026-09-12)
+
+Option 2. `__version__` is now `1.1.1.dev` (`bin/jms:36`), with the
+convention stated at the definition: between tags the tree carries the next
+patch version plus the marker, and the release commit strips it. `.dev` was
+preferred over a bare `1.1.1` because a bare triple still names a release
+that does not exist, and the marker makes a development install legible in
+a trust record (`jms_version` is validated as a string only, `bin/jms:1068`,
+and nothing in `bin/jms` parses `__version__` — it is interpolated into two
+warning messages and stamped into the record).
+
+The release checklist now carries the step on both sides of the tag: the
+opening line says to strip the marker and to renumber if the release
+outgrew the patch version the marker guessed, and a new line after "Tag the
+release commit" says to restore the marker in the next commit, naming this
+window as the reason.
+
+`test_version_is_reported` no longer asserts a literal — the literal was
+the copy that went stale — and asserts `--version` against `__version__`.
+A second test pins the string to `X.Y.Z` or `X.Y.Z.dev`. No in-process test
+can know which tags exist, so the post-tag bump itself is held by the
+checklist, not by the suite.
+
+No CHANGELOG entry: the marker is stripped in the release commit, so no
+released artifact ever reports a version that differs because of this
+change.
 
 ## RI-003 — `JMS_BUILD_FIXES.md` should not be committed at the repository root as written
 
@@ -355,5 +382,6 @@ on the tagged commit.
 | `make test` at working tree (2026-09-09) | Pass | 272 tests, 69 subtests, Python 3.13 on Debian 13; two `load_module` deprecation warnings from the test loader, unrelated |
 | `make test` after RI-001/005/006 (2026-09-12) | Pass | 272 tests, 69 subtests; same host and interpreter. The RI-005 rewrite changed test bodies and one test name, not the count |
 | `make test` after RI-004 (2026-09-12) | Pass | 274 tests, 69 subtests; the two new tests are the per-backend `--no-cache` resolution assertions |
+| `make test` after RI-002 (2026-09-12) | Pass | 275 tests, 69 subtests; the new test is the `__version__` format assertion. `./bin/jms --version` prints `1.1.1.dev` |
 | Podman integration on this candidate | Not run | See RI-007 |
 | apple/container integration on this candidate | Not run | The change does not touch `ContainerBackend` argv or parsing; only its failure message gained the exit status |
