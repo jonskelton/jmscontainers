@@ -383,6 +383,15 @@ repeated here so the register is complete and so the gap has a concrete
 trigger: runtime-affecting changes merged to `main` for five weeks with the
 Podman gate unrun.
 
+On 2026-09-13 both tiers were run on the qualified host from the developer
+workstation account and passed; see the verification log. That closes the
+five-week gap in *coverage* -- the absent-tag path this register is about has
+now been exercised against real Podman 5.4.2, repeatedly, by tier B's gallery
+builds -- but it does not close this item. The account was uid/gid 1000 with a
+long-lived home and no ssh login session, so it tests none of the
+subordinate-range, id-collision, or `XDG_RUNTIME_DIR` provisioning that the
+fresh-account requirement exists to cover.
+
 ### Required resolution
 
 1. Run `scripts/integration.sh all` from the fresh account on the qualified
@@ -409,5 +418,7 @@ on the tagged commit.
 | `make test` after RI-004 (2026-09-12) | Pass | 274 tests, 69 subtests; the two new tests are the per-backend `--no-cache` resolution assertions |
 | `make test` after RI-002 (2026-09-12) | Pass | 275 tests, 69 subtests; the new test is the `__version__` format assertion. `./bin/jms --version` prints `1.1.1.dev` |
 | `make test` after RI-003 (2026-09-12) | Pass | 275 tests, 69 subtests; documentation only, no code or test change |
-| Podman integration on this candidate | Not run | See RI-007 |
+| `scripts/integration.sh a` (2026-09-13) | Pass | Debian 13 trixie, amd64, kernel 6.12.107+deb13-amd64, rootless Podman 5.4.2, runc 1.5.1, systemd cgroup manager, overlay storage, netavark. An earlier attempt exited 3 when the sudo credential cache lapsed between the up-front probe and `install_egress_denial`; re-run with a background `sudo -v` keepalive. Nothing was left installed -- `nft_installed` is set only after the table is created |
+| `scripts/integration.sh b` (2026-09-13) | Pass | Same host and runtime. This is the tier that exercises the change directly: every gallery build resolves a project tag that does not exist yet, which is the path RI-001 broke. Must run on a tty -- the `--auth` probe needs an interactive credential grant, and a headless run exits 3 there |
+| Podman integration on this candidate (the RI-007 qualified run) | Not run | Both tiers above passed, but from the developer workstation account (uid/gid 1000, long-lived home, no ssh session). RI-007 requires `scripts/integration.sh all` from a fresh `adduser` account with non-1000 ids over a real ssh login, against the commit that will be tagged. See RI-007 |
 | apple/container integration on this candidate | Not run | The change does not touch `ContainerBackend` argv or parsing; only its failure message gained the exit status |
