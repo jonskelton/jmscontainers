@@ -20,6 +20,7 @@ details intentionally kept out of the quick path.
 - [Release checklist](release-checklist.md)
 - [Release-critical issues](release-critical-issues.md)
 - [Project review (2026-09-13)](project-review-2026-09-13.md)
+- [Implementation guide: September 13 review follow-up](review-follow-up-implementation-guide.md)
 - [Host information-outflow register](host-outflow-register.md)
 - [Review issues: Podman image-inspect qualification (2026-09-09)](review-issues-2026-09-09.md)
 - [macOS support review (2026-08-14)](macos-support-review.md)
