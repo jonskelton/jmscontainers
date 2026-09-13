@@ -4,7 +4,14 @@ Reviewed revision: `6af7b7e2117d2f6e8f370bddb80f5753c9d50ed8`
 (`v1.1.0-16-g6af7b7e`, CLI version `1.1.1.dev`). The working tree was clean
 when the review began. Source line numbers below refer to this revision.
 
+Follow-up status (2026-09-13): PR-001 and PR-002 have both been addressed.
+Their original observations are preserved below alongside the resolutions.
+RI-007 remains open; this follow-up does not provide release qualification.
+
 ## Assessment
+
+This assessment describes the originally reviewed revision `6af7b7e`.
+Follow-up resolutions are recorded under the findings below.
 
 The September 12–13 runtime fixes are sound within the exercised contracts.
 Podman absence now depends on the explicit existence probe, and forced
@@ -64,7 +71,7 @@ Release blockers retain their existing register and acceptance criteria.
 ### PR-001 — Launch stdout depends on Python buffering
 
 - **Severity:** Medium
-- **Status:** Open
+- **Status:** Closed 2026-09-13
 - **Origin:** Pre-existing; not introduced by the September 12–13 fixes
 - **Affected:** [bin/jms](../bin/jms), `build_base()` line 1551,
   `build_project()` lines 1749 and 1754, and `gc_project_images()` line 1660
@@ -112,10 +119,33 @@ launches on both backends. Cover a missing shared base as well.
 **Close when:** those cases return exactly the launched payload on stdout,
 with progress visible on stderr; `make test` remains green.
 
+**Resolution (2026-09-13):** Routed the four build/staleness/automatic-retention
+progress reports to stderr. Explicit build summaries, up-to-date reports,
+and explicit cleanup reports retain stdout. The CLI reference now states
+the launch output contract, and the changelog identifies the pre-existing
+defect.
+
+Added subprocess regressions that run the real launch path against each fake
+backend and perform a real exec into a Python payload. Both buffered and
+unbuffered runs cover cold, warm, stale-base, missing-base, and actual
+retention cases, plus payload exit status 17: 24 subprocess cases in 12
+tests. Exact stdout and stderr assertions also exercise runtime build-stream
+forwarding; retention verifies the removed references and surviving launch
+tag. Before the production fix, 20 cases failed (the warm controls passed):
+unbuffered launches leaked progress to stdout and buffered launches lost
+progress at exec. After the fix all 24 cases passed. The existing warn-only
+cleanup regression and explicit build-result assertions protect the other
+reporting contracts.
+
+Validation: `make test` passed 289 tests on Python 3.13.5, plus compilation
+and ShellCheck 0.10.0 (no syntax fallback); `git diff --check` passed.
+PR-002 remains open at this resolution. No real-runtime qualification was
+performed.
+
 ### PR-002 — The outflow register overstates agent-state suppression
 
 - **Severity:** Medium
-- **Status:** Open
+- **Status:** Closed 2026-09-13
 - **Origin:** Introduced in `6af7b7e` (documentation only)
 - **Affected:** [host-outflow-register.md](host-outflow-register.md),
   “Existing mitigations” paragraph, lines 62–67
@@ -162,6 +192,22 @@ HO-001's consent wording and HO-005's user-facing inventory.
 
 **Close when:** the register and resulting user guidance agree with this
 matrix. No runtime policy change is required to fix the finding.
+
+**Resolution (2026-09-13):** Corrected the register's mitigation summary and
+the agent-state guide to distinguish shared-base default mounts, a new
+custom definition's default-No credential question, invocation-scoped
+`--no-auth`, and the authorized `--auth` override of `mount_auth = false`.
+The guide also states that `--auth` alone cannot authorize access. Aligned
+HO-001 and HO-005's proposed wording with these conditions; both remain
+Proposed and their broader consent/inventory work is not implemented here.
+
+Validation: checked the wording against `cmd_launch()`, `approve()`, and
+`launch_plan()`, and repeated the five-row mount matrix above on both fake
+backends with temporary homes and matching durable credential grants. All
+10 cases passed (4/0/0/4/0 mounts on each backend). Existing consent and
+launch coverage passed in the 289-test suite. Local documentation links
+and `git diff --check` passed. Credential policy and runtime mount behavior
+are unchanged.
 
 ## Existing risks and release work
 

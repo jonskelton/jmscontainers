@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Launch stdout stays available for program output when Python is
+  unbuffered.** Cold launches and stale-image rebuilds could prefix captured
+  stdout with jms progress; automatic image-retention reports could appear
+  there too. These messages now go to stderr, as runtime build output already
+  does. This fixes a pre-existing output defect, independent of the recent
+  Podman absence-probe fix. Explicit build summaries and clean reports retain
+  their stdout output.
+
 - **Shared-base freshness now follows exact runtime image identity.** Qualified
   and unqualified image names that normalize alike can coexist on
   apple/container while resolving to different images. Project builds now

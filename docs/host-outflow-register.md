@@ -59,12 +59,17 @@ The channels through which container work reaches the host, from source
 | Manifest extra mounts | User-approved per project | Covered by the existing grant flow |
 | Trust store (`store.json`) | Project paths and fingerprints | Host-side metadata about projects, not container output; minor |
 
-Existing mitigations already in place, which these proposals build on
-rather than restate: the credential grant is separate from the build/run
-grant and defaults to no; `--no-auth` and `run.mount_auth = false` suppress
-the agent-state mount entirely; the state tree is created `0700`
-(`bin/jms:1095,1135-1136`); containers are `--rm`; the shell mount is
-read-only.
+Existing mitigations and their conditions: for custom project definitions,
+build/run approval and agent-state access are separate grants; a new
+interactive credential question defaults to no. A launch without a project
+definition uses the shared base and mounts persistent agent state by default,
+without a project credential prompt. `--no-auth` suppresses jms-managed
+agent-state mounts for that launch. For a custom definition,
+`run.mount_auth = false` suppresses the default mount, but an explicit
+`--auth` can override it when credential access has been granted. New state
+directories are created with mode `0700`; launches use `--rm`, and the
+shared shell mount is read-only. See
+[persistent agent state](agent-state.md#persistent-agent-state).
 
 ## Issue tracking
 
@@ -134,6 +139,12 @@ transcripts of **every prior session from every other project**.
    project, and how to remove it (see HO-003).
 3. Extend the `SECURITY.md` credential-mount warning to cover transcript
    confidentiality alongside credential exfiltration.
+
+Keep the proposed wording consistent with the mount conditions above:
+shared-base launches mount state by default without a project credential
+prompt; custom definitions require a credential grant, and an authorized
+`--auth` can override `mount_auth = false`. Describe `--no-auth` as suppressing
+jms-managed agent-state mounts for the invocation.
 
 ### Acceptance
 
@@ -286,6 +297,12 @@ sync, and indexing tools (extending the existing "never sync" credential
 advice to transcripts); rely on full-disk encryption for theft; pointers
 to each agent CLI's own history-retention settings, stated as "verify
 against your installed version" rather than as jms claims.
+
+Describe the shared-base default and custom-project credential conditions
+alongside this inventory, including the authorized `--auth` manifest override
+and the scope of `--no-auth`. Suppressing jms-managed agent-state mounts does
+not prevent writes through approved project or extra mounts or neutralize
+trusted ambient runtime configuration.
 
 ### Acceptance
 
