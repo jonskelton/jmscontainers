@@ -1,6 +1,7 @@
 # Project: Qualify Podman exact image inspection
 
-Status: Ready for implementation; release-blocking qualified-host work remains
+Status: Implemented 2026-09-09 (fixtures, backend, tests); the fresh-account
+live integration run on the final candidate remains to be recorded
 Opened: 2026-08-26
 Target: Next bugfix release
 Related design: [exact shared-base identity](exact-base-identity-proposal.md)
@@ -17,6 +18,10 @@ Podman image-inspection behavior as synthetic or pending and the final
 candidate passes both integration tiers on the qualified host.
 
 ## Issue statement
+
+*Historical: this section states the problem as understood before the
+2026-09-09 capture. The assumption it describes proved wrong; see
+[Resolution](#resolution-2026-09-09) for the shipped contract.*
 
 The exact shared-base identity change added a new Podman runtime interaction:
 
@@ -128,6 +133,10 @@ account, for the release checklist's fresh-account integration run.
 
 ## Implementation plan
 
+*Historical: the plan as written before the capture. Step 2 was carried out
+differently once the absent diagnostic turned out not to match the
+assumption; see [Resolution](#resolution-2026-09-09).*
+
 ### 1. Add fixtures and provenance
 
 Add these files under `tests/fixtures/`:
@@ -219,24 +228,32 @@ run and requires it to be repeated.
 
 ## Acceptance criteria
 
-The project is complete when all of the following are true:
+Restated 2026-09-09 against the shipped contract; the third criterion as
+originally written ("returns `None` for exactly the captured absence
+outcome") is superseded, because absence is now decided by the `podman image
+exists` probe and the captured inspect outcome is evidence for the failure
+path instead.
 
-- Successful and absent image-inspection fixtures come from the qualified
+- [x] Successful and absent image-inspection fixtures come from the qualified
   Debian 13/rootless Podman 5.4.2 host.
-- Fixture provenance records exact commands, statuses, output channels,
+- [x] Fixture provenance records exact commands, statuses, output channels,
   capture date, environment, sanitization, and cleanup.
-- `PodmanBackend.resolve_image()` accepts the captured success shape and
-  returns `None` for exactly the captured absence outcome.
-- Unexpected nonzero results and malformed successful output still fail
+- [x] `PodmanBackend.resolve_image()` accepts the captured success shape and
+  returns `None` only for a `podman image exists` exit 1.
+- [x] Every nonzero `podman image inspect` after a positive probe fails
+  closed, reporting the exit status and the diagnostic; the captured absent
+  diagnostic is pinned as evidence for that path.
+- [x] Unexpected probe statuses and malformed successful output still fail
   closed with terminal-safe diagnostics.
-- A fixture-backed Podman test exercises both success and absence.
-- `make test` passes.
-- `scripts/integration.sh all` passes on the final candidate on the qualified
-  host, including a clean project's first build.
-- The clean-host installation walkthrough passes and the release evidence is
-  recorded.
-- No repository text still describes this interaction as synthetic, assumed,
-  or pending.
+- [x] A fixture-backed Podman test exercises the success record and the
+  captured absent diagnostic.
+- [x] `make test` passes.
+- [ ] `scripts/integration.sh all` passes on the final candidate on the
+  qualified host, including a clean project's first build.
+- [ ] The clean-host installation walkthrough passes and the release evidence
+  is recorded.
+- [x] No repository text outside the sections marked historical above
+  describes this interaction as synthetic, assumed, or pending.
 
 ## Rejected shortcuts
 
@@ -245,7 +262,15 @@ The project is complete when all of the following are true:
   absence.
 - Do not call `podman image exists` before inspection merely to avoid learning
   the absent inspection contract. It adds a race and a duplicate query and
-  does not qualify successful inspection output.
+  does not qualify successful inspection output. *Revisited 2026-09-09:* the
+  contract was learned (see Resolution below) and it differed from the
+  assumption, so the probe was adopted deliberately -- it makes absence
+  independent of diagnostic wording that has already moved between Podman
+  releases and identical to the `image_exists()` decision `ensure_base()`
+  already trusts. The race (an image removed between probe and inspect)
+  surfaces as the inspect's loud failure, not as absence; the duplicate
+  query costs ~20 ms per resolve. Successful inspection output is qualified
+  by the checked-in fixture, not by the probe.
 - Do not repurpose `podman-5.4.2-inspect.json`; it describes a container, not
   an image.
 - Do not substitute Podman documentation, synthetic mocks, another Podman
@@ -253,7 +278,47 @@ The project is complete when all of the following are true:
 - Do not edit captured values beyond the repository's documented fixture
   sanitization rule.
 
+## Resolution (2026-09-09)
+
+The gap this project described materialized before the capture was made.
+With the exact-identity change merged to `main` (`6102bd9`) but unreleased,
+the first `jms build` for a project whose fingerprint had moved failed with
+
+```text
+error: podman image inspect failed for "jmscontainers-<project>:<tf>":
+  "Error: jmscontainers-<project>:<tf>: image not known\n"
+```
+
+Podman 5.4.2 exits 125 with `[]` on stdout and the stderr line
+`Error: <ref>: image not known`; the assumed `inspecting object:` prefix does
+not appear. The defect existed only on unreleased `main`, between `6102bd9`
+and this change: `v1.1.0` predates the parser and never refused a build this
+way. `podman image exists` on the same ref exits 1. Both outcomes and
+the successful record were captured per the procedure above and checked in
+as `tests/fixtures/podman-5.4.2-image-inspect.json` and
+`tests/fixtures/podman-5.4.2-image-inspect-absent.stderr`; provenance,
+including the caveat that the capture account was not fresh, is in
+[`tests/fixtures/README.md`](../tests/fixtures/README.md).
+
+`PodmanBackend.resolve_image()` now asks `podman image exists` first and
+returns `None` on exit 1; a nonzero inspect after a positive probe is always
+a failure that reports the exit status and the diagnostic. The synthetic
+comment is gone. `ResolveImageTests` gained the fixture-backed Podman test,
+an argv test proving the probe short-circuits before inspect, and negative
+cases proving the genuine absent diagnostic, the same diagnostic for a
+different ref, the old prefixed form, and an unexpected probe status all
+still abort. `make test` passes (272 tests).
+
+Still outstanding from the acceptance criteria: `scripts/integration.sh all`
+from a fresh account on the qualified host against the final candidate, and
+the clean-host installation walkthrough. The release checklist now requires a
+live absent-ref inspect capture per qualified Podman version.
+
 ## Handoff notes
+
+*Historical: written before implementation. The code, fixture, and test work
+described here is done; what remains is the live gate named in the
+Resolution.*
 
 The likely implementation area is small: `PodmanBackend.resolve_image()` in
 `bin/jms`, `ResolveImageTests` in `tests/test_jms.py`, new fixtures under

@@ -59,12 +59,23 @@ captured record).
 | `podman-5.4.2-images.json` | `podman images --format json` | Raw 5.4.2 shape: uppercase `Id`, `Names` array-or-null, integer `Created`, RFC3339 `CreatedAt`, top-level `Labels` map-or-null. Variants: named (`fedora`), multi-named jms-labelled (`jmsfix-labelled` `:latest` + `:alias`), unlabeled named (`"Labels": null`, MIR-053), and dangling (`"Names": null`, `"Labels": null`). |
 | `podman-5.4.2-ps.json` | `podman ps --all --format json` | Three containers: running with the `jms.container=launch` override and a bind mount; exited with inherited image labels only (marker stays `image`); exited with no jms labels at all (marker absent). Full 64-char `Id`; `Mounts` lists target paths only — no sources (MIR-007). |
 | `podman-5.4.2-inspect.json` | `podman inspect --type container --format json <running-id>` | Single-element array; `Mounts[]` carries string `Source` and `Destination` — the leak-sweep contract's source of truth (§9). |
+| `podman-5.4.2-image-inspect.json` | `podman image inspect jms-resolve-fixture:latest` | Whole single-record output for a scratch-based, label-only probe (exit 0, empty stderr). Pins one-record cardinality, the full lowercase-hex top-level `Id`, and the top-level `Labels` map. |
+| `podman-5.4.2-image-inspect-absent.stderr` | `podman image inspect jms-resolve-fixture-absent:latest` | Raw stderr for an absent exact ref: exit 125, stdout `[]\n`, one stderr line `Error: <ref>: image not known` — **no** `inspecting object:` prefix. |
 
-An image-inspect fixture is intentionally still pending. Exact image
-resolution currently has synthetic conformance coverage based on Podman's
-documented single-record `Id`/`Labels` shape and expected 5.4.2 absence
-diagnostic; neither is release-qualified until recaptured on the Debian 13
-rootless Podman 5.4.2 host and recorded here.
+The image-inspect fixtures were captured 2026-09-09 on Debian 13 (trixie)
+amd64, kernel 6.12.107+deb13-amd64, rootless Podman 5.4.2, cgroup manager
+systemd, OCI runtime runc, overlay storage, netavark network backend, UID/GID
+1000/1000, from a local login session. This was an existing developer
+account with prior container state, not the release checklist's fresh
+account, so it qualifies the diagnostic contract but does not stand in for
+the fresh-account integration run. The present probe was built from
+`FROM scratch` + `LABEL jms.fixture=exact-resolve` with
+`podman build -q -t jms-resolve-fixture:latest`; both probe refs were
+verified absent before the build and the present ref was removed after
+capture. stdout, stderr, and exit status were captured independently for
+both commands; the JSON was re-serialized per the sanitization rule (the only
+edits: the username inside the two `GraphDriver.Data` overlay paths) and the
+stderr line is preserved verbatim.
 
 **Engine-reality notes pinned by this capture:**
 
@@ -78,6 +89,12 @@ rootless Podman 5.4.2 host and recorded here.
   synthetic variant in test code.
 - Re-verified during capture: a `--rm` container never appears in
   `podman ps --all` (§9 leak-sweep coverage note).
+- `podman build` (buildah 1.39.3) stamps `io.buildah.version` on every image
+  it produces, so even a label-only scratch probe carries two labels. The
+  absent diagnostic's exact wording differs from the pre-capture assumption
+  (`inspecting object:` prefix), which is why absence is now decided by
+  `podman image exists` rather than by parsing this line; the fixture pins
+  what the diagnostic actually is for the loud-failure path.
 
 Capture recipe (probe-built; synthetic label values are `sha256` of
 `jms-fixture-project-root` / `jms-fixture-project-tf`):

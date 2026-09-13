@@ -236,9 +236,8 @@ class FakeRuntime:
             ref = argv[3]
             if ref in self.images:
                 return self.payload(self.podman_inspect_payload(ref))
-            return self.result(returncode=125,
-                               stderr=("Error: inspecting object: " + ref
-                                       + ": image not known\n").encode())
+            return self.result(returncode=125, stdout=b"[]\n",
+                               stderr=("Error: " + ref + ": image not known\n").encode())
         if argv[:2] == ["podman", "images"]:
             return self.payload(self.podman_images_payload())
         if argv[:3] == ["podman", "image", "rm"]:
@@ -2782,20 +2781,33 @@ class ResolveImageTests(unittest.TestCase):
             self.assertEqual(different.ident, "f" * 64)
 
     def test_backend_resolution_argv_is_exact(self):
+        apple, podman = JMS.ContainerBackend(), JMS.PodmanBackend()
         cases = [
-            (JMS.ContainerBackend(), [self.apple_record()]),
-            (JMS.PodmanBackend(), [self.podman_record()]),
+            (apple, [self.apple_record()], [["container", "image", "inspect", "exact:1"]]),
+            (podman, [self.podman_record()], [["podman", "image", "exists", "exact:1"],
+                                              ["podman", "image", "inspect", "exact:1"]]),
         ]
-        for backend, payload in cases:
+        for backend, payload, expected in cases:
             seen = []
             def run(argv, **kwargs):
                 seen.append(argv)
                 self.assertFalse(kwargs["check"])
+                if argv[2] == "exists":
+                    return proc_result()
                 return proc_result(stdout=json.dumps(payload).encode())
             with self.subTest(backend=backend.name), \
                  mock.patch.object(JMS, "runtime_run", run):
                 backend.resolve_image("exact:1")
-            self.assertEqual(seen, [[backend.exe, "image", "inspect", "exact:1"]])
+            self.assertEqual(seen, expected)
+
+    def test_podman_absent_probe_short_circuits_before_inspect(self):
+        seen = []
+        def run(argv, **kwargs):
+            seen.append(argv)
+            return proc_result(returncode=1)
+        with mock.patch.object(JMS, "runtime_run", run):
+            self.assertIsNone(JMS.PodmanBackend().resolve_image("gone:1"))
+        self.assertEqual(seen, [["podman", "image", "exists", "gone:1"]])
 
     def test_apple_qualified_fixture_resolves_and_absence_fixture_is_none(self):
         payload = load_fixture("apple-container-1.2.2-image-inspect.json")
@@ -2813,25 +2825,80 @@ class ResolveImageTests(unittest.TestCase):
         self.assertEqual(resolved.labels, {"jms.fixture": "exact-resolve"})
         self.assertIsNone(absent)
 
+    def test_podman_success_fixture_resolves_and_probe_decides_absence(self):
+        # The captured absent inspect outcome does not appear here on purpose:
+        # `image exists` answers first, so absence never reaches an inspect.
+        # That fixture drives the loud-failure path in
+        # test_absence_is_narrowly_classified_per_backend instead.
+        payload = load_fixture("podman-5.4.2-image-inspect.json")
+        present = "jms-resolve-fixture:latest"
+        absent_ref = "jms-resolve-fixture-absent:latest"
+        seen = []
+        def run(argv, **kwargs):
+            seen.append(argv)
+            if argv[2] == "exists":
+                return proc_result(returncode=0 if argv[3] == present else 1)
+            return proc_result(stdout=json.dumps(payload).encode())
+        backend = JMS.PodmanBackend()
+        with mock.patch.object(JMS, "runtime_run", run):
+            resolved = backend.resolve_image(present)
+            absent = backend.resolve_image(absent_ref)
+        self.assertEqual(resolved.ident,
+                         "c4d85d59bab98c4389aa741f87d1ae26f02d5803e3d5f90331163e442927c9e6")
+        # buildah stamps its version label on every 5.4.2 build.
+        self.assertEqual(resolved.labels,
+                         {"io.buildah.version": "1.39.3", "jms.fixture": "exact-resolve"})
+        self.assertIsNone(absent)
+        self.assertEqual(seen, [["podman", "image", "exists", present],
+                                ["podman", "image", "inspect", present],
+                                ["podman", "image", "exists", absent_ref]])
+
     def test_absence_is_narrowly_classified_per_backend(self):
         apple = JMS.ContainerBackend()
         with mock.patch.object(JMS, "runtime_run", self.runner({
                 "x:1": (1, b"", b"Error: image not found: x:1\n")})):
             self.assertIsNone(apple.resolve_image("x:1"))
-        podman = JMS.PodmanBackend()
         with mock.patch.object(JMS, "runtime_run", self.runner({
-                "x:1": (125, b"", b"Error: inspecting object: x:1: image not known\n")})):
-            self.assertIsNone(podman.resolve_image("x:1"))
+                "x:1": (1, b"", b"Error: connection refused\n")})):
+            with self.assertRaisesRegex(JMS.JMSException,
+                                        r'image inspect failed for "x:1" \(exit 1\): '
+                                        r'"Error: connection refused'):
+                apple.resolve_image("x:1")
+        # Podman: `image exists` alone decides absence; once it reports the
+        # image present, every nonzero inspect is a loud failure -- including
+        # the genuine absent diagnostic (the image vanished in between) and
+        # the same diagnostic for some other ref.
+        podman = JMS.PodmanBackend()
+        # The genuine absent diagnostic is the captured one, byte for byte.
+        absent_ref = "jms-resolve-fixture-absent:latest"
+        absent = (FIXTURES / "podman-5.4.2-image-inspect-absent.stderr").read_bytes()
         failures = [
-            (apple, (1, b"", b"Error: connection refused\n")),
-            (podman, (125, b"", b"Error: storage corrupt\n")),
-            (podman, (1, b"", b"Error: inspecting object: x:1: image not known\n")),
+            ("x:1", (125, b"", b"Error: storage corrupt\n")),
+            (absent_ref, (125, b"[]\n", absent)),
+            ("x:1", (125, b"[]\n", b"Error: y:2: image not known\n")),
+            ("x:1", (125, b"[]\n", b"Error: inspecting object: x:1: image not known\n")),
+            (absent_ref, (1, b"", absent)),
         ]
-        for backend, result in failures:
-            with self.subTest(backend=backend.name, result=result), \
-                 mock.patch.object(JMS, "runtime_run", self.runner({"x:1": result})):
-                with self.assertRaisesRegex(JMS.JMSException, "image inspect failed"):
-                    backend.resolve_image("x:1")
+        for ref, result in failures:
+            def run(argv, **kwargs):
+                if argv[2] == "exists":
+                    return proc_result()
+                return proc_result(*result)
+            with self.subTest(ref=ref, result=result), \
+                    mock.patch.object(JMS, "runtime_run", run):
+                with self.assertRaisesRegex(
+                        JMS.JMSException,
+                        r'podman image inspect failed for "%s" \(exit %d\): "%s'
+                        % (re.escape(ref), result[0],
+                           re.escape(result[2].decode().rstrip("\n")))):
+                    podman.resolve_image(ref)
+        # An unexpected `image exists` status is not absence either.
+        def run(argv, **kwargs):
+            self.assertEqual(argv[2], "exists")
+            return proc_result(returncode=125, stderr=b"Error: storage corrupt\n")
+        with mock.patch.object(JMS, "runtime_run", run):
+            with self.assertRaisesRegex(JMS.JMSException, "podman image exists failed"):
+                podman.resolve_image("x:1")
 
     def test_success_requires_one_valid_unambiguous_record(self):
         ident = "a" * 64
@@ -2864,9 +2931,14 @@ class ResolveImageTests(unittest.TestCase):
                 with self.assertRaisesRegex(JMS.JMSException, r"invalid JSON.*\\xff"):
                     backend.resolve_image("x:1")
             def invalid_error(argv, **kwargs):
-                return proc_result(returncode=1, stderr=b"bad\xff")
+                if argv[2] == "exists":
+                    return proc_result()
+                return proc_result(returncode=125, stderr=b"bad\xff")
+            expected = (r'image inspect failed with invalid output for "x:1": "bad\\xff"'
+                        if backend.name == "container" else
+                        r'image inspect failed for "x:1" \(exit 125\): "bad\\xff"')
             with mock.patch.object(JMS, "runtime_run", invalid_error):
-                with self.assertRaisesRegex(JMS.JMSException, r"invalid output.*\\xff"):
+                with self.assertRaisesRegex(JMS.JMSException, expected):
                     backend.resolve_image("x:1")
 
 

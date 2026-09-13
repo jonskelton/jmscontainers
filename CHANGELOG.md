@@ -10,6 +10,14 @@
   canonical identity. Digest ordering can no longer select an unrelated
   image or defeat the missing-base reuse rule.
 
+  On Podman, absence is decided by `podman image exists` (exit 0/1) rather
+  than by the wording of the `podman image inspect` diagnostic, which has
+  already moved between releases: 5.4.2 prints `Error: <ref>: image not
+  known`, not the `Error: inspecting object: <ref>: image not known` assumed
+  while the parser was unqualified. The real 5.4.2 success and absence
+  outputs are now checked in as fixtures. Inspect failures on both backends
+  report the exit status alongside the diagnostic.
+
 - **Named build stages no longer look like the shared base.** A later `FROM`
   that exactly references an alias declared by an earlier `FROM ... AS` is
   excluded from shared-base staleness detection, preventing an unrelated base
