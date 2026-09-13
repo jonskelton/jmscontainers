@@ -13,7 +13,7 @@ documentation. This register generalizes from that observation to every
 container-to-host outflow channel and proposes remedies.
 
 Proposals are ordered by **criticality first, ROI second**. Nothing here is
-a 1.1.0 release blocker — release blockers live in
+a release blocker — release blockers live in
 [release-critical-issues.md](release-critical-issues.md). Items accepted
 here should either be scheduled directly or moved to
 [deferred-work.md](deferred-work.md) with a cross-reference.
@@ -54,7 +54,7 @@ The channels through which container work reaches the host, from source
 | --- | --- | --- |
 | Project tree bind mount | Permanent, by design | The product; not a leak |
 | Agent state mount (`agents/`) | Permanent, shared across all projects | **Primary subject of this register**: credentials, configuration, hooks, and full session transcripts |
-| Container filesystem | None — `--rm` on every launch (`bin/jms:260,497`) | Adequate; writes outside mounts vanish at exit |
+| Container filesystem | None — `--rm` on every launch (`bin/jms:272,532`) | Adequate; writes outside mounts vanish at exit |
 | Podman/apple-container image storage | Image layers and build cache persist | Image content, not session work product; out of scope |
 | Manifest extra mounts | User-approved per project | Covered by the existing grant flow |
 | Trust store (`store.json`) | Project paths and fingerprints | Host-side metadata about projects, not container output; minor |
@@ -63,7 +63,7 @@ Existing mitigations already in place, which these proposals build on
 rather than restate: the credential grant is separate from the build/run
 grant and defaults to no; `--no-auth` and `run.mount_auth = false` suppress
 the agent-state mount entirely; the state tree is created `0700`
-(`bin/jms:1029,1069-1070`); containers are `--rm`; the shell mount is
+(`bin/jms:1095,1135-1136`); containers are `--rm`; the shell mount is
 read-only.
 
 ## Issue tracking
@@ -103,13 +103,13 @@ HO-002 lands first, and should be re-judged at that point).
 - **Criticality:** High — informed consent is the project's core trust
   mechanism; the current wording is materially incomplete.
 - **ROI:** High. Text-only change.
-- **Affected:** `bin/jms:1316,1394,1399`, `docs/agent-state.md:1-32`,
+- **Affected:** `bin/jms:1382,1460,1465`, `docs/agent-state.md:1-32`,
   `SECURITY.md` (credential-mount warning)
 
 ### Finding
 
 The consent prompt reads "credentials and configuration for claude, codex,
-and opencode" (`bin/jms:1394,1399`), and `docs/agent-state.md` frames the
+and opencode" (`bin/jms:1460,1465`), and `docs/agent-state.md` frames the
 mount the same way. In practice the mounted directories also accumulate
 **complete session transcripts**: Codex rollout JSONLs under
 `codex/sessions/`, Claude Code session history under `claude/projects/`,
@@ -149,7 +149,7 @@ the new wording.
   the trusted host.
 - **ROI:** Medium. Highest-impact structural fix, but the largest item:
   profile selection, trust-store schema, migration, and per-profile logins.
-- **Affected:** `bin/jms` (state-root resolution at `bin/jms:1064`, mount
+- **Affected:** `bin/jms` (state-root resolution at `bin/jms:1130`, mount
   assembly, trust flow), `docs/agent-state.md`, `SECURITY.md` (which
   already names "per-project auth profiles" as future work)
 
@@ -296,7 +296,7 @@ platform behavior.
 ## HO-006 — Pre-existing state directories are not verified `0700`
 
 - **Criticality:** Low — jms creates the tree `0700`
-  (`bin/jms:1029,1069-1070`), so this concerns only trees created loose by
+  (`bin/jms:1095,1135-1136`), so this concerns only trees created loose by
   hand, by older versions, or by restore tools, and only matters on
   multi-user hosts.
 - **ROI:** Medium. Small check at mount time.
