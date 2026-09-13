@@ -1,0 +1,62 @@
+[
+  {
+    "Annotations": {
+      "org.opencontainers.image.base.digest": "",
+      "org.opencontainers.image.base.name": ""
+    },
+    "Architecture": "amd64",
+    "Author": "",
+    "Comment": "",
+    "Config": {
+      "Env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ],
+      "Labels": {
+        "io.buildah.version": "1.39.3",
+        "jms.fixture": "exact-resolve"
+      },
+      "WorkingDir": "/"
+    },
+    "Created": "2026-09-09T16:56:09.956643868Z",
+    "Digest": "sha256:a37e9005d913936d1f3c4c9a49b4feed69888689b38963e5a2c4399dc3f52b80",
+    "GraphDriver": {
+      "Data": {
+        "UpperDir": "/home/user/.local/share/containers/storage/overlay/diff",
+        "WorkDir": "/home/user/.local/share/containers/storage/overlay/work"
+      },
+      "Name": "overlay"
+    },
+    "History": [
+      {
+        "created": "2026-09-09T16:56:09.95684519Z",
+        "created_by": "/bin/sh -c #(nop) LABEL jms.fixture=exact-resolve",
+        "empty_layer": true
+      }
+    ],
+    "Id": "c4d85d59bab98c4389aa741f87d1ae26f02d5803e3d5f90331163e442927c9e6",
+    "Labels": {
+      "io.buildah.version": "1.39.3",
+      "jms.fixture": "exact-resolve"
+    },
+    "ManifestType": "application/vnd.oci.image.manifest.v1+json",
+    "NamesHistory": [
+      "localhost/jms-resolve-fixture:latest"
+    ],
+    "Os": "linux",
+    "Parent": "",
+    "RepoDigests": [
+      "localhost/jms-resolve-fixture@sha256:a37e9005d913936d1f3c4c9a49b4feed69888689b38963e5a2c4399dc3f52b80"
+    ],
+    "RepoTags": [
+      "localhost/jms-resolve-fixture:latest"
+    ],
+    "RootFS": {
+      "Layers": [],
+      "Type": "layers"
+    },
+    "Size": 1128,
+    "User": "",
+    "Version": "",
+    "VirtualSize": 1128
+  }
+]

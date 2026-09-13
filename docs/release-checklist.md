@@ -46,6 +46,12 @@
   walkthrough through `jms build --base` with the qualified runtime and no
   `JMS_RUNTIME_ACCEPT`, recording the date, candidate commit, macOS version,
   architecture, Python version, runtime version, and outcome.
+- For each qualified Podman version, capture `podman image inspect` of an
+  absent ref live (exit status, stdout, stderr) and compare it with
+  `tests/fixtures/podman-5.4.2-image-inspect-absent.stderr`; the diagnostic
+  wording has already changed between Podman releases, and a jms release
+  must never again pin a diagnostic it has not observed on the qualified
+  host.
 - Record in the release notes the tested Podman version, architecture
   (`uname -m`), and the remaining matrix dimensions: kernel, cgroup
   manager, OCI runtime, storage driver, network backend.

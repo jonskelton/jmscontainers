@@ -1,7 +1,9 @@
 # Proposal: Resolve shared-base freshness by exact image identity
 
-Status: Accepted and implemented in code on 2026-08-26; the qualified Podman
-image-inspect capture and final live release qualification remain pending.
+Status: Accepted and implemented in code on 2026-08-26; the Podman
+image-inspect capture landed 2026-09-09 (see the
+[qualification project](podman-image-inspect-qualification.md)); the final
+live release qualification remains pending.
 Target: Next bugfix release after acceptance
 Related changes: `9b55c6d` (Base staleness rebuild) and `d33c1a6`
 (stage-alias exclusion)

@@ -340,7 +340,8 @@ class ContainerBackend:
                  + quote(proc.stderr))
         if first_line == "Error: image not found: " + ref:
             return None
-        fail(source + " failed for " + quote(ref) + ": " + quote(proc.stderr))
+        fail(source + " failed for " + quote(ref) + " (exit " + str(proc.returncode) + "): "
+             + quote(proc.stderr or proc.stdout or b""))
 
     def image_exists(self, image):
         return self.resolve_image(image) is not None
@@ -640,35 +641,35 @@ class PodmanBackend:
              + quote(proc.stderr or proc.stdout or b""))
 
     def resolve_image(self, ref):
+        # Absence is decided by `podman image exists` (exit 0/1, the same
+        # contract image_exists() relies on), never by the wording of the
+        # inspect diagnostic: Podman 5.4.2 prints
+        # "Error: <ref>: image not known" (exit 125, captured 2026-09-09 in
+        # tests/fixtures/podman-5.4.2-image-inspect-absent.stderr) where an
+        # earlier assumption expected an "inspecting object:" prefix, and that
+        # mismatch refused every first project build.  An image removed
+        # between the probe and the inspect surfaces as the loud failure below.
+        if not self.image_exists(ref):
+            return None
         source = self.exe + " image inspect"
         proc = runtime_run([self.exe, "image", "inspect", ref], check=False)
-        if proc.returncode == 0:
-            try:
-                records = json.loads(proc.stdout.decode("utf-8"))
-            except (UnicodeDecodeError, ValueError):
-                fail(source + " returned invalid JSON for " + quote(ref) + ": "
-                     + quote(proc.stdout))
-            if not isinstance(records, list) or len(records) != 1:
-                fail(source + " did not return exactly one image record for " + quote(ref))
-            record = records[0]
-            if not isinstance(record, dict):
-                fail(source + " returned a malformed image record for " + quote(ref))
-            ident = record.get("Id")
-            if not valid_hex64(ident):
-                fail(source + " returned a malformed image id")
-            return ResolvedImage(ident, normalized_labels(record.get("Labels"), source))
+        if proc.returncode != 0:
+            fail(source + " failed for " + quote(ref) + " (exit " + str(proc.returncode)
+                 + "): " + quote(proc.stderr or proc.stdout or b""))
         try:
-            first_line = proc.stderr.decode("utf-8").split("\n", 1)[0]
-        except UnicodeDecodeError:
-            fail(source + " failed with invalid output for " + quote(ref) + ": "
-                 + quote(proc.stderr))
-        # Synthetic until recaptured on the qualified Podman 5.4.2 host.
-        # The release gate must pin this diagnostic before accepting the parser.
-        if (proc.returncode == 125
-                and first_line == "Error: inspecting object: " + ref + ": image not known"):
-            return None
-        fail(source + " failed for " + quote(ref) + ": "
-             + quote(proc.stderr or proc.stdout or b""))
+            records = json.loads(proc.stdout.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            fail(source + " returned invalid JSON for " + quote(ref) + ": "
+                 + quote(proc.stdout))
+        if not isinstance(records, list) or len(records) != 1:
+            fail(source + " did not return exactly one image record for " + quote(ref))
+        record = records[0]
+        if not isinstance(record, dict):
+            fail(source + " returned a malformed image record for " + quote(ref))
+        ident = record.get("Id")
+        if not valid_hex64(ident):
+            fail(source + " returned a malformed image id")
+        return ResolvedImage(ident, normalized_labels(record.get("Labels"), source))
 
     def image_facts(self):
         source = self.exe + " images"

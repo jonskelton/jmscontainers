@@ -1094,8 +1094,11 @@ call to a backend method where it is not.
 
 `runtime_json()` owns UTF-8 decoding and JSON-syntax failures for commands
 whose nonzero exit is always an error. Exact image resolution decodes inside
-`resolve_image()` instead, because each backend must classify its one
-fixture-pinned not-found result before normalizing successful JSON.
+`resolve_image()` instead: apple/container classifies its one fixture-pinned
+not-found stderr line before normalizing successful JSON, while Podman decides
+absence with `podman image exists` first (its 5.4.2 absent diagnostic,
+`Error: <ref>: image not known`, is fixture-pinned but not parsed) and treats
+every nonzero inspect after a positive probe as a failure.
 
 ### The backend protocol
 
@@ -1213,7 +1216,7 @@ monkeypatch intercepts every execution on both backends:
 | `validate_version` | `(parsed: Version, first_line: str) -> None` | policy: exact `min == max` pin (apple/container, honoring `JMS_RUNTIME_ACCEPT`) vs. min-only (Podman, §4). Runs no process; grouped here because it reads the environment |
 | `ensure_started` | `() -> None` | apple/container: `system status`/`system start` dance; Podman: full `podman info --format json` validation, no create/run probe (§4) |
 | `image_exists` | `(image: str) -> bool` | apple/container: exit 0 vs. the exact `Error: image not found: <ref>` stderr line; Podman: `image exists` exit 0/1, anything else a hard failure (§5) |
-| `resolve_image` | `(ref: str) -> ResolvedImage \| None` | invokes the runtime's exact image-reference resolver; validates one unambiguous full ID and label map; returns `None` only for the backend's fixture-pinned not-found result ([exact-base identity amendment](exact-base-identity-proposal.md)) |
+| `resolve_image` | `(ref: str) -> ResolvedImage \| None` | invokes the runtime's exact image-reference resolver; validates one unambiguous full ID and label map; returns `None` only for apple/container's fixture-pinned not-found stderr line or Podman's `image exists` exit 1 probe ([exact-base identity amendment](exact-base-identity-proposal.md), [Podman qualification](podman-image-inspect-qualification.md)) |
 | `image_facts` | `() -> list[ImageFact]` | per-backend strict, fixture-backed, fail-closed normalizer (§5) |
 | `ps` | `() -> list[ContainerFact]` | per-backend strict, fail-closed normalizer (§5); id/label validation (string, NUL-free, dict) shared |
 | `stop_container` / `remove_container` | `(container_id: str) -> RemovalResult` | executes the backend's stop / forced-remove argv via `runtime_run(check=False)` with output captured and classifies the outcome; Podman passes `--ignore` so absence succeeds at the engine; apple/container rechecks existence after a failure, on stop too (§5, MIR-035/043/052) |
