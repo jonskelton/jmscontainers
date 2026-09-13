@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import types
@@ -1270,10 +1271,31 @@ class BuildTests(unittest.TestCase):
     def test_cmd_build_without_project_builds_base(self):
         with sandbox() as home:
             (home / "git" / "plain").mkdir()
-            with self.fake() as runtime, contextlib.redirect_stdout(io.StringIO()):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with self.fake() as runtime, contextlib.redirect_stdout(stdout), \
+                 contextlib.redirect_stderr(stderr):
                 JMS.cmd_build(JMS.parse_cli(["build", "-w", str(home / "git" / "plain")]))
             build = next(call["argv"] for call in runtime.calls if call["argv"][:2] == [self.EXE, "build"])
             self.assertEqual(build[build.index("--tag") + 1], JMS.BASE)
+            self.assertEqual(stdout.getvalue(), "built base image " + JMS.BASE + "\n")
+            self.assertEqual(stderr.getvalue(), "building " + JMS.quote(JMS.BASE) + "\n")
+
+    def test_cmd_build_project_results_stay_on_stdout(self):
+        with sandbox() as home:
+            root = make_project(home)
+            data = JMS.project_data(JMS.canon(os.fsencode(root)))
+            tag = data["tag_prefix"] + ":" + data["tf"][:12]
+            with quiet(), contextlib.redirect_stdout(io.StringIO()):
+                JMS.cmd_trust(JMS.parse_cli(["trust", str(root), "--fingerprint", data["tf"], "--no-auth"]))
+            with self.fake():
+                for result in ("built project image ", "project image up to date "):
+                    with self.subTest(result=result):
+                        stdout, stderr = io.StringIO(), io.StringIO()
+                        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                            JMS.cmd_build(self.build_args("--no-auth", "-w", str(root)))
+                        self.assertEqual(stdout.getvalue(), result + tag + "\n")
+                        expected = "building " + JMS.quote(tag) + "\n" if result.startswith("built") else ""
+                        self.assertEqual(stderr.getvalue(), expected)
 
     def test_newest_two_images_are_kept_per_project(self):
         pid = "f" * 64
@@ -1730,6 +1752,116 @@ class LaunchTestsPodman(LaunchTests):
     USER_ISOLATION = "1000:1000"
     USER_ROOT = "0:0"
     MOUNT = "type=bind,source="
+
+
+class LaunchOutputTests(unittest.TestCase):
+    BACKEND = "container"
+
+    def check_launch_output(self, scenario, *, exit_status=0):
+        # The parent owns cleanup: the child deliberately execs without
+        # flushing Python stdout or unwinding any context managers.
+        for unbuffered in (False, True):
+            with self.subTest(scenario=scenario, unbuffered=unbuffered), sandbox() as home:
+                images = {JMS.BASE: image_record(JMS.BASE)}
+                deleted = []
+                flags = ["--no-auth"]
+                if scenario == "missing-base":
+                    root = home / "git" / "plain"
+                    root.mkdir()
+                    images = {}
+                    tag = JMS.BASE
+                else:
+                    root = make_project(home)
+                    data = JMS.project_data(JMS.canon(os.fsencode(root)))
+                    tag = data["tag_prefix"] + ":" + data["tf"][:12]
+                    with quiet(), contextlib.redirect_stdout(io.StringIO()):
+                        JMS.cmd_trust(JMS.parse_cli([
+                            "trust", str(root), "--fingerprint", data["tf"], "--no-auth"]))
+                    if scenario in ("warm", "stale", "retention"):
+                        base_id = images[JMS.BASE]["ident"] if scenario != "stale" else fake_hex_id("old-base")
+                        images[tag] = image_record(tag, labels={"jms.base": base_id})
+                    if scenario == "retention":
+                        flags.append("--no-cache")
+                        for day in range(1, 4):
+                            ref = data["tag_prefix"] + ":old" + str(day)
+                            images[ref] = image_record(
+                                ref, created="2025-12-%02dT00:00:00Z" % day,
+                                labels={"jms.project": data["pid"], "jms.fingerprint": str(day) * 64})
+                        deleted = [data["tag_prefix"] + ":old2", data["tag_prefix"] + ":old1"]
+                config = {"backend": self.BACKEND, "images": images, "tag": tag,
+                          "deleted": deleted, "exit_status": exit_status,
+                          "checkout": os.fsdecode(JMS.checkout_root()),
+                          "argv": ["launch", *flags, "-w", str(root)]}
+                child = textwrap.dedent("""\
+                    import json, os, pathlib, sys
+                    sys.path.insert(0, sys.argv[1])
+                    import test_jms as fixtures
+                    from unittest import mock
+
+                    config = json.loads(sys.argv[2])
+                    jms = fixtures.JMS
+                    runtime = fixtures.FakeRuntime(backend=config["backend"], images=config["images"])
+                    backend = jms.ContainerBackend if config["backend"] == "container" else jms.PodmanBackend
+
+                    def runner(argv, **kwargs):
+                        if kwargs.get("replace"):
+                            assert config["tag"] in argv, argv
+                            assert config["tag"] in runtime.images, runtime.images
+                            assert runtime.deleted == config["deleted"], runtime.deleted
+                            payload = "import sys; print('PAYLOAD'); sys.exit(%d)" % config["exit_status"]
+                            os.execv(sys.executable, [sys.executable, "-c", payload])
+                        if argv[:2] == [config["backend"], "build"]:
+                            # Exercise run_build's stream forwarding, including
+                            # the regression where engine output leaks to stdout.
+                            print("RUNTIME BUILD", file=kwargs.get("stdout"))
+                        return runtime(argv, **kwargs)
+
+                    with mock.patch.object(jms, "_RUNTIME", backend()), \\
+                         mock.patch.object(jms, "runtime_run", runner), \\
+                         mock.patch.object(jms, "checkout_root", lambda: os.fsencode(config["checkout"])), \\
+                         mock.patch.object(jms, "host_timezone", lambda: fixtures.SANDBOX_ZONE):
+                        jms.cmd_launch(jms.parse_cli(config["argv"]))
+                    raise AssertionError("launch did not exec")
+                    """)
+                env = dict(os.environ)
+                env.pop("PYTHONUNBUFFERED", None)
+                if unbuffered:
+                    env["PYTHONUNBUFFERED"] = "1"
+                result = subprocess.run(
+                    [sys.executable, "-B", "-c", child, str(pathlib.Path(__file__).resolve().parent),
+                     json.dumps(config)], env=env, capture_output=True, timeout=30)
+                self.assertEqual(result.returncode, exit_status, result.stderr.decode())
+                self.assertEqual(result.stdout, b"PAYLOAD\n")
+                progress = []
+                if scenario == "stale":
+                    progress.append("base image changed; rebuilding " + JMS.quote(tag))
+                if scenario != "warm":
+                    progress.extend(["building " + JMS.quote(tag), "RUNTIME BUILD"])
+                progress.extend("removed image " + JMS.quote(ref) for ref in deleted)
+                expected = "".join(line + "\n" for line in progress).encode()
+                self.assertEqual(result.stderr, expected)
+
+    def test_cold_launch_output(self):
+        self.check_launch_output("cold")
+
+    def test_warm_launch_output(self):
+        self.check_launch_output("warm")
+
+    def test_stale_launch_output(self):
+        self.check_launch_output("stale")
+
+    def test_missing_base_launch_output(self):
+        self.check_launch_output("missing-base")
+
+    def test_retention_launch_output(self):
+        self.check_launch_output("retention")
+
+    def test_payload_exit_status(self):
+        self.check_launch_output("cold", exit_status=17)
+
+
+class LaunchOutputTestsPodman(LaunchOutputTests):
+    BACKEND = "podman"
 
 
 class TimezoneTests(unittest.TestCase):
@@ -3258,7 +3390,8 @@ class CleanupPartialFailureTests(unittest.TestCase):
             JMS.gc_project_images(pid, "p", keep=0)        # must not raise
         self.assertEqual(removed, ["p:old2", "p:old1"])    # attempt-all ordering
         self.assertIn("warning: could not remove image \"p:old2\"", stderr.getvalue())
-        self.assertIn("removed image \"p:old1\"", stdout.getvalue())
+        self.assertIn("removed image \"p:old1\"", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
 
     def test_clean_aggregates_failures_and_exits_1(self):
         with sandbox():

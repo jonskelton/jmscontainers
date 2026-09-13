@@ -1548,7 +1548,7 @@ def run_build(context: bytes | str, tag: str, args, labels: dict[str, str] | Non
 
 
 def build_base(args):
-    print("building " + quote(BASE))
+    print("building " + quote(BASE), file=sys.stderr)
     run_build(checkout_root(), BASE, args, project=False)
 
 
@@ -1657,7 +1657,7 @@ def gc_project_images(pid: str, tag_prefix: str, *, keep: int, protect: str | No
         return
     def report(ref, result):
         if result.outcome == "removed":
-            print("removed image " + quote(ref))
+            print("removed image " + quote(ref), file=sys.stderr)
         else:
             print("warning: could not remove image " + quote(ref) + ": " + result.detail,
                   file=sys.stderr)
@@ -1746,12 +1746,12 @@ def build_project(data, args):
         if project is not None:
             if base is None or project.labels.get("jms.base") == base.ident:
                 return tag, False
-            print("base image changed; rebuilding " + quote(tag))
+            print("base image changed; rebuilding " + quote(tag), file=sys.stderr)
     # The consent decision was bound to a fingerprint; re-hash the definition
     # immediately before it reaches the runtime and fail closed on mismatch.
     if trust_fingerprint(spec_entries(data["spec"])) != data["tf"]:
         fail("project definition changed during consent -- re-run")
-    print("building " + quote(tag))
+    print("building " + quote(tag), file=sys.stderr)
     labels = {"jms.project": data["pid"], "jms.fingerprint": data["tf"]}
     if base is not None:
         labels["jms.base"] = base.ident

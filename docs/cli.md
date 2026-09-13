@@ -125,6 +125,10 @@ canonical local base never forces an existing project image to rebuild.
 
 ## launch
 
+During `launch`, jms build progress and automatic image-retention diagnostics
+go to stderr, leaving the launched program's stdout available for capture.
+The container runtime and launched program can also write to stderr.
+
 `launch` discovers the nearest definition, applies the consent gate, builds
 (or reuses) the project image, and replaces itself with the runtime's
 `run --rm` invocation.
