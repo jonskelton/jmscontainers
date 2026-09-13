@@ -4,6 +4,10 @@ Reviewed revision: `6af7b7e2117d2f6e8f370bddb80f5753c9d50ed8`
 (`v1.1.0-16-g6af7b7e`, CLI version `1.1.1.dev`). The working tree was clean
 when the review began. Source line numbers below refer to this revision.
 
+Follow-up status (2026-09-13): PR-001 and PR-002 have both been addressed.
+Their original observations are preserved below alongside the resolutions.
+RI-007 remains open; this follow-up does not provide release qualification.
+
 ## Assessment
 
 This assessment describes the originally reviewed revision `6af7b7e`.
@@ -141,7 +145,7 @@ performed.
 ### PR-002 — The outflow register overstates agent-state suppression
 
 - **Severity:** Medium
-- **Status:** Open
+- **Status:** Closed 2026-09-13
 - **Origin:** Introduced in `6af7b7e` (documentation only)
 - **Affected:** [host-outflow-register.md](host-outflow-register.md),
   “Existing mitigations” paragraph, lines 62–67
@@ -188,6 +192,22 @@ HO-001's consent wording and HO-005's user-facing inventory.
 
 **Close when:** the register and resulting user guidance agree with this
 matrix. No runtime policy change is required to fix the finding.
+
+**Resolution (2026-09-13):** Corrected the register's mitigation summary and
+the agent-state guide to distinguish shared-base default mounts, a new
+custom definition's default-No credential question, invocation-scoped
+`--no-auth`, and the authorized `--auth` override of `mount_auth = false`.
+The guide also states that `--auth` alone cannot authorize access. Aligned
+HO-001 and HO-005's proposed wording with these conditions; both remain
+Proposed and their broader consent/inventory work is not implemented here.
+
+Validation: checked the wording against `cmd_launch()`, `approve()`, and
+`launch_plan()`, and repeated the five-row mount matrix above on both fake
+backends with temporary homes and matching durable credential grants. All
+10 cases passed (4/0/0/4/0 mounts on each backend). Existing consent and
+launch coverage passed in the 289-test suite. Local documentation links
+and `git diff --check` passed. Credential policy and runtime mount behavior
+are unchanged.
 
 ## Existing risks and release work
 

@@ -1,6 +1,7 @@
 # Implementation guide: September 13 review follow-up
 
-Status: Ready for implementation; neither finding is fixed by this guide.
+Status: Implemented 2026-09-13. Both findings are addressed in the follow-up
+implementation; this guide retains the implementation and acceptance plan.
 Source: [Project review — 2026-09-13](project-review-2026-09-13.md), findings
 PR-001 and PR-002, against `6af7b7e`.
 

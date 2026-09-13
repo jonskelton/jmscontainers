@@ -3,8 +3,10 @@
 ## Persistent agent state
 
 jms keeps each agent's credentials and configuration outside project
-checkouts. With the credential grant, these host directories are mounted
-read-write:
+checkouts. Launches without a project definition use the shared base and
+mount these host directories read-write by default, without a project
+credential prompt. Custom project definitions require a credential grant
+for these mounts:
 
 | Host (`~/.local/share/jmscontainers/agents/`) | Container |
 | --- | --- |
@@ -13,23 +15,32 @@ read-write:
 | `opencode/` | `~/.local/share/opencode` |
 | `opencode-config/` | `~/.config/opencode` |
 
-Log in once inside a container; later containers with the grant reuse that
-login. With `jms launch --root`, the same directories mount under `/root`.
+Log in once inside a container; later containers that mount this state reuse
+that login. With `jms launch --root`, the same directories mount under `/root`.
 
-The state is shared across every approved project. A global settings file or
-hook written by one container affects later containers. It also contains live
-credentials:
+The state is shared across custom-project and shared-base launches that
+mount it. A global settings file or hook written by one container affects
+later containers. It also contains live credentials:
 
 - use dedicated, least-privileged agent accounts for third-party work;
 - never commit or sync this directory;
 - never replace it with a bind mount of your host's real agent directories;
 - delete an agent's state directory and log in again if it is corrupted.
 
-Project build/run approval and credential approval are separate. Use
-`--no-auth` to launch without agent state. A manifest can set
-`run.mount_auth = false` to suppress the default mount; `--auth` explicitly
-requests it. See the [CLI trust reference](cli.md#trust) for interactive and
-automation behavior.
+For custom definitions, project build/run approval and credential approval
+are separate, and a new interactive credential question defaults to no.
+Use `--no-auth` to suppress jms-managed agent-state mounts for that launch,
+including shared-base launches. A manifest can set `run.mount_auth = false`
+to suppress the default mount; an explicit `--auth` overrides that setting
+when credential access has been granted. `--auth` alone does not authorize
+access: without a current credential grant or an applicable exact-fingerprint
+auth grant, the consent path still applies and unavailable prompting fails.
+See the [CLI trust reference](cli.md#trust) for interactive and automation
+behavior.
+
+`--no-auth` controls these jms-managed mounts; it does not prevent writes
+through approved project or extra mounts or neutralize trusted ambient
+runtime configuration.
 
 ## Shell customization
 
