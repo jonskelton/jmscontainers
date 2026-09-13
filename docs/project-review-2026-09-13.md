@@ -6,6 +6,9 @@ when the review began. Source line numbers below refer to this revision.
 
 ## Assessment
 
+This assessment describes the originally reviewed revision `6af7b7e`.
+Follow-up resolutions are recorded under the findings below.
+
 The September 12–13 runtime fixes are sound within the exercised contracts.
 Podman absence now depends on the explicit existence probe, and forced
 rebuilds avoid inspecting the project image they will replace. The checked-in
@@ -64,7 +67,7 @@ Release blockers retain their existing register and acceptance criteria.
 ### PR-001 — Launch stdout depends on Python buffering
 
 - **Severity:** Medium
-- **Status:** Open
+- **Status:** Closed 2026-09-13
 - **Origin:** Pre-existing; not introduced by the September 12–13 fixes
 - **Affected:** [bin/jms](../bin/jms), `build_base()` line 1551,
   `build_project()` lines 1749 and 1754, and `gc_project_images()` line 1660
@@ -111,6 +114,29 @@ launches on both backends. Cover a missing shared base as well.
 
 **Close when:** those cases return exactly the launched payload on stdout,
 with progress visible on stderr; `make test` remains green.
+
+**Resolution (2026-09-13):** Routed the four build/staleness/automatic-retention
+progress reports to stderr. Explicit build summaries, up-to-date reports,
+and explicit cleanup reports retain stdout. The CLI reference now states
+the launch output contract, and the changelog identifies the pre-existing
+defect.
+
+Added subprocess regressions that run the real launch path against each fake
+backend and perform a real exec into a Python payload. Both buffered and
+unbuffered runs cover cold, warm, stale-base, missing-base, and actual
+retention cases, plus payload exit status 17: 24 subprocess cases in 12
+tests. Exact stdout and stderr assertions also exercise runtime build-stream
+forwarding; retention verifies the removed references and surviving launch
+tag. Before the production fix, 20 cases failed (the warm controls passed):
+unbuffered launches leaked progress to stdout and buffered launches lost
+progress at exec. After the fix all 24 cases passed. The existing warn-only
+cleanup regression and explicit build-result assertions protect the other
+reporting contracts.
+
+Validation: `make test` passed 289 tests on Python 3.13.5, plus compilation
+and ShellCheck 0.10.0 (no syntax fallback); `git diff --check` passed.
+PR-002 remains open at this resolution. No real-runtime qualification was
+performed.
 
 ### PR-002 — The outflow register overstates agent-state suppression
 
