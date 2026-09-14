@@ -532,7 +532,7 @@ class PreserveHostPathTests(unittest.TestCase):
             self.assertEqual(JMS.project_mount_target(root, JMS.default_config(), self.HOME), "/work")
 
     def test_ordinary_checkout_is_preserved_verbatim(self):
-        for root in (b"/home/jskelton/git/finance", b"/opt/project", b"/srv/x", b"/tmp/scratch/p"):
+        for root in (b"/home/user/git/project", b"/opt/project", b"/srv/x", b"/tmp/scratch/p"):
             self.assertEqual(JMS.project_mount_target(root, self.preserved(), self.HOME),
                              os.fsdecode(root))
 
