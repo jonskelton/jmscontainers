@@ -141,11 +141,12 @@ they are re-checked against the effective home, so a manifest mount aimed at
 somewhere else.
 
 `--bin` becomes the runtime entrypoint verbatim. The base image ships
-full-permission agent launchers — `yolo-claude`, `yolo-codex`, and
-`yolo-opencode` — so `jms launch -b yolo-claude` starts directly
+full-permission agent launchers — `yolo-claude`, `yolo-codex`,
+`yolo-opencode`, and `yolo-pi` — so `jms launch -b yolo-claude` starts directly
 in an agent session with permission prompts disabled; extra agent arguments
 go after `--`. An entrypoint bypasses the login-shell profile, and the
-container exits when the entry program does.
+container exits when the entry program does. Pi runs with full process
+permissions by default, so `yolo-pi` forwards arguments without a bypass flag.
 
 Every launch passes the host's IANA time zone into the container as `TZ`, so
 `date`, language runtimes, and git commit stamps render your local calendar

@@ -35,8 +35,8 @@ coercion is performed, and floats and datetimes are accepted nowhere.
 | `name` | string | project-directory slug | Cosmetic slug for generated container names. Must match `^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`. It does not affect the project ID, but it is manifest content: changing it changes the trust fingerprint, and the image tag ends in that fingerprint. |
 | `env` | table | empty | Environment names match `^[A-Za-z_][A-Za-z0-9_]*$`; values are strings without NUL or newline. `TZ` is special only in that `launch` supplies a default from the host: see [Time zone](#time-zone). |
 | `mounts` | array of tables | empty | Each item has `source`, `target`, and optional `readonly` only. |
-| `mounts[].source` | string | — | Required, nonempty host path. `~`, `$VAR`, and `${VAR}` expand once from the host environment; unset or empty expansions fail. The result must be absolute and must already exist: jms canonicalizes it (resolving symlinks) while parsing, so a missing source is a manifest error. |
-| `mounts[].target` | string | — | Required, absolute container path under the allowlist in [Mount targets](#mount-targets). Targets may not overlap each other or any reserved path. |
+| `mounts[].source` | string | — | Required, nonempty host path. `~`, `$VAR`, and `${VAR}` expand once from the host environment; unset or empty expansions fail. Relative paths resolve from the project root (not `.jmscontainer/` or the invoking working directory). The result must already exist: jms canonicalizes it (resolving symlinks) while parsing, so a missing source is a manifest error. |
+| `mounts[].target` | string | — | Required container path. Absolute paths use the allowlist in [Mount targets](#mount-targets); relative paths resolve from the container project path and may leave that allowlist, subject to the system-state and reserved-path checks below. Targets may not overlap each other or any reserved path. |
 | `mounts[].readonly` | boolean | `true` | Set `false` only when the container must write the host path. |
 | `run` | table | defaults below | Only `entry`, `mount_auth`, and `preserve_host_path`. |
 | `run.entry` | array of strings | `["/bin/bash", "-l"]` | Nonempty; first element nonempty; no element contains NUL. |
@@ -122,7 +122,32 @@ mounted.
 
 ## Mount targets
 
-A `target` is an absolute, normalized container path: no trailing slash, no
+A relative `target` is resolved lexically from the container project path (`/work`
+by default, or the host project path with `run.preserve_host_path = true`).
+Trailing slashes and `.`/`..` components are normalized before validation. Relative
+targets may land outside the absolute-target allowlist, but cannot overlap the
+project, other mounts, reserved agent-state paths, or container system paths such
+as `/etc`, `/usr`, `/proc`, and `/root`. Sources still undergo the existing
+symlink resolution, existence, and protected-host-directory checks.
+
+For sibling checkouts, this preserves `../beadrail/` inside the container:
+
+```toml
+[[mounts]]
+source = "../beadrail/"
+target = "../beadrail/"
+readonly = true
+
+[run]
+preserve_host_path = true
+```
+
+With the default project path `/work`, the same relative target becomes
+`/beadrail`. Resolution is always from the project root, even when launching
+from a nested working directory. Container target resolution does not follow
+host symlinks.
+
+An absolute `target` must be normalized: no trailing slash, no
 empty or `.`/`..` component, and no `,`, `=`, or NUL (the runtime's mount
 grammar cannot carry the first two). It must sit under one of four prefixes:
 
@@ -137,7 +162,8 @@ and it may not be, contain, or sit inside a reserved target:
 - `/work` — the project mount (still reserved when
   [`run.preserve_host_path`](#project-mount-path) moves the project elsewhere)
 - `/home/isolation/.claude`, `/home/isolation/.codex`,
-  `/home/isolation/.local/share/opencode`, `/home/isolation/.config/opencode`
+  `/home/isolation/.local/share/opencode`, `/home/isolation/.config/opencode`,
+  `/home/isolation/.pi/agent`
   — the agent-state mounts
 - `/home/isolation/.config/jms-shell` — the read-only shell-config mount
 

@@ -482,7 +482,8 @@ class ManifestTests(unittest.TestCase):
             self.assertFalse(JMS.valid_target(target, home), target)
         for target in ("/work", "/work/sub", home + "/.claude", home + "/.claude/sub",
                        home + "/.local/share/opencode", home, home + "/.config/opencode",
-                       home + "/.config/jms-shell", home + "/.config/jms-shell/bashrc"):
+                       home + "/.config/jms-shell", home + "/.config/jms-shell/bashrc",
+                       home + "/.pi", home + "/.pi/agent", home + "/.pi/agent/auth.json"):
             self.assertTrue(JMS.target_overlaps_reserved(target, home), target)
         self.assertFalse(JMS.target_overlaps_reserved(home + "/.cache", home))
 
@@ -504,6 +505,58 @@ class ManifestTests(unittest.TestCase):
             for expression in ("relative/path", "$UNSET_VARIABLE_XYZ/x", "~user/x"):
                 with self.assertRaises(JMS.JMSException):
                     JMS.expand_mount_source(expression)
+
+    def test_relative_mounts_resolve_from_project_not_cwd(self):
+        with sandbox() as home:
+            sibling = home / "git" / "beadrail"
+            sibling.mkdir()
+            for preserve in (False, True):
+                raw = ('[run]\npreserve_host_path = %s\n[[mounts]]\n'
+                       'source = "../beadrail/"\ntarget = "../beadrail/"\n'
+                       'readonly = true\n' % str(preserve).lower()).encode()
+                root = make_project(home, name="preserved" if preserve else "default", manifest=raw)
+                inner = root / "nested"
+                inner.mkdir(exist_ok=True)
+                # Canonical roots throughout: a macOS temp dir is /var/folders/...,
+                # and unresolved /var reads as container system state.
+                canonical_root = JMS.canon(os.fsencode(root))
+                config = JMS.project_data(JMS.canon(os.fsencode(inner)))["config"]
+                mount = config["mounts"][0]
+                self.assertEqual(mount["source"], JMS.canon(os.fsencode(sibling)))
+                expected = (os.fsdecode(JMS.canon(os.fsencode(sibling))) if preserve
+                            else "/beadrail")
+                self.assertEqual(mount["target"], expected)
+                self.assertTrue(mount["readonly"])
+                for as_root in (False, True):
+                    JMS.validate_mount_layout(canonical_root, config, as_root)
+
+    def test_relative_targets_reject_system_reserved_and_overlapping_paths(self):
+        with sandbox() as home:
+            root = os.fsencode(home / "git" / "project")
+            for target in ("../etc/", "../usr/lib", "../home/isolation/.codex",
+                           "../root/data", "../", "../mnt/a,b", "../mnt/a=b"):
+                raw = ('[[mounts]]\nsource = "~"\ntarget = "%s"\n' % target).encode()
+                with self.subTest(target=target), self.assertRaises(JMS.JMSException):
+                    JMS.parse_manifest(raw, root)
+            for target in (".", "./nested"):
+                raw = ('[[mounts]]\nsource = "~"\ntarget = "%s"\n' % target).encode()
+                with self.subTest(target=target), self.assertRaises(JMS.JMSException):
+                    config = JMS.parse_manifest(raw, root)
+                    JMS.validate_mount_layout(root, config, False)
+            raw = (b'[[mounts]]\nsource = "~"\ntarget = "../mnt/data"\n'
+                   b'[[mounts]]\nsource = "~"\ntarget = "/mnt/data"\n')
+            with self.assertRaisesRegex(JMS.JMSException, "mounts targets overlap"):
+                JMS.parse_manifest(raw, root)
+
+    def test_relative_source_requires_existing_path_and_resolves_symlinks(self):
+        with sandbox() as home:
+            root = home / "git" / "project"
+            root.mkdir()
+            (home / "git" / "alias").symlink_to(root, target_is_directory=True)
+            self.assertEqual(JMS.expand_mount_source("../alias/", os.fsencode(root)),
+                             JMS.canon(os.fsencode(root)))
+            with self.assertRaises(JMS.JMSException):
+                JMS.expand_mount_source("../missing/", os.fsencode(root))
 
 
 class PreserveHostPathTests(unittest.TestCase):
@@ -532,7 +585,7 @@ class PreserveHostPathTests(unittest.TestCase):
             self.assertEqual(JMS.project_mount_target(root, JMS.default_config(), self.HOME), "/work")
 
     def test_ordinary_checkout_is_preserved_verbatim(self):
-        for root in (b"/home/jskelton/git/finance", b"/opt/project", b"/srv/x", b"/tmp/scratch/p"):
+        for root in (b"/home/user/git/project", b"/opt/project", b"/srv/x", b"/tmp/scratch/p"):
             self.assertEqual(JMS.project_mount_target(root, self.preserved(), self.HOME),
                              os.fsdecode(root))
 
@@ -547,7 +600,7 @@ class PreserveHostPathTests(unittest.TestCase):
 
     def test_a_checkout_that_would_swallow_a_reserved_mount_is_refused(self):
         """/home shadows the agent-state mounts; .claude collides outright."""
-        for root in (b"/home", b"/home/isolation", b"/home/isolation/.claude/p", b"/work", b"/work/p"):
+        for root in (b"/home", b"/home/isolation", b"/home/isolation/.claude/p", b"/home/isolation/.pi/agent/p", b"/work", b"/work/p"):
             with self.assertRaisesRegex(JMS.JMSException, "reserved mount target"):
                 JMS.project_mount_target(root, self.preserved(), self.HOME)
 
@@ -1599,7 +1652,28 @@ class LaunchTests(unittest.TestCase):
             self.assertIn("target=/home/isolation/.codex", mounts)
             self.assertIn("target=/home/isolation/.local/share/opencode", mounts)
             self.assertIn("target=/home/isolation/.config/opencode", mounts)
+            self.assertIn(self.MOUNT + agents + "/pi,target=/home/isolation/.pi/agent", mounts)
             self.assertIn("CLAUDE_CONFIG_DIR=/home/isolation/.claude", argv)
+
+    def test_pi_state_mounts_follow_home_and_no_auth(self):
+        with sandbox() as home:
+            plain = home / "git" / "plain"
+            plain.mkdir()
+            source = JMS.agent_state_root() / "pi"
+            for root_flags, target_home in (([], "/home/isolation"), (["--root"], "/root")):
+                for auth_flags in ([], ["--no-auth"]):
+                    with self.subTest(root=root_flags, auth=auth_flags):
+                        argv = self.launch_argv(
+                            home, ["launch", "-w", str(plain), "-b", "yolo-pi",
+                                   *root_flags, *auth_flags, "--", "--version"],
+                            images={JMS.BASE: image_record(JMS.BASE)})
+                        mount = self.MOUNT + str(source) + ",target=" + target_home + "/.pi/agent"
+                        if auth_flags:
+                            self.assertNotIn(mount, argv)
+                        else:
+                            self.assertIn(mount, argv)
+                        self.assertEqual(argv[argv.index("--entrypoint") + 1], "yolo-pi")
+                        self.assertEqual(argv[-1], "--version")
 
     def test_launch_without_project_uses_the_shared_base(self):
         with sandbox() as home:
@@ -1679,6 +1753,21 @@ class LaunchTests(unittest.TestCase):
                                         images={JMS.BASE: image_record(JMS.BASE)})
             self.assertIn(self.MOUNT + os.fsdecode(canonical) + ",target=/work",
                           " ".join(argv))
+
+    def test_relative_sibling_mount_reaches_runtime_readonly(self):
+        with sandbox() as home:
+            (home / "git" / "beadrail").mkdir()
+            root = make_project(home, manifest=(
+                b'[run]\npreserve_host_path = true\n[[mounts]]\n'
+                b'source = "../beadrail/"\ntarget = "../beadrail/"\nreadonly = true\n'))
+            data = JMS.project_data(JMS.canon(os.fsencode(root)))
+            tag = data["tag_prefix"] + ":" + data["tf"][:12]
+            argv = self.launch_argv(home, ["launch", "--trust", "--no-auth", "-w", str(root)],
+                                    images={tag: image_record(tag)})
+            sibling = os.fsdecode(JMS.canon(os.fsencode(home / "git" / "beadrail")))
+            mount_arg = next(arg for arg in argv if "target=" + sibling in arg)
+            self.assertIn(self.MOUNT + sibling + ",target=" + sibling, mount_arg)
+            self.assertIn("readonly", mount_arg)
 
     def test_preserve_host_path_mounts_the_project_at_its_own_path(self):
         with sandbox() as home:

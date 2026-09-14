@@ -1119,7 +1119,7 @@ def update_store(change) -> dict:
         return store
 
 
-AGENT_STATE_LEAVES = ("claude", "codex", "opencode", "opencode-config")
+AGENT_STATE_LEAVES = ("claude", "codex", "opencode", "opencode-config", "pi")
 
 
 def checkout_root() -> bytes:
@@ -1152,7 +1152,7 @@ def reserved_root(root: bytes) -> bool:
     return any(ancestor(root, source) or ancestor(source, root) for source in protected_sources())
 
 
-def expand_mount_source(expression: str) -> bytes:
+def expand_mount_source(expression: str, root: bytes | None = None) -> bytes:
     raw = expression.encode("utf-8")
     if b"\0" in raw:
         fail("mount source contains NUL")
@@ -1182,16 +1182,25 @@ def expand_mount_source(expression: str) -> bytes:
         if not value: fail("mount source variable is unset or empty: " + quote(name))
         out.extend(value)
     result = bytes(out)
-    if not result.startswith(b"/"): fail("mount source must expand to an absolute path: " + quote(result))
+    if not result.startswith(b"/"):
+        if root is None: fail("relative mount source requires a project root: " + quote(result))
+        result = os.path.join(root, result)
+    if not os.path.exists(result):
+        fail("mount source does not exist: " + quote(result))
     return canon(result)
 
 
-def valid_target(value: str, home: str) -> bool:
+def normalized_mount_target(value: str) -> bool:
     if (not value.startswith("/") or value.startswith("//") or value.endswith("/")
             or "\0" in value or "," in value or "=" in value):
         return False
     parts = value.split("/")[1:]
     if not parts or any(not item or item in (".", "..") for item in parts): return False
+    return True
+
+
+def valid_target(value: str, home: str) -> bool:
+    if not normalized_mount_target(value): return False
     allowed = (home + "/", "/opt/", "/mnt/", "/srv/")
     return any(value.startswith(prefix) for prefix in allowed)
 
@@ -1199,7 +1208,7 @@ def valid_target(value: str, home: str) -> bool:
 def reserved_mount_targets(home: str) -> frozenset[str]:
     return frozenset({"/work", home + "/.claude", home + "/.codex",
                       home + "/.local/share/opencode",
-                      home + "/.config/opencode",
+                      home + "/.config/opencode", home + "/.pi/agent",
                       home + "/.config/jms-shell"})
 
 
@@ -1224,6 +1233,14 @@ def shadows_critical_path(value: str) -> bool:
     return value == "/" or any(value == path or value.startswith(path + "/")
                                or path.startswith(value + "/")
                                for path in CRITICAL_CONTAINER_PATHS)
+
+
+def valid_relative_mount_target(value: str, home: str) -> bool:
+    """Relative targets may leave the allowlist, but never shadow system state."""
+    return (normalized_mount_target(value)
+            and not shadows_critical_path(value)
+            and not target_overlaps_reserved(value, home)
+            and not target_overlaps_reserved(value, "/home/isolation"))
 
 
 def project_mount_target(root: bytes, config: dict, home: str) -> str:
@@ -1274,7 +1291,9 @@ def validate_mount_layout(root: bytes, config: dict, as_root: bool) -> str:
     project_target = project_mount_target(root, config, effective_home)
     for extra_mount in config["mounts"]:
         target = extra_mount["target"]
-        if not valid_target(target, effective_home) or target_overlaps_reserved(target, effective_home):
+        allowed = (valid_relative_mount_target(target, effective_home)
+                   if extra_mount.get("relative_target") else valid_target(target, effective_home))
+        if not allowed or target_overlaps_reserved(target, effective_home):
             fail("manifest mount target is not allowed for the effective runtime user"
                  + (" under --root" if as_root else "") + ": " + quote(target))
         # "/work" is a reserved target, so the check above covers the default
@@ -1292,7 +1311,7 @@ def default_config():
             "mount_auth": True, "preserve_host_path": False}
 
 
-def parse_manifest(raw: bytes | None) -> dict:
+def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
     config = default_config()
     if raw is None: return config
     try:
@@ -1342,9 +1361,17 @@ def parse_manifest(raw: bytes | None) -> dict:
             for key in set(mount) - {"source", "target", "readonly"}:
                 err(prefix + "." + str(key))
             source_valid = type(mount.get("source")) is str and bool(mount.get("source"))
-            target_valid = (type(mount.get("target")) is str and bool(mount.get("target"))
-                            and valid_target(mount["target"], home)
-                            and not target_overlaps_reserved(mount["target"], home))
+            target = mount.get("target")
+            relative_target = type(target) is str and bool(target) and not target.startswith("/")
+            target_valid = type(target) is str and bool(target)
+            if relative_target:
+                if root is None:
+                    target_valid = False
+                else:
+                    target = os.path.normpath(os.path.join(project_mount_target(root, config, home), target))
+                    target_valid = valid_relative_mount_target(target, home)
+            elif target_valid:
+                target_valid = valid_target(target, home) and not target_overlaps_reserved(target, home)
             if not source_valid: err(prefix + ".source")
             if not target_valid: err(prefix + ".target")
             readonly = mount.get("readonly", True)
@@ -1353,11 +1380,14 @@ def parse_manifest(raw: bytes | None) -> dict:
             source = None
             if source_valid:
                 try:
-                    source = expand_mount_source(mount["source"])
+                    source = expand_mount_source(mount["source"], root)
                 except JMSException:
                     err(prefix + ".source")
             if source is not None and target_valid and readonly_valid and not (set(mount) - {"source", "target", "readonly"}):
-                config["mounts"].append({"source": source, "target": mount["target"], "readonly": readonly})
+                parsed_mount = {"source": source, "target": target, "readonly": readonly}
+                if relative_target:
+                    parsed_mount["relative_target"] = True
+                config["mounts"].append(parsed_mount)
     targets = [mount["target"] for mount in config["mounts"]]
     if len(set(targets)) != len(targets) or any(a != b and (a.startswith(b + "/") or b.startswith(a + "/")) for a in targets for b in targets): err("mounts targets overlap")
     if errors: fail("invalid jmscontainer.toml fields: " + ", ".join(quote(value) for value in sorted(set(errors))))
@@ -1379,7 +1409,7 @@ def print_capability_summary(root: bytes, config: dict) -> None:
     for key, value in sorted(config["env"].items()):
         print("- environment: " + quote(key + "=" + value), file=sys.stderr)
     print("- entry: " + " ".join(quote(value) for value in config["entry"]), file=sys.stderr)
-    print("- agent state (credentials and configuration for claude, codex, opencode): " +
+    print("- agent state (credentials and configuration for claude, codex, opencode, pi): " +
           ("read-write mount eligible with a separate grant" if config["mount_auth"] else
            "read-write mount suppressed by manifest"), file=sys.stderr)
 
@@ -1457,12 +1487,12 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
             if not (config or default_config())["mount_auth"]:
                 print("persistent agent state (credentials and configuration): not mounted by default (manifest mount_auth = false); --auth required",
                       file=sys.stderr)
-            auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, and opencode -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
+            auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
         record_approval(auth_ok)
     elif wants_auth and not auth_ok:
         if not (sys.stdin.isatty() and sys.stderr.isatty()):
             fail("credential access is required but prompting is unavailable", 3)
-        auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, and opencode -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
+        auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
         # --trust is one-shot for both grants: an accepted escalation applies to
         # this invocation only and leaves any existing record untouched.
         if auth_ok and live and not getattr(args, "trust", False):
@@ -1570,7 +1600,7 @@ def project_data(workdir: bytes):
             fail("jmscontainer.toml must be a regular file: " + quote(manifest_path))
         with open(manifest_path, "rb") as handle:
             manifest = handle.read()
-    config = parse_manifest(manifest)
+    config = parse_manifest(manifest, root)
     protected = protected_sources()
     for mount in config["mounts"]:
         if any(ancestor(mount["source"], item) or ancestor(item, mount["source"]) for item in protected):
@@ -1768,7 +1798,8 @@ def agent_state_mounts(user="isolation"):
     return [(root / "claude", home + "/.claude"),
             (root / "codex", home + "/.codex"),
             (root / "opencode", home + "/.local/share/opencode"),
-            (root / "opencode-config", home + "/.config/opencode")]
+            (root / "opencode-config", home + "/.config/opencode"),
+            (root / "pi", home + "/.pi/agent")]
 
 
 def shell_state_mount(user="isolation"):

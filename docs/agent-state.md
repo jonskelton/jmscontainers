@@ -14,9 +14,11 @@ for these mounts:
 | `codex/` | `~/.codex` |
 | `opencode/` | `~/.local/share/opencode` |
 | `opencode-config/` | `~/.config/opencode` |
+| `pi/` | `~/.pi/agent` |
 
 Log in once inside a container; later containers that mount this state reuse
-that login. With `jms launch --root`, the same directories mount under `/root`.
+that login. Pi uses `/login` inside its interactive session; its state mount
+also persists settings, sessions, and extensions. With `jms launch --root`, the same directories mount under `/root`.
 
 The state is shared across custom-project and shared-base launches that
 mount it. A global settings file or hook written by one container affects

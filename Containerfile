@@ -1,4 +1,4 @@
-# jmscontainers: throwaway Fedora dev container for claude-code / codex / opencode.
+# jmscontainers: throwaway Fedora dev container for claude-code / codex / opencode / pi.
 # Rebuild = update: `dnf upgrade` + `npm install -g` run at build time, so
 # `jms build --base --pull --no-cache` picks up the latest Fedora packages and
 # agent CLIs.
@@ -26,6 +26,7 @@ RUN dnf -y upgrade && \
     dnf clean all
 
 RUN npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai pnpm @ast-grep/cli
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
 # Non-root default user with passwordless sudo (throwaway sandbox — convenience wins).
 # Pre-create the agent auth dirs so the runtime mounts land with sane ownership.
@@ -38,11 +39,11 @@ RUN groupadd -g 1000 isolation && \
     chmod 440 /etc/sudoers.d/isolation && \
     mkdir -p /home/isolation/.claude /home/isolation/.codex \
              /home/isolation/.local/share/opencode \
-             /home/isolation/.config/opencode \
+             /home/isolation/.config/opencode /home/isolation/.pi/agent \
              /home/isolation/.config/jms-shell && \
     chown -R isolation:isolation /home/isolation && \
     mkdir -p /root/.claude /root/.codex /root/.local/share/opencode \
-             /root/.config/opencode /root/.config/jms-shell /work && \
+             /root/.config/opencode /root/.pi/agent /root/.config/jms-shell /work && \
     chown isolation:isolation /work && \
     ln -sf /usr/bin/nvim /usr/local/bin/vi && \
     ln -sf /usr/bin/nvim /usr/local/bin/vim
@@ -52,6 +53,7 @@ RUN groupadd -g 1000 isolation && \
 # so each wrapper sets the env a login shell would have provided.
 # opencode has no skip-permissions flag; `--auto` is its sanctioned
 # auto-approve mode (explicit "deny" rules still apply).
+# Pi runs with full process permissions by default; no bypass flag is needed.
 RUN printf '%s\n' \
         '#!/bin/sh' \
         'export EDITOR="${EDITOR:-nvim}"' \
@@ -69,7 +71,12 @@ RUN printf '%s\n' \
         'export EDITOR="${EDITOR:-nvim}"' \
         'exec opencode --auto "$@"' \
         > /usr/local/bin/yolo-opencode && \
-    chmod 755 /usr/local/bin/yolo-claude /usr/local/bin/yolo-codex /usr/local/bin/yolo-opencode
+    printf '%s\n' \
+        '#!/bin/sh' \
+        'export EDITOR="${EDITOR:-nvim}"' \
+        'exec pi "$@"' \
+        > /usr/local/bin/yolo-pi && \
+    chmod 755 /usr/local/bin/yolo-claude /usr/local/bin/yolo-codex /usr/local/bin/yolo-opencode /usr/local/bin/yolo-pi
 
 # QoL profile: `container run` has no hostname flag, so fake it in the prompt.
 # zsh login shells also source /etc/profile.d/*.sh (via /etc/zprofile ->

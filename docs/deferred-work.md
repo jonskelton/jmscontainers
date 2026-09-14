@@ -135,7 +135,7 @@ release gate.
 
 `Containerfile` starts from `registry.fedoraproject.org/fedora:latest`, runs
 `dnf -y upgrade`, and installs five unversioned global npm packages
-(`@anthropic-ai/claude-code`, `@openai/codex`, `opencode-ai`, `pnpm`,
+(`@anthropic-ai/claude-code`, `@openai/codex`, `opencode-ai`, `@earendil-works/pi-coding-agent`, `pnpm`,
 `@ast-grep/cli`). Identical repository source can therefore produce materially
 different images on different days. Those tools then run against the user's
 project tree and, when `--auth` is granted, against real agent credentials.
