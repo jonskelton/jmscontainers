@@ -4,7 +4,7 @@
 [![release](https://img.shields.io/github/v/release/jonskelton/jmscontainers)](https://github.com/jonskelton/jmscontainers/releases)
 [![license](https://img.shields.io/github/license/jonskelton/jmscontainers)](LICENSE)
 
-Run **Claude Code**, **Codex**, and **OpenCode** with permission checks disabled
+Run **Claude Code**, **Codex**, **OpenCode**, and **[Pi](https://github.com/earendil-works/pi)** with full permissions
 inside throwaway containers—not on your host.
 
 `jms` mounts your checkout read-write at `/work`, starts a disposable Fedora
@@ -65,7 +65,7 @@ needs its container path to match its host path — so a path-keyed tool agrees
 on both sides — can set `run.preserve_host_path`; see
 [the manifest reference](docs/jmscontainer.toml.md#project-mount-path).)
 Claude Code,
-Codex, OpenCode, Neovim, tmux, zsh, `rg`, `fzf`, `jq`, and `gh` are already
+Codex, OpenCode, Pi, Neovim, tmux, zsh, `rg`, `fzf`, `jq`, and `gh` are already
 installed.
 
 Start an agent directly in full-permission mode:
@@ -74,6 +74,7 @@ Start an agent directly in full-permission mode:
 jms launch -b yolo-claude
 jms launch -b yolo-codex
 jms launch -b yolo-opencode
+jms launch -b yolo-pi
 ```
 
 The container exits with the agent. Use plain `jms launch` when you want a

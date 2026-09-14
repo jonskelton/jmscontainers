@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Pi is included in the shared base image.** Launch it with
+  `jms launch -b yolo-pi`. Credentials, settings, and sessions under
+  `~/.pi/agent` persist through the existing agent-state credential controls,
+  including `--no-auth` and `--root`.
+
 - **Launch stdout stays available for program output when Python is
   unbuffered.** Cold launches and stale-image rebuilds could prefix captured
   stdout with jms progress; automatic image-retention reports could appear

@@ -1119,7 +1119,7 @@ def update_store(change) -> dict:
         return store
 
 
-AGENT_STATE_LEAVES = ("claude", "codex", "opencode", "opencode-config")
+AGENT_STATE_LEAVES = ("claude", "codex", "opencode", "opencode-config", "pi")
 
 
 def checkout_root() -> bytes:
@@ -1199,7 +1199,7 @@ def valid_target(value: str, home: str) -> bool:
 def reserved_mount_targets(home: str) -> frozenset[str]:
     return frozenset({"/work", home + "/.claude", home + "/.codex",
                       home + "/.local/share/opencode",
-                      home + "/.config/opencode",
+                      home + "/.config/opencode", home + "/.pi/agent",
                       home + "/.config/jms-shell"})
 
 
@@ -1379,7 +1379,7 @@ def print_capability_summary(root: bytes, config: dict) -> None:
     for key, value in sorted(config["env"].items()):
         print("- environment: " + quote(key + "=" + value), file=sys.stderr)
     print("- entry: " + " ".join(quote(value) for value in config["entry"]), file=sys.stderr)
-    print("- agent state (credentials and configuration for claude, codex, opencode): " +
+    print("- agent state (credentials and configuration for claude, codex, opencode, pi): " +
           ("read-write mount eligible with a separate grant" if config["mount_auth"] else
            "read-write mount suppressed by manifest"), file=sys.stderr)
 
@@ -1457,12 +1457,12 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
             if not (config or default_config())["mount_auth"]:
                 print("persistent agent state (credentials and configuration): not mounted by default (manifest mount_auth = false); --auth required",
                       file=sys.stderr)
-            auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, and opencode -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
+            auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
         record_approval(auth_ok)
     elif wants_auth and not auth_ok:
         if not (sys.stdin.isatty() and sys.stderr.isatty()):
             fail("credential access is required but prompting is unavailable", 3)
-        auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, and opencode -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
+        auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
         # --trust is one-shot for both grants: an accepted escalation applies to
         # this invocation only and leaves any existing record untouched.
         if auth_ok and live and not getattr(args, "trust", False):
@@ -1768,7 +1768,8 @@ def agent_state_mounts(user="isolation"):
     return [(root / "claude", home + "/.claude"),
             (root / "codex", home + "/.codex"),
             (root / "opencode", home + "/.local/share/opencode"),
-            (root / "opencode-config", home + "/.config/opencode")]
+            (root / "opencode-config", home + "/.config/opencode"),
+            (root / "pi", home + "/.pi/agent")]
 
 
 def shell_state_mount(user="isolation"):

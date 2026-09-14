@@ -381,6 +381,12 @@ tier_a() {
     launch_out "$proj" --bin /bin/sh -- -c 'command -v bwrap >/dev/null' \
         || fail "bwrap is missing from the base image"
 
+    # Pi's installed CLI and direct launcher must both start without credentials.
+    launch_out "$proj" --no-auth --bin pi -- --version \
+        || fail "pi CLI failed to start"
+    launch_out "$proj" --no-auth --bin yolo-pi -- --version \
+        || fail "yolo-pi launcher failed to start"
+
     # Exit propagation: jms launch exits with the container's status.
     status=0
     launch_out "$proj" --bin /bin/sh -- -c 'exit 7' || status=$?

@@ -482,7 +482,8 @@ class ManifestTests(unittest.TestCase):
             self.assertFalse(JMS.valid_target(target, home), target)
         for target in ("/work", "/work/sub", home + "/.claude", home + "/.claude/sub",
                        home + "/.local/share/opencode", home, home + "/.config/opencode",
-                       home + "/.config/jms-shell", home + "/.config/jms-shell/bashrc"):
+                       home + "/.config/jms-shell", home + "/.config/jms-shell/bashrc",
+                       home + "/.pi", home + "/.pi/agent", home + "/.pi/agent/auth.json"):
             self.assertTrue(JMS.target_overlaps_reserved(target, home), target)
         self.assertFalse(JMS.target_overlaps_reserved(home + "/.cache", home))
 
@@ -547,7 +548,7 @@ class PreserveHostPathTests(unittest.TestCase):
 
     def test_a_checkout_that_would_swallow_a_reserved_mount_is_refused(self):
         """/home shadows the agent-state mounts; .claude collides outright."""
-        for root in (b"/home", b"/home/isolation", b"/home/isolation/.claude/p", b"/work", b"/work/p"):
+        for root in (b"/home", b"/home/isolation", b"/home/isolation/.claude/p", b"/home/isolation/.pi/agent/p", b"/work", b"/work/p"):
             with self.assertRaisesRegex(JMS.JMSException, "reserved mount target"):
                 JMS.project_mount_target(root, self.preserved(), self.HOME)
 
@@ -1599,7 +1600,28 @@ class LaunchTests(unittest.TestCase):
             self.assertIn("target=/home/isolation/.codex", mounts)
             self.assertIn("target=/home/isolation/.local/share/opencode", mounts)
             self.assertIn("target=/home/isolation/.config/opencode", mounts)
+            self.assertIn(self.MOUNT + agents + "/pi,target=/home/isolation/.pi/agent", mounts)
             self.assertIn("CLAUDE_CONFIG_DIR=/home/isolation/.claude", argv)
+
+    def test_pi_state_mounts_follow_home_and_no_auth(self):
+        with sandbox() as home:
+            plain = home / "git" / "plain"
+            plain.mkdir()
+            source = JMS.agent_state_root() / "pi"
+            for root_flags, target_home in (([], "/home/isolation"), (["--root"], "/root")):
+                for auth_flags in ([], ["--no-auth"]):
+                    with self.subTest(root=root_flags, auth=auth_flags):
+                        argv = self.launch_argv(
+                            home, ["launch", "-w", str(plain), "-b", "yolo-pi",
+                                   *root_flags, *auth_flags, "--", "--version"],
+                            images={JMS.BASE: image_record(JMS.BASE)})
+                        mount = self.MOUNT + str(source) + ",target=" + target_home + "/.pi/agent"
+                        if auth_flags:
+                            self.assertNotIn(mount, argv)
+                        else:
+                            self.assertIn(mount, argv)
+                        self.assertEqual(argv[argv.index("--entrypoint") + 1], "yolo-pi")
+                        self.assertEqual(argv[-1], "--version")
 
     def test_launch_without_project_uses_the_shared_base(self):
         with sandbox() as home:

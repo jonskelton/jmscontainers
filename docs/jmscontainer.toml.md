@@ -137,7 +137,8 @@ and it may not be, contain, or sit inside a reserved target:
 - `/work` — the project mount (still reserved when
   [`run.preserve_host_path`](#project-mount-path) moves the project elsewhere)
 - `/home/isolation/.claude`, `/home/isolation/.codex`,
-  `/home/isolation/.local/share/opencode`, `/home/isolation/.config/opencode`
+  `/home/isolation/.local/share/opencode`, `/home/isolation/.config/opencode`,
+  `/home/isolation/.pi/agent`
   — the agent-state mounts
 - `/home/isolation/.config/jms-shell` — the read-only shell-config mount
 
