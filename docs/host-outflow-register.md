@@ -211,9 +211,14 @@ a login per launch and no persisted memory, transcripts or resume state.
 Two points for this proposal:
 
 - `run.mount_auth = false` is a default, not enforcement. An `--auth` launch
-  with a recorded grant remounts the shared pool, so the declined grant is
-  what holds. Until profiles exist, a project that needs separation has no
-  middle ground between the whole shared pool and nothing.
+  with a recorded grant remounts the shared pool. A declined grant is not
+  sticky either: a later `--auth` launch on a TTY asks the credential
+  question again and records a yes durably, and `--auth` with a matching
+  `JMS_TRUST_FINGERPRINT` pin mounts the pool for that launch without
+  asking. Separation therefore rests on the user never accepting, a
+  discipline rather than a mechanism. Until profiles exist, a project that
+  needs separation has no middle ground between the whole shared pool and
+  nothing.
 - HO-002 is the change that would let such a project keep persistence
   without rejoining the shared pool. It would want a profile used by that
   project alone, with nothing migrated from `default` except what the user
