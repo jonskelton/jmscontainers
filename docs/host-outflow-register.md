@@ -186,7 +186,12 @@ grant decides, since a hostile manifest must not steer itself into a
 privileged profile). A `default` profile preserves current behavior for
 users who opt out of separation; existing state migrates to it. Each
 profile is an independent login domain — the documented cost is logging in
-once per profile rather than once per host.
+once per profile rather than once per host. New profiles are created empty:
+jms copies nothing into them from `default` or any other profile, and a
+per-profile login is the intended way to populate them (R3). A manual
+host-side copy is the user's own action; the docs warn that `default` may
+hold settings or hooks planted by other projects' containers. A
+credentials-only seed is re-judged after HO-004.
 
 This supersedes the "dedicated, least-privileged agent accounts" guidance
 as the primary mitigation: it turns per-client separation from a manual
@@ -197,8 +202,24 @@ discipline into a mechanism.
 Two projects granted different profiles cannot see each other's state from
 inside their containers (asserted by a real-runtime test); migration of a
 pre-profile state tree is exercised; docs and `SECURITY.md` updated.
-Rejection of profile-crossing mount sources stays inside the existing
-protected-source rules.
+
+- **Starts empty (R3).** A newly created non-default profile contains
+  nothing copied from another profile, asserted by a test.
+- **Mount sources (R5).** Rejection of profile-crossing mount sources stays
+  inside the existing protected-source rules; no profile-specific rule is
+  added. Those rules compare canonical paths on both sides, so a symlinked
+  `~/.local`, `~/.local/share` or `~/.config` cannot carry a manifest mount
+  or `-w` into the state tree. That comparison fix is a pre-existing defect
+  and lands first, in its own commit, with regression tests.
+- **Test location (R7).** Unit tests use `sandbox()` and `FakeRuntime` in
+  `tests/test_jms.py`. The real-runtime test is a standalone integration
+  tier `p` in `scripts/integration.sh`: exempt from the nft gate, no TTY,
+  non-interactive `jms trust --fingerprint` grants, a temp `HOME` with
+  `XDG_DATA_HOME` and `XDG_CONFIG_HOME` pinned. Project B sees none of
+  project A's markers in any agent-state target, and on Podman B's
+  mountinfo shows no foreign profile source. Passing evidence is a green
+  unit suite and `scripts/integration.sh p </dev/null` exiting 0 with a
+  clean leak sweep on the Debian/Podman host, recorded in the CHANGELOG.
 
 ### Consumer note (2026-10-06)
 
@@ -242,19 +263,20 @@ that re-opened the cited lines, tried to refute each recommendation, and
 reconciled conflicts between them. Confidence below is the critic's
 adjusted figure. The percentage is the reviewers' estimate that the
 recommendation survives implementation unchanged; it is not a measured
-probability. **These are recommendations, not accepted changes:** the
-Proposal and Acceptance text above is unchanged until the owner accepts
-them.
+probability. **The high-confidence items R3, R5 and R7 were accepted on
+2026-10-07 and folded into the Proposal and Acceptance above.** The medium
+items remain recommendations, and the Proposal and Acceptance do not
+reflect them until the owner accepts them.
 
-| # | Question | Recommendation | Confidence |
-| --- | --- | --- | --- |
-| R1 | State layout and migration | `default` stays at `agents/<agent>/` in place; named profiles at `agents/profiles/<name>/<agent>/`; nothing moves | Medium, 70% |
-| R2 | Profile selection and trust-store schema | Schema 3, required per-record `profile` field; `--profile` > record > manifest request (new profiles only) > `default` | Medium, 65% |
-| R3 | Seeding a new profile from `default` | No seeding in HO-002; new profiles start empty | High, 80% |
-| R4 | Sticky decline | Reserved profile value `none`, shipped with named profiles | Medium, 55% |
-| R5 | Cross-profile mount sources | No new rule; fix the protected-source comparison to use canonical paths (pre-existing defect) | High, 85% |
-| R6 | Launches without a project definition | Keep mounting `default` without a record, behind a guard for overlapping separated projects | Medium, 60% |
-| R7 | Test strategy | Unit tests on `sandbox()`/`FakeRuntime`, plus a new standalone integration tier `p` needing no TTY or nft | High, 78% |
+| # | Question | Recommendation | Confidence | Status |
+| --- | --- | --- | --- | --- |
+| R1 | State layout and migration | `default` stays at `agents/<agent>/` in place; named profiles at `agents/profiles/<name>/<agent>/`; nothing moves | Medium, 70% | Proposed |
+| R2 | Profile selection and trust-store schema | Schema 3, required per-record `profile` field; `--profile` > record > manifest request (new profiles only) > `default` | Medium, 65% | Proposed |
+| R3 | Seeding a new profile from `default` | No seeding in HO-002; new profiles start empty | High, 80% | Accepted |
+| R4 | Sticky decline | Reserved profile value `none`, shipped with named profiles | Medium, 55% | Proposed |
+| R5 | Cross-profile mount sources | No new rule; fix the protected-source comparison to use canonical paths (pre-existing defect) | High, 85% | Accepted |
+| R6 | Launches without a project definition | Keep mounting `default` without a record, behind a guard for overlapping separated projects | Medium, 60% | Proposed |
+| R7 | Test strategy | Unit tests on `sandbox()`/`FakeRuntime`, plus a new standalone integration tier `p` needing no TTY or nft | High, 78% | Accepted |
 
 #### R1 — State layout: `default` in place (medium, 70%)
 
@@ -326,6 +348,8 @@ instead of `default`.
 
 #### R3 — No seeding in HO-002 (high, 80%)
 
+**Accepted 2026-10-07.**
+
 **Recommendation.** A new non-default profile starts empty, and the user
 logs in once per agent inside it, the cost the Proposal already names.
 jms copies nothing into it, and a test asserts that. A manual host-side
@@ -378,6 +402,8 @@ consumer reports a real or near-miss pool mount. Ship `none` standalone in
 that case.
 
 #### R5 — Canonical protected-source comparison (high, 85%)
+
+**Accepted 2026-10-07.**
 
 **Recommendation.** Add no profile-specific rule. The protected list
 already covers `~/.local/share/jmscontainers` and so every profile under
@@ -436,6 +462,8 @@ disclose), or the consumer reports real launches from such paths (require
 a record instead).
 
 #### R7 — Test strategy (high, 78%)
+
+**Accepted 2026-10-07.**
 
 **Recommendation.** Two layers.
 
