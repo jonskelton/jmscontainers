@@ -200,6 +200,25 @@ pre-profile state tree is exercised; docs and `SECURITY.md` updated.
 Rejection of profile-crossing mount sources stays inside the existing
 protected-source rules.
 
+### Consumer note (2026-10-06)
+
+A downstream project now requires that its sessions cannot read other
+projects' agent state. With no profiles available, it uses the levers jms
+already has: `run.mount_auth = false` in its manifest and a declined
+credential grant, so its sessions mount no agent state at all. The cost is
+a login per launch and no persisted memory, transcripts or resume state.
+
+Two points for this proposal:
+
+- `run.mount_auth = false` is a default, not enforcement. An `--auth` launch
+  with a recorded grant remounts the shared pool, so the declined grant is
+  what holds. Until profiles exist, a project that needs separation has no
+  middle ground between the whole shared pool and nothing.
+- HO-002 is the change that would let such a project keep persistence
+  without rejoining the shared pool. It would want a profile used by that
+  project alone, with nothing migrated from `default` except what the user
+  selects.
+
 ## HO-003 — No supported way to remove accumulated session history
 
 - **Criticality:** Medium — the data is already on disk and growing;
