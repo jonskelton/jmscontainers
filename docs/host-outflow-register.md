@@ -284,6 +284,7 @@ reflect them until the owner accepts them.
 | --- | --- | --- | --- | --- |
 | R1 | State layout and migration | `default` stays at `agents/<agent>/` in place; named profiles at `agents/profiles/<name>/<agent>/`; nothing moves | Medium, 70% | Proposed |
 | R2 | Profile selection and trust-store schema | Schema 3, required per-record `profile` field; `--profile` > record > manifest request (new profiles only) > `default` | Medium, 65% | Accepted |
+| R2a | Manifest request for an existing profile | Ask on a TTY instead of falling back to `default`; non-interactive launches exit 3 | Medium, 70% | Proposed |
 | R3 | Seeding a new profile from `default` | No seeding in HO-002; new profiles start empty | High, 80% | Accepted |
 | R4 | Sticky decline | Reserved profile value `none`, shipped with named profiles | Medium, 55% | Proposed |
 | R5 | Cross-profile mount sources | No new rule; fix the protected-source comparison to use canonical paths (pre-existing defect) | High, 85% | Accepted |
@@ -365,6 +366,60 @@ most contestable choice.
 **Would change if** the owner decides separation should be the default
 for new grants. Step four would then become a new per-project profile
 instead of `default`.
+
+#### R2a — Ask, don't fall back, for an existing requested profile (medium, 70%)
+
+Added 2026-10-07 after R2 was accepted. Unlike R1-R7, this item had no
+independent investigation or adversarial critic; its confidence is a
+single reviewer's estimate.
+
+**Recommendation.** Refine R2's third resolution step. When a project has
+no binding and its manifest `run.profile` names a profile that already
+exists, jms does not ignore the request and mount `default`. On a TTY it
+asks, naming the project roots already bound to that profile:
+
+```
+This project requests agent profile "client-x", which already exists.
+It is bound to: ~/src/client-x
+Mount "client-x" for ~/src/client-x-wt-feature? [y/N]
+  N launches with no agent state. To use the shared pool instead: --profile default
+```
+
+A yes writes a durable record bound to that profile. A no mounts no agent
+state for that launch. A launch with no TTY (a pin or `--trust`) exits 3
+with a message naming `jms trust PATH --profile <name>`. A manifest
+request for a new profile, and a project with no request, behave as R2
+says, so the default stays shared.
+
+**Problem it solves.** A worktree, clone or moved checkout of a separated
+project has a different pid (`bin/jms:1434`) and so no record. Its
+committed manifest still names the profile, but R2 ignores requests for
+existing profiles, so the checkout silently gets `default`, the exact
+pool the project asked to leave. `trust revoke` followed by a new grant
+has the same effect.
+
+**Why it is safe.** R2 ignores existing-profile requests so a hostile
+manifest cannot choose another project's profile on its own. Here the
+manifest only proposes, and the user approves after seeing which roots
+own the profile. That is the same consent R2 already gives an explicit
+launch-time `--profile`. A hostile repo naming `client-x` produces a
+prompt showing a root that is not the user's `client-x` checkout.
+
+**Rejected.** Worktrees inheriting the binding through
+`git rev-parse --git-common-dir`. It covers worktrees but not clones or
+moves, and trusts `.git` pointer files that a hostile checkout can forge
+unless jms verifies the back-link in `.git/worktrees/<name>/gitdir`.
+
+**Why not higher.** Projects bound only by `jms trust PATH --profile`,
+with no manifest request, are not covered; the docs must tell projects
+that need separation to set `run.profile`. Each new checkout of such a
+project costs one extra prompt. The prompt lists bound roots, so it
+reads the trust store, and a stale root (a deleted checkout) can make
+the list confusing.
+
+**Would change if** projects needing separation commonly cannot commit a
+manifest request (then reconsider worktree inheritance with the back-link
+check), or the extra prompt proves noisy in practice.
 
 #### R3 — No seeding in HO-002 (high, 80%)
 
@@ -548,6 +603,7 @@ run.
    regression test. It fixes a hole that exists today.
 2. **R2** with R4's reserved values: schema 3, `profile` field, carry-
    forward, `trust list` and `inspect` show it. Mounts unchanged.
+   R2a's prompt lands with R1, once there are profiles to request.
 3. **R1**: resolver, per-profile mounts, intermediate checks, the
    `profiles` invariant, `--profile` on `launch`, `build` and `trust`,
    `none` enforced in `approve()`.
