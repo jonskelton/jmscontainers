@@ -184,7 +184,9 @@ profile selection per project (trust-store field set at grant time,
 overridable by `--profile`; a manifest may *request* a profile name but the
 grant decides, since a hostile manifest must not steer itself into a
 privileged profile). A `default` profile preserves current behavior for
-users who opt out of separation; existing state migrates to it. Each
+users who opt out of separation; existing state migrates to it.
+Separation is opt-in (R2): a project uses `default` unless `--profile`,
+its trust record or a manifest request names another profile. Each
 profile is an independent login domain — the documented cost is logging in
 once per profile rather than once per host. New profiles are created empty:
 jms copies nothing into them from `default` or any other profile, and a
@@ -203,6 +205,12 @@ Two projects granted different profiles cannot see each other's state from
 inside their containers (asserted by a real-runtime test); migration of a
 pre-profile state tree is exercised; docs and `SECURITY.md` updated.
 
+- **Profile binding (R2).** The trust store is schema 3 with a `profile`
+  field on every record; schema-2 records read as `default`. Tests assert
+  the resolution order (`--profile`, record, manifest request for a new
+  profile only, `default`), the binding surviving a fingerprint change and
+  re-approval, and a manifest request for an existing profile being
+  ignored with a notice.
 - **Starts empty (R3).** A newly created non-default profile contains
   nothing copied from another profile, asserted by a test.
 - **Mount sources (R5).** Rejection of profile-crossing mount sources stays
@@ -249,7 +257,9 @@ Under the recommendations below, a project bound to the reserved profile
 `none` cannot be returned to the pool by `--auth`, a pin or a launch-time
 `--profile` (R4). A project bound to its own named profile mounts that
 profile, not `default`, when a later credential question is answered yes
-(R2). The "except what the user selects" need is met by an empty profile
+(R2). Separation is opt-in, and the consumer's existing declined record
+reads as `default`, so the consumer binds its profile once with
+`jms trust PATH --profile <name>`. The "except what the user selects" need is met by an empty profile
 and a fresh login (R3). A gap that applies to the consumer today: a launch
 from a nested checkout inside the project, or from an explicit parent
 directory, finds no definition and mounts the shared pool with no prompt
@@ -264,14 +274,16 @@ reconciled conflicts between them. Confidence below is the critic's
 adjusted figure. The percentage is the reviewers' estimate that the
 recommendation survives implementation unchanged; it is not a measured
 probability. **The high-confidence items R3, R5 and R7 were accepted on
-2026-10-07 and folded into the Proposal and Acceptance above.** The medium
+2026-10-07 and folded into the Proposal and Acceptance above. R2 was
+accepted as recommended the same day, after the owner weighed and
+rejected separate-by-default, and is folded in too.** The other medium
 items remain recommendations, and the Proposal and Acceptance do not
 reflect them until the owner accepts them.
 
 | # | Question | Recommendation | Confidence | Status |
 | --- | --- | --- | --- | --- |
 | R1 | State layout and migration | `default` stays at `agents/<agent>/` in place; named profiles at `agents/profiles/<name>/<agent>/`; nothing moves | Medium, 70% | Proposed |
-| R2 | Profile selection and trust-store schema | Schema 3, required per-record `profile` field; `--profile` > record > manifest request (new profiles only) > `default` | Medium, 65% | Proposed |
+| R2 | Profile selection and trust-store schema | Schema 3, required per-record `profile` field; `--profile` > record > manifest request (new profiles only) > `default` | Medium, 65% | Accepted |
 | R3 | Seeding a new profile from `default` | No seeding in HO-002; new profiles start empty | High, 80% | Accepted |
 | R4 | Sticky decline | Reserved profile value `none`, shipped with named profiles | Medium, 55% | Proposed |
 | R5 | Cross-profile mount sources | No new rule; fix the protected-source comparison to use canonical paths (pre-existing defect) | High, 85% | Accepted |
@@ -311,6 +323,14 @@ bump already makes older jms fail closed on custom projects
 walk one uniform directory, or the owner requires a physical move.
 
 #### R2 — Profile binding on the trust record (medium, 65%)
+
+**Accepted 2026-10-07, as recommended: shared by default, profile on
+request.** The owner weighed separate-by-default (each new grant gets its
+own empty profile) and rejected it. Separation is expected to be the
+exception, and a login per agent for every new project, clone and
+worktree costs too much for that. The known traps of opt-in are recorded
+under the consequences below: a forgotten `--profile` at the first grant,
+a worktree or clone getting `default`, and a revoke dropping the binding.
 
 **Recommendation.** Bump the trust store to schema 3 with a required
 `profile` field on every record. Schema-2 records read as `default`. The
