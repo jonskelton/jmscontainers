@@ -89,13 +89,14 @@ or `zshrc` through `~/.config/jms-shell/...`.
 Keep these files container-specific. Host shell files often contain macOS,
 Homebrew, or machine-specific paths that do not work in the Fedora container.
 Do not symlink your host's real `~/.bashrc` or `~/.zshrc` into this directory.
+The read-only mount stops a compromised container from editing these shell
+startup files. It does not cover the read-write agent state above, where a
+container can leave settings or hooks that later agent sessions run.
 
 **Never put secrets in this directory.** Every container sources these
 files, including projects you have not granted credential access, so a
 token exported from `bashrc` reaches all of them. jms has no supported way
 to pass a secret into a container yet.
-The read-only mount prevents a compromised container from changing startup
-code used by all future sessions.
 
 The base image wires up both shells. A standalone image still receives the
 mount but must source the files itself. To use Zsh, run:

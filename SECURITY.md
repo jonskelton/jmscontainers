@@ -6,9 +6,11 @@
 threat model. jmscontainers fingerprints its exact contents and requires an
 explicit build/run grant before the project can be built or launched; the
 fingerprint is re-checked immediately before the build and a changed
-fingerprint requires fresh consent. Credential mounting is a second, distinct
-grant and defaults to no. In non-interactive automation, use an audited exact
-fingerprint; do not use a boolean bypass.
+fingerprint requires fresh consent. For a project definition, credential
+mounting is a second, distinct grant and defaults to no. A launch without a
+project definition uses the shared base and mounts agent state read-write
+without asking; `--no-auth` suppresses that mount. In non-interactive
+automation, use an audited exact fingerprint; do not use a boolean bypass.
 
 Everything else running as the invoking user on the host — the filesystem
 outside project definitions, the container runtime and its output, and other
@@ -19,8 +21,10 @@ Granting both grants hands the project's image — and every transitive
 dependency it pulls in — read/write access to your agents' persistent state:
 their credentials and their configuration. The `isolation` user is not a security boundary
 (passwordless sudo is by design);
-the container boundary limits blast radius to the *host*, not to anything
-mounted into the container. Credential mounts stay read-write because the
+the container boundary protects the rest of the host, not anything mounted
+into the container. The mounted checkout, `.git` included, holds files that
+host tools later read or run, so a container's writes there can reach the
+host through those tools. Credential mounts stay read-write because the
 agent CLIs refresh tokens in place (`--mount …,readonly` exists but would
 break auth persistence); recovery from corruption is "delete the dir and log
 in again." Deleting the directory does not revoke a token that has already
