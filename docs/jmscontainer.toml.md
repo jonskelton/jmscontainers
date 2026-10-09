@@ -148,8 +148,12 @@ from a nested working directory. Container target resolution does not follow
 host symlinks.
 
 An absolute `target` must be normalized: no trailing slash, no
-empty or `.`/`..` component, and no `,`, `=`, or NUL (the runtime's mount
-grammar cannot carry the first two). It must sit under one of four prefixes:
+empty or `.`/`..` component, and no `,`, `=`, or control character (NUL,
+newline and the rest of U+0000–U+001F, or DEL). The runtime's mount grammar
+cannot carry these: a newline could end the mount record before `readonly`.
+Host paths that reach a mount (the project root, extra mount sources) are
+refused for the same characters. An absolute target must sit under one of four
+prefixes:
 
 - `/home/isolation/` — the home fixed by the
   [project-image user ABI](project-images.md#project-image-user-abi)

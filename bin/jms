@@ -254,6 +254,8 @@ class ContainerBackend:
         source_text = runtime_path(os.fsencode(source))
         if "," in target or "=" in target:
             fail("mount paths cannot contain ',' or '=': " + quote(target))
+        if CONTROL_CHARACTER.search(target):
+            fail("mount paths cannot contain control characters: " + quote(target))
         result = "source=" + source_text + ",target=" + target
         return result + ",readonly" if readonly else result
 
@@ -510,6 +512,8 @@ class PodmanBackend:
         source_text = runtime_path(os.fsencode(source))
         if "," in target or "=" in target:
             fail("mount paths cannot contain ',' or '=': " + quote(target))
+        if CONTROL_CHARACTER.search(target):
+            fail("mount paths cannot contain control characters: " + quote(target))
         result = "type=bind,source=" + source_text + ",target=" + target
         return result + ",readonly" if readonly else result
 
@@ -786,11 +790,20 @@ def home_path() -> bytes:
     return canon(home)
 
 
+# C0 controls and DEL.  The runtime's --mount value is a CSV record, so a
+# newline would end it early and could drop a trailing ",readonly"; none of
+# these belongs in a path the consent summary asks a person to read.
+CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
+
+
 def runtime_path(path: str | bytes) -> str:
     """Validate and decode a host mount path before it crosses the runtime boundary."""
     raw = os.fsencode(path)
     if b"\0" in raw:
         fail("path must not contain NUL before it can be passed to the container runtime: " + quote(raw))
+    if CONTROL_CHARACTER.search(os.fsdecode(raw)):
+        fail("rename the directory -- the runtime's mount grammar cannot carry control characters in a path: "
+             + quote(raw))
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -1210,7 +1223,7 @@ def expand_mount_source(expression: str, root: bytes | None = None) -> bytes:
 
 def normalized_mount_target(value: str) -> bool:
     if (not value.startswith("/") or value.startswith("//") or value.endswith("/")
-            or "\0" in value or "," in value or "=" in value):
+            or CONTROL_CHARACTER.search(value) or "," in value or "=" in value):
         return False
     parts = value.split("/")[1:]
     if not parts or any(not item or item in (".", "..") for item in parts): return False

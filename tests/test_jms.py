@@ -2922,6 +2922,21 @@ class PodmanReadinessTests(unittest.TestCase):
 class MountGrammarTests(unittest.TestCase):
     """R7.6: per-backend grammar, identical rejection behavior and error text."""
 
+    def test_manifest_target_with_control_character_is_rejected(self):
+        for target in ("/opt/x\ny", "/opt/x\ry", "/opt/x\ty", "/opt/x\x1by", "/opt/x\x7fy", "x\ny"):
+            with self.subTest(target=target), sandbox() as home:
+                manifest = ('[[mounts]]\nsource = "/tmp"\ntarget = %s\n'
+                            % json.dumps(target)).encode()
+                with self.assertRaisesRegex(JMS.JMSException, r"mounts\[0\]\.target"):
+                    JMS.parse_manifest(manifest, JMS.canon(os.fsencode(home / "git")))
+
+    def test_runtime_path_rejects_control_characters(self):
+        for raw in (b"/tmp/a\nb", b"/tmp/a\rb", b"/tmp/a\tb", b"/tmp/a\x7fb"):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(JMS.JMSException, "control characters"):
+                    JMS.runtime_path(raw)
+        self.assertEqual(JMS.runtime_path(b"/tmp/a b~"), "/tmp/a b~")
+
     def test_mount_grammar_per_backend(self):
         apple, podman = JMS.ContainerBackend(), JMS.PodmanBackend()
         self.assertEqual(apple.mount_argument("/tmp/x", "/work"), "source=/tmp/x,target=/work")
@@ -2934,7 +2949,10 @@ class MountGrammarTests(unittest.TestCase):
     def test_mount_rejections_identical_across_backends(self):
         cases = [(b"/tmp/a,b", "/work"), (b"/tmp/a=b", "/work"),
                  (b"/tmp/a\0b", "/work"), (b"/tmp/\xff\xfe", "/work"),
-                 (b"/tmp/x", "/work,x"), (b"/tmp/x", "/work=x")]
+                 (b"/tmp/x", "/work,x"), (b"/tmp/x", "/work=x"),
+                 (b"/tmp/a\nb", "/work"), (b"/tmp/a\x7fb", "/work"),
+                 (b"/tmp/x", "/opt/x\ny"), (b"/tmp/x", "/opt/x\ry"), (b"/tmp/x", "/opt/x\ty"),
+                 (b"/tmp/x", "/opt/x\x7fy")]
         for source, target in cases:
             messages = []
             for backend in (JMS.ContainerBackend(), JMS.PodmanBackend()):
