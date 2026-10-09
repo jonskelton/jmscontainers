@@ -1464,6 +1464,14 @@ def print_capability_summary(root: bytes, config: dict) -> None:
            "read-write mount suppressed by manifest"), file=sys.stderr)
 
 
+# The credential grant is keyed to the project path and its definition bytes,
+# never to the checked-out code, so the question says so before it is asked.
+CREDENTIAL_SCOPE_NOTE = ("note: a recorded credential grant is tied to this path and its .jmscontainer/ "
+                         "contents, not to the code -- any branch or pull request later checked "
+                         "out here with the same definition gets it without asking; launch with "
+                         "--no-auth to review code you did not write")
+
+
 def consent_input(question: str) -> str:
     """Keep the complete prompt on the stderr TTY used by the availability gate."""
     print(question, end="", file=sys.stderr, flush=True)
@@ -1537,11 +1545,13 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
             if not (config or default_config())["mount_auth"]:
                 print("persistent agent state (credentials and configuration): not mounted by default (manifest mount_auth = false); --auth required",
                       file=sys.stderr)
+            print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
             auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
         record_approval(auth_ok)
     elif wants_auth and not auth_ok:
         if not (sys.stdin.isatty() and sys.stderr.isatty()):
             fail("credential access is required but prompting is unavailable", 3)
+        print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
         auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
         # --trust is one-shot for both grants: an accepted escalation applies to
         # this invocation only and leaves any existing record untouched.

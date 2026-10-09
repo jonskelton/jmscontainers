@@ -1052,6 +1052,24 @@ class ConsentTests(unittest.TestCase):
             self.assertIn("persistent agent state", self.questions[1])
             self.assertIn("credentials", self.questions[1])
 
+    def test_credential_question_says_the_grant_follows_the_path(self):
+        """Both credential questions warn that a grant covers later checkouts."""
+        with sandbox() as home:
+            root = JMS.canon(os.fsencode(make_project(home)))
+            for argv, action, answers in ((["build"], "build", ["y", ""]),
+                                          (["launch", "--auth"], "launch", [""])):
+                with self.subTest(action=action):
+                    stderr = TTYIO(True)
+                    replies = list(answers)
+                    with mock.patch.object(JMS, "consent_input", side_effect=lambda q: replies.pop(0)), \
+                         mock.patch.object(sys, "stdin", TTYIO(True)), \
+                         mock.patch.object(sys, "stderr", stderr):
+                        JMS.approve(root, "a" * 64, JMS.parse_cli(argv), action=action)
+                    self.assertEqual(replies, [])
+                    self.assertEqual(stderr.getvalue().count(JMS.CREDENTIAL_SCOPE_NOTE), 1)
+                    self.assertIn("not to the code", JMS.CREDENTIAL_SCOPE_NOTE)
+                    self.assertIn("--no-auth", JMS.CREDENTIAL_SCOPE_NOTE)
+
     def test_auth_escalation_prompts_and_records(self):
         with sandbox() as home:
             root = JMS.canon(os.fsencode(make_project(home)))

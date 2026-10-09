@@ -40,6 +40,12 @@ auth grant, the consent path still applies and unavailable prompting fails.
 See the [CLI trust reference](cli.md#trust) for interactive and automation
 behavior.
 
+A credential grant is recorded for the project's path and the exact
+contents of its `.jmscontainer/`, not for the code checked out there. Any
+branch, fork, or pull request later checked out at that path with an
+unchanged definition gets the same access without a new question. Launch
+with `--no-auth` when an agent reviews code you did not write.
+
 `--no-auth` controls these jms-managed mounts; it does not prevent writes
 through approved project or extra mounts or neutralize trusted ambient
 runtime configuration.

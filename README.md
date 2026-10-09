@@ -86,7 +86,9 @@ shell to remain after the agent exits.
    Keep important work in the mounted project.
 2. **Project definitions require approval.** Any change under
    `.jmscontainer/` changes its SHA-256 fingerprint and triggers a new prompt.
-   Build/run approval and credential access are separate grants.
+   Build/run approval and credential access are separate grants. A
+   credential grant follows the path, not the code: launch with `--no-auth`
+   when an agent reviews a pull request or other code you did not write.
 3. **Mounted data is not protected from the agent.** A container can change
    the project and, if approved, read or change agent credentials. macOS uses
    a VM boundary; Linux uses the weaker rootless user-namespace boundary.
