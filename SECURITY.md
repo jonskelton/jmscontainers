@@ -125,8 +125,21 @@ host shell.
 
 Do not put secrets in Containerfiles, manifests, or files under
 `.jmscontainer/`: the whole directory is the build context, so build inputs
-and image layers are not a secret channel. Network access is available to
-approved builds and containers.
+and image layers are not a secret channel.
+
+Network access is not restricted. jms passes no network option to either
+runtime, so approved builds and containers get the runtime's default
+network: NAT through the host on macOS, and on Linux whatever
+`containers.conf` selects — `pasta` by default for rootless Podman. A
+container can therefore reach the internet and, in general, whatever the
+host can reach: the local network, a VPN or tailnet the host is on, and a
+cloud instance-metadata endpoint (`169.254.169.254`) when the host is a
+cloud VM. Podman's default `pasta` setup does not map the host's gateway
+address into the container, so services bound only to the host's loopback
+interface are not reachable that way; no equivalent claim is made for
+macOS. jms offers no option to disable or filter container networking.
+Do not run jms on a host whose network position you would not hand to the
+project's code.
 
 The trust store lives at `~/.config/jmscontainers/store.json`; agent state —
 credentials and configuration — lives under
