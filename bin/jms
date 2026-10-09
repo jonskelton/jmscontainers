@@ -1823,7 +1823,15 @@ def build_project(data, args):
     # the jms.base label.
     if not getattr(args, "no_cache", False):
         project = resolve_image(tag)
-        if project is not None:
+        # The tag carries only a prefix of the project id and fingerprint, so
+        # it is a cache key, not proof of provenance: reuse requires the full
+        # labels the build stamped.  A label-less or foreign image at the tag
+        # is rebuilt over, never run.
+        if project is not None and (project.labels.get("jms.project") != data["pid"]
+                                    or project.labels.get("jms.fingerprint") != data["tf"]):
+            print("image labels do not match this project definition; rebuilding "
+                  + quote(tag), file=sys.stderr)
+        elif project is not None:
             if base is None or project.labels.get("jms.base") == base.ident:
                 return tag, False
             print("base image changed; rebuilding " + quote(tag), file=sys.stderr)

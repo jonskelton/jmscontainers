@@ -1126,7 +1126,8 @@ class BuildTests(unittest.TestCase):
             root = make_project(home)
             data = JMS.project_data(JMS.canon(os.fsencode(root)))
             tag = data["tag_prefix"] + ":" + data["tf"][:12]
-            with self.fake(images={tag: image_record(tag)}) as runtime, \
+            labels = {"jms.project": data["pid"], "jms.fingerprint": data["tf"]}
+            with self.fake(images={tag: image_record(tag, labels=labels)}) as runtime, \
                  contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(JMS.build_project(data, self.build_args()), (tag, False))
                 self.assertEqual(runtime.build_count, 0)
@@ -1135,6 +1136,25 @@ class BuildTests(unittest.TestCase):
                 build = next(call["argv"] for call in runtime.calls
                              if call["argv"][:2] == [self.EXE, "build"])
                 self.assertIn("--no-cache", build)
+
+    def test_tag_alone_never_proves_provenance(self):
+        # The tag holds only prefixes of the project id and fingerprint; an
+        # image there without the full matching labels is rebuilt, not run.
+        with sandbox() as home:
+            root = make_project(home)
+            data = JMS.project_data(JMS.canon(os.fsencode(root)))
+            tag = data["tag_prefix"] + ":" + data["tf"][:12]
+            good = {"jms.project": data["pid"], "jms.fingerprint": data["tf"]}
+            for labels in ({}, dict(good, **{"jms.fingerprint": "0" * 64}),
+                           dict(good, **{"jms.project": "0" * 64}),
+                           {"jms.fingerprint": data["tf"]}):
+                with self.subTest(labels=labels), \
+                     self.fake(images={tag: image_record(tag, labels=labels)}) as runtime, \
+                     contextlib.redirect_stdout(io.StringIO()), \
+                     contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(JMS.build_project(data, self.build_args()), (tag, True))
+                    self.assertEqual(runtime.build_count, 1)
+                    self.assertIn("image labels do not match", err.getvalue())
 
     def test_no_cache_never_resolves_the_project_tag(self):
         # An explicitly requested rebuild must not depend on resolving the
@@ -1935,7 +1955,9 @@ class LaunchOutputTests(unittest.TestCase):
                             "trust", str(root), "--fingerprint", data["tf"], "--no-auth"]))
                     if scenario in ("warm", "stale", "retention"):
                         base_id = images[JMS.BASE]["ident"] if scenario != "stale" else fake_hex_id("old-base")
-                        images[tag] = image_record(tag, labels={"jms.base": base_id})
+                        images[tag] = image_record(tag, labels={
+                            "jms.project": data["pid"], "jms.fingerprint": data["tf"],
+                            "jms.base": base_id})
                     if scenario == "retention":
                         flags.append("--no-cache")
                         for day in range(1, 4):

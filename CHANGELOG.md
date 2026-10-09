@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Project images are reused only when their labels match in full.** The
+  project tag carries only prefixes of the project id and trust
+  fingerprint, so an image found at the tag is now reused only when its
+  `jms.project` and `jms.fingerprint` labels equal the full values;
+  otherwise jms rebuilds over the tag. An image at the tag without those
+  labels (one tagged by hand or by another tool) is rebuilt once.
+
 - **Manifest mounts accept relative sources and targets.** A
   `mounts[].source` that is not absolute resolves from the project root --
   never from `.jmscontainer/` or the invoking working directory -- so a
