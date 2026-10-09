@@ -1643,20 +1643,26 @@ def project_data(workdir: bytes):
     if reserved_root(root):
         fail("project root overlaps a protected jms host directory: " + quote(root))
     runtime_path(root)
-    manifest = None
     manifest_path = spec + b"/jmscontainer.toml"
-    if os.path.lexists(manifest_path):
-        if not stat.S_ISREG(os.lstat(manifest_path).st_mode):
-            fail("jmscontainer.toml must be a regular file: " + quote(manifest_path))
-        with open(manifest_path, "rb") as handle:
-            manifest = handle.read()
+    if os.path.lexists(manifest_path) and not stat.S_ISREG(os.lstat(manifest_path).st_mode):
+        fail("jmscontainer.toml must be a regular file: " + quote(manifest_path))
+    # Read the definition once: the manifest that is parsed (and shown at
+    # consent) is the exact buffer the fingerprint hashes, so a concurrent
+    # writer cannot pair one approved view with another recorded fingerprint.
+    entries = spec_entries(spec)
+    manifest = None
+    for kind, rel, _, content in entries:
+        if rel == b"jmscontainer.toml":
+            if kind != b"f":
+                fail("jmscontainer.toml must be a regular file: " + quote(manifest_path))
+            manifest = content
     config = parse_manifest(manifest, root)
     protected = protected_sources()
     for mount in config["mounts"]:
         if any(ancestor(mount["source"], item) or ancestor(item, mount["source"]) for item in protected):
             fail("mount source overlaps a protected jms host directory: " + quote(mount["source"]))
         runtime_path(mount["source"])
-    tf = trust_fingerprint(spec_entries(spec))
+    tf = trust_fingerprint(entries)
     pid = hashlib.sha256(root).hexdigest()
     # Manifest `name` is cosmetic runtime configuration.  Keeping it out of
     # the repository name makes a name-only edit leave the image tag driven

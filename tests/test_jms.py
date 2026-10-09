@@ -297,6 +297,35 @@ class FingerprintTests(unittest.TestCase):
             self.assertEqual(JMS.trust_fingerprint(JMS.spec_entries(os.fsencode(spec))),
                              GOLDEN_SINGLE_TF)
 
+    def test_manifest_is_parsed_from_the_hashed_buffer(self):
+        # One read serves both the parse and the fingerprint: a writer that
+        # changes the file between them cannot split what is shown at consent
+        # from what is recorded.  The fake read returns a manifest that differs
+        # from disk; config and fingerprint must both come from it.
+        with sandbox() as home:
+            root = make_project(home, manifest=b'name = "on-disk"\n')
+            real = JMS.spec_entries
+            reads = []
+
+            def swapped(spec):
+                reads.append(spec)
+                return [(kind, rel, mode, b'name = "hashed"\n' if rel == b"jmscontainer.toml" else content)
+                        for kind, rel, mode, content in real(spec)]
+
+            with mock.patch.object(JMS, "spec_entries", swapped):
+                data = JMS.project_data(JMS.canon(os.fsencode(root)))
+                self.assertEqual(len(reads), 1)
+                self.assertEqual(data["config"]["name"], "hashed")
+                self.assertEqual(data["tf"], JMS.trust_fingerprint(swapped(data["spec"])))
+
+    def test_manifest_symlink_is_refused(self):
+        with sandbox() as home:
+            root = make_project(home)
+            (root / "elsewhere.toml").write_bytes(b'name = "x"\n')
+            os.symlink("../elsewhere.toml", root / ".jmscontainer" / "jmscontainer.toml")
+            with self.assertRaisesRegex(JMS.JMSException, "must be a regular file"):
+                JMS.project_data(JMS.canon(os.fsencode(root)))
+
     def test_fingerprint_is_reproducible_and_creation_order_insensitive(self):
         digests = []
         for order in (("a.txt", "b.txt", "z"), ("z", "b.txt", "a.txt")):
