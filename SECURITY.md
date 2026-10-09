@@ -115,6 +115,14 @@ Unchanged on both platforms: the protected-source rules, the read-only
 shell-mount rationale, the trust-store location, and the credential-mount
 warning, none of which depend on the boundary type.
 
+The container's terminal output is not filtered. `jms launch` hands your
+terminal to the runtime, so escape sequences a container prints reach the
+host terminal as-is: window-title changes, hyperlinks whose text and target
+differ, and — on terminals (or tmux configurations) that honor OSC 52 —
+writes to the host clipboard. Treat text copied from or pasted after a
+container session as container-supplied, and check it before running it in a
+host shell.
+
 Do not put secrets in Containerfiles, manifests, or files under
 `.jmscontainer/`: the whole directory is the build context, so build inputs
 and image layers are not a secret channel. Network access is available to
