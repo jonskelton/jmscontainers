@@ -1141,9 +1141,27 @@ def shell_state_root() -> Path:
     return Path(os.fsdecode(home_path())) / ".local" / "share" / "jmscontainers" / "shell"
 
 
+def canon_lenient(path: bytes) -> bytes:
+    """canon() of the deepest existing ancestor, with the missing tail appended.
+
+    Protected roots may not exist yet, but any symlink among their existing
+    ancestors (a dotfile-managed ~/.config or ~/.local) must still be resolved:
+    the paths they are compared against are fully canonical.
+    """
+    head, tail = path, b""
+    while head != b"/" and not os.path.exists(head):
+        head, name = head.rsplit(b"/", 1)
+        head = head or b"/"
+        tail = b"/" + name + tail
+    resolved = canon(head)
+    return (b"" if resolved == b"/" else resolved) + tail
+
+
 def protected_sources() -> list[bytes]:
-    config = home_path() + b"/.config/jmscontainers"
-    data = home_path() + b"/.local/share/jmscontainers"
+    # HO-002 R5: each entry is resolved exactly as mount sources and workdirs
+    # are, or a symlinked ~/.config / ~/.local hides the store from the check.
+    config = canon_lenient(home_path() + b"/.config/jmscontainers")
+    data = canon_lenient(home_path() + b"/.local/share/jmscontainers")
     return [checkout_root(), config, data]
 
 

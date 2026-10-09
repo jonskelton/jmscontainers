@@ -803,6 +803,31 @@ class DiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(JMS.JMSException, "protected jms host directory"):
                 JMS.project_data(JMS.canon(os.fsencode(root)))
 
+    def test_protected_sources_resolve_symlinked_dotfile_dirs(self):
+        """HO-002 R5: a symlinked ~/.config or ~/.local/share still protects."""
+        with sandbox() as home:
+            elsewhere = home.parent / "dotfiles"
+            (elsewhere / "config").mkdir(parents=True)
+            (elsewhere / "share").mkdir(parents=True)
+            (home / ".config").symlink_to(elsewhere / "config")
+            (home / ".local").mkdir()
+            (home / ".local" / "share").symlink_to(elsewhere / "share")
+            # Neither store exists yet: the check must not depend on them.
+            self.assertTrue(JMS.reserved_root(JMS.canon(os.fsencode(elsewhere / "config"))))
+            self.assertTrue(JMS.reserved_root(JMS.canon(os.fsencode(elsewhere / "share"))))
+            store = elsewhere / "config" / "jmscontainers"
+            agents = elsewhere / "share" / "jmscontainers" / "agents"
+            store.mkdir(); agents.mkdir(parents=True); (agents / "claude").mkdir()
+            sources = (str(store), "~/.config/jmscontainers",
+                       str(agents), "~/.local/share/jmscontainers/agents/claude")
+            for index, source in enumerate(sources):
+                with self.subTest(source=source):
+                    manifest = ('[[mounts]]\nsource = "%s"\ntarget = "/opt/steal"\n' % source).encode()
+                    root = make_project(home, name="p%d" % index, manifest=manifest)
+                    with self.assertRaisesRegex(JMS.JMSException, "protected jms host directory"):
+                        JMS.project_data(JMS.canon(os.fsencode(root)))
+            self.assertFalse(JMS.reserved_root(JMS.canon(os.fsencode(home / "git"))))
+
     def test_reserved_root_covers_repo_trust_store_and_data_dir(self):
         with sandbox() as home:
             repo = JMS.checkout_root()
@@ -1714,6 +1739,22 @@ class LaunchTests(unittest.TestCase):
             config.mkdir(parents=True)
             with self.assertRaisesRegex(JMS.JMSException, "protected jms host directory"):
                 JMS.cmd_launch(JMS.parse_cli(["launch", "-w", str(config)]))
+
+    def test_launch_rejects_workdir_in_symlinked_dotfile_dirs(self):
+        """HO-002 R5: -w into the store or pool via a symlinked parent is refused."""
+        with sandbox() as home:
+            elsewhere = home.parent / "dotfiles"
+            store = elsewhere / "config" / "jmscontainers"
+            agents = elsewhere / "share" / "jmscontainers" / "agents"
+            store.mkdir(parents=True); agents.mkdir(parents=True)
+            (home / ".config").symlink_to(elsewhere / "config")
+            (home / ".local").mkdir()
+            (home / ".local" / "share").symlink_to(elsewhere / "share")
+            for workdir in (store, home / ".config" / "jmscontainers",
+                            agents, home / ".local" / "share" / "jmscontainers" / "agents"):
+                with self.subTest(workdir=str(workdir)):
+                    with self.assertRaisesRegex(JMS.JMSException, "protected jms host directory"):
+                        JMS.cmd_launch(JMS.parse_cli(["launch", "-w", str(workdir)]))
 
     def test_launch_defaulted_to_cwd_inside_checkout_is_rejected(self):
         with sandbox():
