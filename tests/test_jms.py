@@ -8,6 +8,7 @@ import os
 import pathlib
 import pty
 import re
+import socket
 import stat
 import subprocess
 import sys
@@ -827,6 +828,31 @@ class DiscoveryTests(unittest.TestCase):
                     with self.assertRaisesRegex(JMS.JMSException, "protected jms host directory"):
                         JMS.project_data(JMS.canon(os.fsencode(root)))
             self.assertFalse(JMS.reserved_root(JMS.canon(os.fsencode(home / "git"))))
+
+    def test_summary_never_calls_a_socket_or_fifo_read_only(self):
+        with sandbox() as home:
+            plain = home / "plain"; plain.mkdir()
+            fifo = home / "fifo"; os.mkfifo(fifo)
+            sock_path = home / "s.sock"
+            server = socket.socket(socket.AF_UNIX)
+            self.addCleanup(server.close)
+            server.bind(str(sock_path))
+            manifest = ('[[mounts]]\nsource = "%s"\ntarget = "/opt/a"\n'
+                        '[[mounts]]\nsource = "%s"\ntarget = "/opt/b"\n'
+                        '[[mounts]]\nsource = "%s"\ntarget = "/opt/c"\n'
+                        % (sock_path, fifo, plain)).encode()
+            root = JMS.canon(os.fsencode(home / "git"))
+            config = JMS.parse_manifest(manifest, root)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                JMS.print_capability_summary(root, config)
+            lines = {line.split(" -> ")[1].split()[0]: line
+                     for line in stderr.getvalue().splitlines() if line.startswith("- extra mount:")}
+            self.assertIn("SOCKET", lines['"/opt/a"'])
+            self.assertNotIn("read-only", lines['"/opt/a"'])
+            self.assertIn("FIFO", lines['"/opt/b"'])
+            self.assertNotIn("read-only", lines['"/opt/b"'])
+            self.assertTrue(lines['"/opt/c"'].endswith(" read-only"))
 
     def test_reserved_root_covers_repo_trust_store_and_data_dir(self):
         with sandbox() as home:

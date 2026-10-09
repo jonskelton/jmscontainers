@@ -1425,6 +1425,25 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
     return config
 
 
+def extra_mount_mode(mount: dict) -> str:
+    """Consent wording for one extra mount's access.
+
+    A read-only bind refuses writes only to regular files, directories and
+    symlinks.  A socket still accepts connect(), and a FIFO or device node
+    still accepts open-for-write, so "read-only" would misstate what is
+    being granted.
+    """
+    try:
+        mode = os.stat(mount["source"]).st_mode
+    except OSError:
+        mode = 0
+    if stat.S_ISSOCK(mode):
+        return "SOCKET: the container can connect to it; mount flags do not restrict this"
+    if stat.S_ISFIFO(mode) or stat.S_ISCHR(mode) or stat.S_ISBLK(mode):
+        return "DEVICE OR FIFO: the container can write to it; mount flags do not restrict this"
+    return "read-only" if mount["readonly"] else "read-write"
+
+
 def print_capability_summary(root: bytes, config: dict) -> None:
     """Describe every project-controlled runtime capability before consent."""
     print("Project container capabilities:", file=sys.stderr)
@@ -1434,7 +1453,7 @@ def print_capability_summary(root: bytes, config: dict) -> None:
           + (quote(root) + " (host path preserved)" if config["preserve_host_path"] else "\"/work\"")
           + " read-write", file=sys.stderr)
     for mount in config["mounts"]:
-        mode = "read-only" if mount["readonly"] else "read-write"
+        mode = extra_mount_mode(mount)
         print("- extra mount: " + quote(mount["source"]) + " -> " + quote(mount["target"]) + " " + mode,
               file=sys.stderr)
     for key, value in sorted(config["env"].items()):
