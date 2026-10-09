@@ -23,10 +23,14 @@ the container boundary limits blast radius to the *host*, not to anything
 mounted into the container. Credential mounts stay read-write because the
 agent CLIs refresh tokens in place (`--mount …,readonly` exists but would
 break auth persistence); recovery from corruption is "delete the dir and log
-in again." A credential grant is keyed to the project path and the
+in again." Deleting the directory does not revoke a token that has already
+left the container; see
+[Suspect a leak?](docs/agent-state.md#suspect-a-leak) for per-agent
+revocation. A credential grant is keyed to the project path and the
 definition's fingerprint, not to the code checked out there: a pull request
 or branch later checked out at a granted path, with the definition
-unchanged, receives the same access without a prompt. Prefer dedicated, least-privileged agent accounts for third-party
+unchanged, receives the same access without a prompt. Prefer dedicated,
+least-privileged agent accounts for third-party
 work; per-project auth profiles are future work. Never claim the container
 boundary meaningfully limits exfiltration of mounted credentials.
 
