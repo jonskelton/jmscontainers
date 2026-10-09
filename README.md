@@ -184,3 +184,7 @@ an update.
 - [Changelog](CHANGELOG.md)
 
 MIT—see [LICENSE](LICENSE).
+
+jmscontainers is an independent project. It is not affiliated with or
+endorsed by Anthropic, OpenAI, Apple, or the makers of OpenCode, Pi, Podman,
+or Fedora. Product names are trademarks of their respective owners.
