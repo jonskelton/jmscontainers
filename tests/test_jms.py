@@ -3076,6 +3076,20 @@ class IsolationUidPinTests(unittest.TestCase):
         self.assertIn("--uid %d --gid %d isolation" % (uid, gid), standalone)
 
 
+class BaseBuildContextTests(unittest.TestCase):
+    """The base build context is the checkout; the builder is offered none of it."""
+
+    def test_base_context_is_fully_ignored_and_unused(self):
+        root = pathlib.Path(JMS.__file__).parents[1]
+        patterns = [line.strip() for line in
+                    (root / ".containerignore").read_text().splitlines()
+                    if line.strip() and not line.lstrip().startswith("#")]
+        self.assertEqual(patterns, ["*"])
+        base = (root / "Containerfile").read_text()
+        # A COPY/ADD here needs a matching `!` re-include in .containerignore.
+        self.assertIsNone(re.search(r"^\s*(COPY|ADD)\s", base, re.M | re.I))
+
+
 class SupportVocabularyTests(unittest.TestCase):
     """MIR-039 / RC-002: the public support documents share one
     classification for configurations outside the qualified matrix."""
