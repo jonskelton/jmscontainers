@@ -9,12 +9,6 @@ tagged and released, description and topics corrected, badges added, license
 collapsed to MIT (see item 6), Discussions and private vulnerability
 reporting enabled. Steps 5–9 remain open.
 
-The engineering here is unusually strong: a real threat model, a written
-trust boundary, per-platform security prose, adversarial tests, an
-integration tier system, and a CHANGELOG that reads like someone who has
-shipped before. Almost none of that is visible from the repo page. Every
-item below is about closing that gap, not about the code.
-
 Effort is calibrated as: **XS** ≈ minutes, **S** ≈ under an hour, **M** ≈ an
 afternoon, **L** ≈ multi-day.
 

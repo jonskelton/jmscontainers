@@ -34,10 +34,10 @@ should ride the next Debian gate rather than being scheduled on its own.
 
 ## DW-001 — The effective Podman sandbox is ambient
 
-**Status:** Accepted. **Interim mitigation shipped** (`ac8c494`): the README
-now states as a Linux prerequisite that jms does not enforce a Podman sandbox
-profile. That makes the gap disclosed rather than hidden; it does not close
-it.
+**Status:** Accepted. **Interim mitigation shipped** (`07ca423`): the Linux
+prerequisites state that jms does not enforce a Podman sandbox profile (now
+in [the Linux guide](linux.md)). That makes the gap disclosed rather than
+hidden; it does not close it.
 
 ### Why it matters
 
