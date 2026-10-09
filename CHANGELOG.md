@@ -19,12 +19,12 @@
 - **Manifest mounts accept relative sources and targets.** A
   `mounts[].source` that is not absolute resolves from the project root --
   never from `.jmscontainer/` or the invoking working directory -- so a
-  sibling checkout is `source = "../beadrail/"` regardless of where `jms`
+  sibling checkout is `source = "../sibling/"` regardless of where `jms`
   was run. A relative `mounts[].target` resolves lexically from the
   container project path, which with `run.preserve_host_path = true` mounts
   a sibling at the same path it has on the host, so path-keyed tools agree
-  on both sides. Under the default `/work`, `../beadrail/` becomes
-  `/beadrail`.
+  on both sides. Under the default `/work`, `../sibling/` becomes
+  `/sibling`.
 
   Relative targets are the one way out of the absolute-target allowlist
   (`~/`, `/opt/`, `/mnt/`, `/srv/`), which is a deliberate relaxation: an

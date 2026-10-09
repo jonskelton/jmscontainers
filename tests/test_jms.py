@@ -538,11 +538,11 @@ class ManifestTests(unittest.TestCase):
 
     def test_relative_mounts_resolve_from_project_not_cwd(self):
         with sandbox() as home:
-            sibling = home / "git" / "beadrail"
+            sibling = home / "git" / "sibling"
             sibling.mkdir()
             for preserve in (False, True):
                 raw = ('[run]\npreserve_host_path = %s\n[[mounts]]\n'
-                       'source = "../beadrail/"\ntarget = "../beadrail/"\n'
+                       'source = "../sibling/"\ntarget = "../sibling/"\n'
                        'readonly = true\n' % str(preserve).lower()).encode()
                 root = make_project(home, name="preserved" if preserve else "default", manifest=raw)
                 inner = root / "nested"
@@ -554,7 +554,7 @@ class ManifestTests(unittest.TestCase):
                 mount = config["mounts"][0]
                 self.assertEqual(mount["source"], JMS.canon(os.fsencode(sibling)))
                 expected = (os.fsdecode(JMS.canon(os.fsencode(sibling))) if preserve
-                            else "/beadrail")
+                            else "/sibling")
                 self.assertEqual(mount["target"], expected)
                 self.assertTrue(mount["readonly"])
                 for as_root in (False, True):
@@ -1890,15 +1890,15 @@ class LaunchTests(unittest.TestCase):
 
     def test_relative_sibling_mount_reaches_runtime_readonly(self):
         with sandbox() as home:
-            (home / "git" / "beadrail").mkdir()
+            (home / "git" / "sibling").mkdir()
             root = make_project(home, manifest=(
                 b'[run]\npreserve_host_path = true\n[[mounts]]\n'
-                b'source = "../beadrail/"\ntarget = "../beadrail/"\nreadonly = true\n'))
+                b'source = "../sibling/"\ntarget = "../sibling/"\nreadonly = true\n'))
             data = JMS.project_data(JMS.canon(os.fsencode(root)))
             tag = data["tag_prefix"] + ":" + data["tf"][:12]
             argv = self.launch_argv(home, ["launch", "--trust", "--no-auth", "-w", str(root)],
                                     images={tag: image_record(tag)})
-            sibling = os.fsdecode(JMS.canon(os.fsencode(home / "git" / "beadrail")))
+            sibling = os.fsdecode(JMS.canon(os.fsencode(home / "git" / "sibling")))
             mount_arg = next(arg for arg in argv if "target=" + sibling in arg)
             self.assertIn(self.MOUNT + sibling + ",target=" + sibling, mount_arg)
             self.assertIn("readonly", mount_arg)

@@ -175,7 +175,7 @@ CHANGELOG. As a repository file it has four problems:
 
 - Its `bin/jms:NNN` and `tests/test_jms.py:NNN` line references and quoted
   code describe the pre-fix tree and are already stale.
-- It records another project's details (the `beadrail` fingerprint move,
+- It records another project's details (its fingerprint move,
   its `AGENTS.md` ladder, its accepted interpreter build) and absolute host
   paths containing the developer's username, which the fixtures README's
   sanitization rule exists to keep out of the repository.
@@ -194,7 +194,7 @@ CHANGELOG. As a repository file it has four problems:
 Do not add the file to the commit. If an incident record is wanted, move a
 trimmed version to `docs/` (the captured five-row diagnostic table in §2 is
 the one part not already preserved elsewhere and is worth keeping, for
-example as an appendix to the qualification doc), drop the beadrail
+example as an appendix to the qualification doc), drop the other project's
 sections and the workaround, replace the username in any remaining path
 per the sanitization rule, and mark each proposed fix as adopted, rejected,
 or tracked.
@@ -224,7 +224,7 @@ appendix also corrects the write-up's "1.1.0" attribution and points at
 RI-002 for its cause.
 
 Everything the review objected to was dropped rather than sanitized: the
-beadrail sections, the absolute paths containing the developer's username,
+other project's sections, the absolute paths containing the developer's username,
 the stale `bin/jms:NNN` references, and the §6 `podman run` workaround. The
 appendix's own table needed no sanitization — its commands contain no
 username or host path — and that is stated where it could otherwise be

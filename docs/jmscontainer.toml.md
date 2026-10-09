@@ -130,12 +130,12 @@ project, other mounts, reserved agent-state paths, or container system paths suc
 as `/etc`, `/usr`, `/proc`, and `/root`. Sources still undergo the existing
 symlink resolution, existence, and protected-host-directory checks.
 
-For sibling checkouts, this preserves `../beadrail/` inside the container:
+For sibling checkouts, this preserves `../sibling/` inside the container:
 
 ```toml
 [[mounts]]
-source = "../beadrail/"
-target = "../beadrail/"
+source = "../sibling/"
+target = "../sibling/"
 readonly = true
 
 [run]
@@ -143,7 +143,7 @@ preserve_host_path = true
 ```
 
 With the default project path `/work`, the same relative target becomes
-`/beadrail`. Resolution is always from the project root, even when launching
+`/sibling`. Resolution is always from the project root, even when launching
 from a nested working directory. Container target resolution does not follow
 host symlinks.
 
