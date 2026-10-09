@@ -72,6 +72,15 @@ with `--no-auth` when an agent reviews code you did not write.
 through approved project or extra mounts or neutralize trusted ambient
 runtime configuration.
 
+A project's `run.mount_auth = false` and its credential decision apply only
+to launches that find its definition. Discovery stops at the nearest
+checkout root, so a launch from a nested checkout inside the project (a
+submodule or a separate clone in a subdirectory), or with an explicit
+workdir above the project, finds no definition. It is a shared-base launch
+and mounts the shared agent state read-write without a prompt, even when
+the project declined credentials. Pass `--no-auth` to those launches when
+the project's sessions must not reach the shared state.
+
 ## Shell customization
 
 Container-specific startup files live here:
