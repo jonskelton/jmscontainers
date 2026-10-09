@@ -141,6 +141,13 @@ macOS. jms offers no option to disable or filter container networking.
 Do not run jms on a host whose network position you would not hand to the
 project's code.
 
+Do not put secrets in `~/.local/share/jmscontainers/shell/` either. Its
+files are sourced in every container, including projects you never granted
+credential access, so an `export TOKEN=...` in `bashrc` hands that token to
+all of them. jms has no supported way to pass a secret into a container
+yet; `[env]` values are passed to the runtime as `--env KEY=VALUE`
+arguments.
+
 The trust store lives at `~/.config/jmscontainers/store.json`; agent state —
 credentials and configuration — lives under
 `~/.local/share/jmscontainers/agents/`, outside any git checkout. Neither
