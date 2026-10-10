@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-10-09
+
+Pi joins the shared base image, manifest mounts accept relative sources and
+targets, and a project can keep its host path inside the container.
+Containers run in the host's time zone, a rebuilt base now makes project
+images stale by exact image identity, and apple/container 1.2.2 is the
+qualified macOS runtime. This release also fixes a protected-path check on
+hosts with symlinked `~/.config` or `~/.local`, stops the examples from
+mounting host toolchain caches, documents which files a container can
+leave for host tools, and moves the license to MIT alone.
 
 - **The examples no longer mount host toolchain caches.** The go, rust and
   data-science examples mounted the host's own `~/.cache/go-build`,
@@ -242,6 +251,30 @@
   the terms those tags shipped under; the Apache-2.0 option is simply no
   longer offered going forward. Done now because the project has no install
   base.
+
+### Qualification
+
+Linux matrix of the release-preparation host (2026-10-09). On it, `make
+test` passed, and `podman image inspect` of an absent ref exited 125 with
+`[]` on stdout and a stderr byte-identical to
+`tests/fixtures/podman-5.4.2-image-inspect-absent.stderr`.
+
+| Dimension | Tested value |
+| --- | --- |
+| Podman | 5.4.2 |
+| Architecture | amd64 (`x86_64`) |
+| Kernel | 6.12.107+deb13-amd64 |
+| Distribution | Debian GNU/Linux 13 (trixie) |
+| cgroup | v2, `systemd` manager |
+| OCI runtime | crun 1.21 |
+| Storage driver | `overlay` (extfs backing, native overlay diff) |
+| Network backend | netavark 1.14.0, aardvark-dns 1.14.0, pasta (passt 0.0~git20250503.587980c) |
+| Rootless | yes |
+| Python | 3.13.5 |
+
+macOS: the 2026-08-14 apple/container 1.2.2 gate above. The Linux
+integration tiers and clean-host install walkthrough for this candidate
+are recorded here when they run.
 
 ## 1.1.0 — 2026-08-03
 

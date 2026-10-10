@@ -137,8 +137,7 @@ The precise Linux claims:
   files and mounted credentials are exposed to the agent by design; the
   credential-exfiltration warning above applies regardless of boundary
   type.
-- SELinux-**enforcing** hosts are **unqualified but allowed** in 1.1.0,
-  like every local rootless Linux configuration outside the qualified
+- SELinux-**enforcing** hosts are **unqualified but allowed**, like every local rootless Linux configuration outside the qualified
   Debian 13/amd64 matrix: jms does not detect enforcing mode and prints no
   warning, and no qualification or support guarantee is made for the
   configuration. Enforcing-mode qualification is planned alongside the

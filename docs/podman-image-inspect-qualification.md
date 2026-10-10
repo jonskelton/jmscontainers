@@ -1,9 +1,11 @@
 # Project: Qualify Podman exact image inspection
 
-Status: Implemented 2026-09-09 (fixtures, backend, tests); the fresh-account
-live integration run on the final candidate remains to be recorded
+Status: Implemented 2026-09-09 (fixtures, backend, tests); ships in 1.2.0.
+The absent-reference stderr was re-captured live on Podman 5.4.2 on
+2026-10-09 and is byte-identical to the fixture. The fresh-account live
+integration run on the final candidate remains to be recorded
 Opened: 2026-08-26
-Target: Next bugfix release
+Target: 1.2.0
 Related design: [exact shared-base identity](exact-base-identity-proposal.md)
 
 ## Outcome

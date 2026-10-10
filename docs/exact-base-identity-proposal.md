@@ -2,9 +2,10 @@
 
 Status: Accepted and implemented in code on 2026-08-26; the Podman
 image-inspect capture landed 2026-09-09 (see the
-[qualification project](podman-image-inspect-qualification.md)); the final
-live release qualification remains pending.
-Target: Next bugfix release after acceptance
+[qualification project](podman-image-inspect-qualification.md)); released
+in 1.2.0 (2026-10-09), whose qualification is recorded in the
+[changelog](../CHANGELOG.md).
+Target: 1.2.0
 Related changes: `9b55c6d` (Base staleness rebuild) and `d33c1a6`
 (stage-alias exclusion)
 
