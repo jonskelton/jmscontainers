@@ -10,9 +10,14 @@ fingerprint requires fresh consent. The runtime reads `COPY` sources
 throughout the build, so a process that can write the checkout can still
 change the definition while a build runs. For a project definition, credential
 mounting is a second, distinct grant and defaults to no. A launch without a
-project definition uses the shared base and mounts agent state read-write
-without asking; `--no-auth` suppresses that mount. In non-interactive
-automation, use an audited exact fingerprint; do not use a boolean bypass.
+project definition uses the shared base and mounts no agent state without
+consent: at a checkout with no recorded answer it asks the same default-No
+credential question once and remembers the answer for the checkout root.
+Off a terminal it mounts nothing and prints a notice; an explicit `--auth`
+is consent for that one launch. If a trusted definition disappears, jms
+warns and mounts nothing rather than asking again. In non-interactive
+automation of a project definition, use an audited exact fingerprint; do
+not use a boolean bypass.
 
 Everything else running as the invoking user on the host — the filesystem
 outside project definitions, the container runtime and its output, and other
@@ -37,7 +42,8 @@ left the container; see
 revocation. A credential grant is keyed to the project path and the
 definition's fingerprint, not to the code checked out there: a pull request
 or branch later checked out at a granted path, with the definition
-unchanged, receives the same access without a prompt. Prefer dedicated,
+unchanged, receives the same access without a prompt. The same holds for a
+remembered "yes" at a checkout without a definition. Prefer dedicated,
 least-privileged agent accounts for third-party
 work; per-project auth profiles are future work. Never claim the container
 boundary meaningfully limits exfiltration of mounted credentials.

@@ -14,8 +14,8 @@ environment, and removes the container when you exit. It uses a lightweight VM
 per container on macOS and rootless Podman on Linux. Projects can supply their
 own Containerfile, but `jms` fingerprints it and asks before it can build, run,
 or access persistent agent credentials. A checkout without one runs on the
-shared base with your agent credentials mounted by default; pass `--no-auth`
-to leave them out.
+shared base; the first launch there asks once whether to mount your agent
+credentials (default no) and remembers the answer for that checkout.
 
 ## Install
 
@@ -82,7 +82,9 @@ jms launch -b yolo-pi
 ```
 
 The container exits with the agent. Use plain `jms launch` when you want a
-shell to remain after the agent exits.
+shell to remain after the agent exits. The first launch in a checkout asks
+whether to mount your agent credentials; answer `y` for an agent that should
+stay logged in. Without a terminal, pass `--auth` to mount them.
 
 ## Know these three things
 
@@ -164,10 +166,11 @@ must not vary with the machine the session runs on — see
 ## Credentials and shell setup
 
 Agent credentials and configuration persist under
-`~/.local/share/jmscontainers/agents/`. Launches without a project
-definition mount that state by default, without asking; the first approved
-custom project asks separately whether it may mount it. Use `--no-auth` for a
-checkout you do not trust. Use dedicated, least-privileged
+`~/.local/share/jmscontainers/agents/`. Nothing mounts it without your
+consent: the first launch in a checkout without a project definition asks
+once (default no) and remembers the answer for that checkout, and the first
+approved custom project asks separately. Use `--no-auth` for a checkout you
+do not trust. Use dedicated, least-privileged
 agent accounts for untrusted work.
 
 Container-only `bashrc` and `zshrc` files live under

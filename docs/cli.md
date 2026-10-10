@@ -133,7 +133,17 @@ The container runtime and launched program can also write to stderr.
 `launch` discovers the nearest definition, applies the consent gate, builds
 (or reuses) the project image, and replaces itself with the runtime's
 `run --rm` invocation.
-Without a definition it launches the shared base. Arguments after `--` are
+Without a definition it launches the shared base, and agent state is
+mounted only with consent: a recorded answer for the checkout root (the
+nearest enclosing checkout, else the workdir), an explicit `--auth` for that
+launch, or a default-No question asked once on a terminal and then recorded.
+Off a terminal with no recorded answer, it mounts no agent state and prints
+one `note:` line. A trust record for a definition that is no longer present
+at the workdir or an ancestor inside the checkout prints a warning and
+mounts nothing without `--auth`; it is never re-asked. `--no-auth` skips the
+trust store entirely. See
+[Launches without a definition](agent-state.md#launches-without-a-definition).
+Arguments after `--` are
 appended to the selected entry argv. `--root` runs as root instead of the
 `isolation` user, which moves the agent-state and shell-config mount targets
 from `/home/isolation` to `/root`. Manifest mount targets are never rewritten:
@@ -179,7 +189,10 @@ a manifest mount cannot claim or shadow `~/.config/jms-shell`.
 ## inspect
 
 `inspect` reports discovery, the trust fingerprint, and trust status without
-prompting, writing, or contacting the runtime.
+prompting, writing, or contacting the runtime. Without a definition it
+reports `credential_root` (where the answer is keyed) and
+`credential_grant`: `held`, `declined`, `unrecorded`, or declined because a
+trusted definition vanished.
 
 ## trust
 
@@ -207,7 +220,17 @@ approve.
 contacts the runtime; if image deletion then fails, trust remains revoked.
 Every other `trust` form is store-only and works without the runtime CLI.
 
-The trust store is `~/.config/jmscontainers/store.json` (schema 2).
+`trust revoke PATH` without a definition removes the record of a vanished
+definition at PATH or an ancestor inside its checkout if there is one, and
+otherwise the remembered credential answer for PATH's checkout root; the
+next launch there on a terminal asks again. `trust PATH` itself still
+requires a definition. `trust list` shows remembered answers alongside
+project grants.
+
+The trust store is `~/.config/jmscontainers/store.json` (schema 2). A
+remembered answer for a launch without a definition is an ordinary record
+whose fingerprint is that of an empty definition, which no real definition
+can produce; a definition added later at that root needs full consent.
 
 ## init
 

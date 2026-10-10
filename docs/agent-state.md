@@ -3,10 +3,10 @@
 ## Persistent agent state
 
 jms keeps each agent's credentials and configuration outside project
-checkouts. Launches without a project definition use the shared base and
-mount these host directories read-write by default, without a project
-credential prompt. Custom project definitions require a credential grant
-for these mounts:
+checkouts and mounts these host directories read-write only with your
+consent. Custom project definitions require a credential grant; launches
+without a project definition ask their own question (see
+[Launches without a definition](#launches-without-a-definition)):
 
 | Host (`~/.local/share/jmscontainers/agents/`) | Container |
 | --- | --- |
@@ -77,6 +77,34 @@ branch, fork, or pull request later checked out at that path with an
 unchanged definition gets the same access without a new question. Launch
 with `--no-auth` when an agent reviews code you did not write.
 
+### Launches without a definition
+
+A launch that finds no `.jmscontainer/` uses the shared base and mounts no
+agent state without consent:
+
+- **First launch in a checkout, on a terminal:** jms asks the default-No
+  credential question once and records the answer in the trust store. The
+  answer is keyed on the checkout root (the nearest enclosing `.git`, `.hg`,
+  `.jj` or `.svn`), or on the workdir outside a checkout, so launches from
+  any subdirectory reuse it. A remembered "yes" mounts the state on later
+  launches without asking; a remembered "no" leaves it out.
+- **No terminal:** nothing is asked or recorded. No agent state is mounted,
+  and one `note:` line on stderr says so.
+- **`--auth`:** mounts the state for that launch only, on or off a terminal,
+  and never changes a recorded answer. Unlike a definition's one-shot grant
+  it needs no fingerprint pin: there is no project build/run code to pin.
+- **A trusted definition that is gone:** if the workdir or an ancestor
+  inside the checkout has a trust record for a definition that is no longer
+  there, jms prints a warning and mounts nothing (unless `--auth` is given).
+  It does not ask again, so deleting `.jmscontainer/` cannot turn a declined
+  project into a credentialed one.
+
+The remembered answer follows the checkout path, not the code, exactly like
+a definition's grant. To change it, run `jms trust revoke PATH` and launch
+again on a terminal; `jms inspect PATH` shows the answer as
+`credential_grant`. These launches now read the trust store, so an
+unreadable or newer-schema store stops them unless `--no-auth` is passed.
+
 `--no-auth` controls these jms-managed mounts; it does not prevent writes
 through approved project or extra mounts or neutralize trusted ambient
 runtime configuration.
@@ -86,9 +114,10 @@ to launches that find its definition. Discovery stops at the nearest
 checkout root, so a launch from a nested checkout inside the project (a
 submodule or a separate clone in a subdirectory), or with an explicit
 workdir above the project, finds no definition. It is a shared-base launch
-and mounts the shared agent state read-write without a prompt, even when
-the project declined credentials. Pass `--no-auth` to those launches when
-the project's sessions must not reach the shared state.
+with its own credential answer, keyed on the nested checkout (or the
+explicit workdir's checkout), and asks separately even when the project
+declined credentials. Answer no, or pass `--no-auth`, when the project's
+sessions must not reach the shared state.
 
 ## Shell customization
 
