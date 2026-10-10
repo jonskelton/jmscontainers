@@ -229,7 +229,7 @@ A decision is recorded here either way.
 
 ## DW-006 — `/etc/localtime` still says UTC
 
-**Status:** Proposed — recorded, not accepted. Raised by the Unreleased change
+**Status:** Proposed — recorded, not accepted. Raised by the 1.2.0 change
 that makes a launch inherit the host's time zone.
 
 `jms launch` passes the host's zone in as `TZ`, which is what glibc, Python,
