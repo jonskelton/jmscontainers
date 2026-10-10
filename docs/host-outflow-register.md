@@ -185,8 +185,8 @@ overridable by `--profile`; a manifest may *request* a profile name but the
 grant decides, since a hostile manifest must not steer itself into a
 privileged profile). A `default` profile preserves current behavior for
 users who opt out of separation; existing state migrates to it.
-Separation is opt-in (R2): a project uses `default` unless `--profile`,
-its trust record or a manifest request names another profile. Each
+As proposed in R2, separation is opt-in: a project uses `default` unless
+`--profile`, its trust record or a manifest request names another profile. Each
 profile is an independent login domain — the documented cost is logging in
 once per profile rather than once per host. New profiles are created empty:
 jms copies nothing into them from `default` or any other profile, and a
@@ -205,7 +205,7 @@ Two projects granted different profiles cannot see each other's state from
 inside their containers (asserted by a real-runtime test); migration of a
 pre-profile state tree is exercised; docs and `SECURITY.md` updated.
 
-- **Profile binding (R2).** The trust store is schema 3 with a `profile`
+- **Profile binding (R2, proposed).** The trust store is schema 3 with a `profile`
   field on every record; schema-2 records read as `default`. Tests assert
   the resolution order (`--profile`, record, manifest request for a new
   profile only, `default`), the binding surviving a fingerprint change and
@@ -215,10 +215,9 @@ pre-profile state tree is exercised; docs and `SECURITY.md` updated.
   nothing copied from another profile, asserted by a test.
 - **Mount sources (R5).** Rejection of profile-crossing mount sources stays
   inside the existing protected-source rules; no profile-specific rule is
-  added. Those rules compare canonical paths on both sides, so a symlinked
-  `~/.local`, `~/.local/share` or `~/.config` cannot carry a manifest mount
-  or `-w` into the state tree. That comparison fix is a pre-existing defect
-  and lands first, in its own commit, with regression tests.
+  added. Those rules compare canonical paths on both sides. Making them do
+  so fixed a pre-existing defect; the fix landed first, in its own commit
+  (`463aaf8`), with regression tests.
 - **Test location (R7).** Unit tests use `sandbox()` and `FakeRuntime` in
   `tests/test_jms.py`. The real-runtime test is a standalone integration
   tier `p` in `scripts/integration.sh`: exempt from the nft gate, no TTY,
@@ -257,18 +256,20 @@ Under the recommendations below, a project bound to the reserved profile
 `none` cannot be returned to the pool by `--auth`, a pin or a launch-time
 `--profile` (R4). A project bound to its own named profile mounts that
 profile, not `default`, when a later credential question is answered yes
-(R2). Separation is opt-in, and the consumer's existing declined record
-reads as `default`, so the consumer binds its profile once with
+(R2). Under R2 as proposed, separation is opt-in, and the consumer's
+existing declined record reads as `default`, so the consumer binds its profile once with
 `jms trust PATH --profile <name>`. The "except what the user selects" need is met by an empty profile
 and a fresh login (R3). A gap that applies to the consumer today: a launch
 from a nested checkout inside the project, or from an explicit parent
 directory, finds no definition and mounts the shared pool with no prompt
-(R6).
+(R6). `docs/agent-state.md` now states this for users, with `--no-auth` as
+the mitigation (`463aaf8`). R6 is closed: such launches are to ask before
+mounting agent state instead (see R6).
 
 ### Recommendations (2026-10-07)
 
 Seven open design questions were each investigated by an independent
-agent against `bin/jms` at `9c4350b`, then checked by an adversarial critic
+agent against `bin/jms` at `633f608`, then checked by an adversarial critic
 that re-opened the cited lines, tried to refute each recommendation, and
 reconciled conflicts between them. Confidence below is the critic's
 adjusted figure. The percentage is the reviewers' estimate that the
@@ -276,20 +277,26 @@ recommendation survives implementation unchanged; it is not a measured
 probability. **The high-confidence items R3, R5 and R7 were accepted on
 2026-10-07 and folded into the Proposal and Acceptance above. R2 was
 accepted as recommended the same day, after the owner weighed and
-rejected separate-by-default, and is folded in too.** The other medium
+rejected separate-by-default, and was folded in too.**
+
+**2026-10-09: named profiles are deferred, to be re-judged at the next
+release.** R2 returns to Proposed; its text in the Proposal and Acceptance
+is marked as proposed. R3 and R7 stay Accepted and apply if HO-002 is
+built. R6 is closed: launches without a project definition are to ask
+before mounting agent state, which does not need profiles. The other medium
 items remain recommendations, and the Proposal and Acceptance do not
 reflect them until the owner accepts them.
 
 | # | Question | Recommendation | Confidence | Status |
 | --- | --- | --- | --- | --- |
 | R1 | State layout and migration | `default` stays at `agents/<agent>/` in place; named profiles at `agents/profiles/<name>/<agent>/`; nothing moves | Medium, 70% | Proposed |
-| R2 | Profile selection and trust-store schema | Schema 3, required per-record `profile` field; `--profile` > record > manifest request (new profiles only) > `default` | Medium, 65% | Accepted |
+| R2 | Profile selection and trust-store schema | Schema 3, required per-record `profile` field; `--profile` > record > manifest request (new profiles only) > `default` | Medium, 65% | Proposed |
 | R2a | Manifest request for an existing profile | Ask on a TTY instead of falling back to `default`; non-interactive launches exit 3 | Medium, 70% | Proposed |
-| R3 | Seeding a new profile from `default` | No seeding in HO-002; new profiles start empty | High, 80% | Accepted |
+| R3 | Seeding a new profile from `default` | No seeding in HO-002; new profiles start empty | High, 80% | Accepted (if HO-002 is built) |
 | R4 | Sticky decline | Reserved profile value `none`, shipped with named profiles | Medium, 55% | Proposed |
-| R5 | Cross-profile mount sources | No new rule; fix the protected-source comparison to use canonical paths (pre-existing defect) | High, 85% | Accepted |
-| R6 | Launches without a project definition | Keep mounting `default` without a record, behind a guard for overlapping separated projects | Medium, 60% | Proposed |
-| R7 | Test strategy | Unit tests on `sandbox()`/`FakeRuntime`, plus a new standalone integration tier `p` needing no TTY or nft | High, 78% | Accepted |
+| R5 | Cross-profile mount sources | No new rule; fix the protected-source comparison to use canonical paths (pre-existing defect) | High, 85% | Implemented (`463aaf8`) |
+| R6 | Launches without a project definition | Keep mounting `default` without a record, behind a guard for overlapping separated projects | Medium, 60% | Closed (superseded) |
+| R7 | Test strategy | Unit tests on `sandbox()`/`FakeRuntime`, plus a new standalone integration tier `p` needing no TTY or nft | High, 78% | Accepted (if HO-002 is built) |
 
 #### R1 — State layout: `default` in place (medium, 70%)
 
@@ -324,6 +331,9 @@ bump already makes older jms fail closed on custom projects
 walk one uniform directory, or the owner requires a physical move.
 
 #### R2 — Profile binding on the trust record (medium, 65%)
+
+**Returned to Proposed 2026-10-09: named profiles are deferred, to be
+re-judged at the next release.** The recommendation below is unchanged.
 
 **Accepted 2026-10-07, as recommended: shared by default, profile on
 request.** The owner weighed separate-by-default (each new grant gets its
@@ -423,7 +433,7 @@ check), or the extra prompt proves noisy in practice.
 
 #### R3 — No seeding in HO-002 (high, 80%)
 
-**Accepted 2026-10-07.**
+**Accepted 2026-10-07; applies if HO-002 is built (deferred 2026-10-09).**
 
 **Recommendation.** A new non-default profile starts empty, and the user
 logs in once per agent inside it, the cost the Proposal already names.
@@ -478,28 +488,24 @@ that case.
 
 #### R5 — Canonical protected-source comparison (high, 85%)
 
-**Accepted 2026-10-07.**
+**Accepted 2026-10-07. Implemented in `463aaf8`.**
 
 **Recommendation.** Add no profile-specific rule. The protected list
 already covers `~/.local/share/jmscontainers` and so every profile under
-it. The one change needed fixes a **pre-existing defect**:
-`protected_sources()` builds entries as canonical `$HOME` plus a literal
-suffix (`bin/jms:782-786`, `1144-1147`), while mount sources and workdirs
-are fully resolved (`bin/jms:1192`, `896`). When `~/.local`,
-`~/.local/share` or `~/.config` is a symlink, a manifest mount of
-`~/.local/share/jmscontainers/agents/claude`, or `-w` there, passes the
-check. Fix by also listing the non-strict `os.path.realpath()` of each
-entry, with regression tests for a manifest mount of
-`profiles/<other>/claude`, `-w` into `profiles/<other>`, and the
-symlinked-share case.
+it, provided both sides of the comparison are canonical paths.
 
-**Evidence.** Reproduced independently by the investigating agent and the
-critic with a scratch `HOME` whose `~/.local/share` is a symlink:
-`reserved_root()` returns false for both the canonical mount source and
-the canonical workdir. Existing protected-source tests pass and do not
-cover the case.
+**Pre-existing defect, fixed in `463aaf8`.** The protected-source check
+compared paths inconsistently: when a directory on the path to the trust
+store or the agent-state tree was a symlink, as dotfile managers commonly
+arrange, a manifest mount or a launch workdir could reach those
+directories. Every release through 1.1.0 is affected. `463aaf8` resolves each
+protected entry the same way mount sources and workdirs are resolved, with
+regression tests for the symlinked-directory case. Tests for
+profile-crossing sources (`profiles/<other>/claude`, `-w` into
+`profiles/<other>`) land with R1. The fix is listed under "Security" in
+`CHANGELOG.md`.
 
-**Sequencing.** This does not depend on profiles. Land it first, in its
+**Sequencing.** This did not depend on profiles. It landed first, in its
 own commit.
 
 **Would change if** a profile directory could nest inside another
@@ -507,6 +513,15 @@ profile's mounted leaf (prevented by R1's invariant), or profile roots
 become configurable outside the data root.
 
 #### R6 — Launches without a project definition (medium, 60%)
+
+**Closed 2026-10-09: superseded.** The owner decided that a launch with no
+project definition and no trust record asks the credential question,
+defaulting to no, and remembers the answer for that checkout, instead of
+mounting `default` silently. That closes the nested-checkout and
+parent-directory gap for every project, not only separated ones, and
+needs neither profiles nor this guard. It is not yet implemented; until it
+is, `docs/agent-state.md` describes the current behaviour. The original
+recommendation is kept below for the record.
 
 **Recommendation.** Shared-base launches keep mounting `default` without a
 trust record, as today. Add one guard on that path, skipped under
@@ -528,6 +543,9 @@ separation claim to cover base-image launches
 the first time, so a corrupt or newer-schema store would block them
 (`bin/jms:1085-1088`). A moved or deleted record root is not protected.
 
+**User docs.** The gap is documented in `docs/agent-state.md`
+(`463aaf8`); the guard itself is not implemented.
+
 **Why not higher.** "Use `default`" is solid (about 85% on its own). The
 guard is the uncertain half.
 
@@ -538,7 +556,7 @@ a record instead).
 
 #### R7 — Test strategy (high, 78%)
 
-**Accepted 2026-10-07.**
+**Accepted 2026-10-07; applies if HO-002 is built (deferred 2026-10-09).**
 
 **Recommendation.** Two layers.
 
@@ -600,14 +618,14 @@ run.
 #### Recommended order
 
 1. **R5** standalone: canonical protected-source comparison and its
-   regression test. It fixes a hole that exists today.
+   regression test. Done in `463aaf8`.
 2. **R2** with R4's reserved values: schema 3, `profile` field, carry-
    forward, `trust list` and `inspect` show it. Mounts unchanged.
    R2a's prompt lands with R1, once there are profiles to request.
 3. **R1**: resolver, per-profile mounts, intermediate checks, the
    `profiles` invariant, `--profile` on `launch`, `build` and `trust`,
    `none` enforced in `approve()`.
-4. **R6**: the shared-base overlap guard.
+4. ~~**R6**: the shared-base overlap guard.~~ Closed; see R6.
 5. **R3**: the starts-empty test and the manual-copy docs.
 6. **R7**: unit tests land with each step; tier `p` last, once there is a
    profile to test.
