@@ -272,9 +272,15 @@ test` passed, and `podman image inspect` of an absent ref exited 125 with
 | Rootless | yes |
 | Python | 3.13.5 |
 
-macOS: the 2026-08-14 apple/container 1.2.2 gate above. The Linux
-integration tiers and clean-host install walkthrough for this candidate
-are recorded here when they run.
+macOS: not yet qualified for this candidate. The 2026-08-14
+apple/container 1.2.2 gate above ran on a tree based on `e8aeb42`, before
+exact base identity and stage-alias exclusion changed the backend protocol
+for both runtimes, so it does not cover this release. The full macOS
+qualification guide procedure — `make test`, both integration tiers, the
+leak sweep, the removal race, and the README/Homebrew walkthrough through
+`jms build --base` that the apple/container pin change from 1.2.0 to 1.2.2
+requires — is still to run. It, the Linux integration tiers, and the
+clean-host install walkthrough are recorded here when they run.
 
 ## 1.1.0 — 2026-08-03
 
