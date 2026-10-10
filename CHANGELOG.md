@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **The examples no longer mount host toolchain caches.** The go, rust and
+  data-science examples mounted the host's own `~/.cache/go-build`,
+  `~/go/pkg/mod`, `~/.cargo/registry` and `~/.cache/pip` read-write, so a
+  container could change code that host builds of every project later
+  used. They now mount private directories under
+  `~/.cache/jms-examples/<example>/`, which no host toolchain reads; create
+  them first as `examples/README.md` shows. The odin example drops its
+  `~/.cache/odin` mount, which it did not need. A copy of an example made
+  before this change keeps its old mounts until edited.
+
 - **Security: the protected-path check now resolves symlinked `~/.config`
   and `~/.local` the same way as mount sources and workdirs.** Affected
   1.0.0 through 1.1.0: with a symlinked `~/.config`, `~/.local` or

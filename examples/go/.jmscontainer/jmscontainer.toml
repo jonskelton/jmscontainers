@@ -4,13 +4,18 @@ name = "go"
 [env]
 # Build with the dnf toolchain instead of letting go download a newer one.
 GOTOOLCHAIN = "local"
+# Keep the module cache deletable with a plain rm -rf.
+GOFLAGS = "-modcacherw"
 
+# Private caches only this example family uses. Never mount the host's own
+# ~/.cache/go-build or ~/go/pkg/mod: host go builds would use whatever the
+# container left there.
 [[mounts]]
-source = "~/.cache/go-build"
+source = "~/.cache/jms-examples/go/go-build"
 target = "/home/isolation/.cache/go-build"
 readonly = false
 
 [[mounts]]
-source = "~/go/pkg/mod"
+source = "~/.cache/jms-examples/go/mod"
 target = "/home/isolation/go/pkg/mod"
 readonly = false

@@ -65,8 +65,9 @@ fi
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-mkdir -p "$HOME/.cache/odin" "$HOME/.cache/pip" \
-    "$HOME/.cache/go-build" "$HOME/go/pkg/mod" "$HOME/.cargo/registry"
+mkdir -p "$HOME/.cache/jms-examples/data-science/pip" \
+    "$HOME/.cache/jms-examples/go/go-build" "$HOME/.cache/jms-examples/go/mod" \
+    "$HOME/.cache/jms-examples/rust/cargo-registry"
 work=$(mktemp -d)
 nft_table="jms-integration-$$"
 nft_installed=0

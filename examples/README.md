@@ -25,6 +25,18 @@ scratch, for instance after refreshing the shared base with
   required `isolation` user itself and pins the project-image user ABI to
   UID/GID `1000:1000`.
 
+The go, rust and data-science examples mount a writable package cache from
+`~/.cache/jms-examples/<example>/`, never the host's own `~/.cargo`, `~/go`
+or `~/.cache/pip`: a container could leave code in a shared host cache that
+host builds of every other project then run. Mount sources must exist, so
+create them before the first launch:
+
+```sh
+mkdir -p ~/.cache/jms-examples/go/go-build ~/.cache/jms-examples/go/mod \
+    ~/.cache/jms-examples/rust/cargo-registry \
+    ~/.cache/jms-examples/data-science/pip
+```
+
 These examples are intentionally illustrative. Review and adapt package
 versions, network use, and host mounts before approving them.
 
