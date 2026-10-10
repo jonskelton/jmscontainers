@@ -25,7 +25,8 @@ the container boundary protects the rest of the host, not anything mounted
 into the container. The mounted checkout, `.git` included, holds files that
 host tools later read or run, so a container's writes there can reach the
 host through those tools; see
-[Files a container can leave for the host](#files-a-container-can-leave-for-the-host). Credential mounts stay read-write because the
+[Files a container can leave for the host](#files-a-container-can-leave-for-the-host).
+Credential mounts stay read-write because the
 agent CLIs refresh tokens in place (`--mount …,readonly` exists but would
 break auth persistence); recovery from corruption is "delete the dir and log
 in again." Deleting the directory does not revoke a token that has already
@@ -137,8 +138,9 @@ The precise Linux claims:
   files and mounted credentials are exposed to the agent by design; the
   credential-exfiltration warning above applies regardless of boundary
   type.
-- SELinux-**enforcing** hosts are **unqualified but allowed**, like every local rootless Linux configuration outside the qualified
-  Debian 13/amd64 matrix: jms does not detect enforcing mode and prints no
+- SELinux-**enforcing** hosts are **unqualified but allowed**, like every
+  local rootless Linux configuration outside the qualified Debian 13/amd64
+  matrix: jms does not detect enforcing mode and prints no
   warning, and no qualification or support guarantee is made for the
   configuration. Enforcing-mode qualification is planned alongside the
   Fedora host target.
