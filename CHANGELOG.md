@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Security: the protected-path check now resolves symlinked `~/.config`
+  and `~/.local` the same way as mount sources and workdirs.** Affected
+  1.0.0 through 1.1.0: with a symlinked `~/.config`, `~/.local` or
+  `~/.local/share`, the check that keeps the trust store and agent state
+  out of containers compared paths inconsistently.
+
 - **Project images are reused only when their labels match in full.** The
   project tag carries only prefixes of the project id and trust
   fingerprint, so an image found at the tag is now reused only when its
