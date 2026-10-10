@@ -141,8 +141,8 @@ transcripts of **every prior session from every other project**.
    confidentiality alongside credential exfiltration.
 
 Keep the proposed wording consistent with the mount conditions above:
-shared-base launches mount state by default without a project credential
-prompt; custom definitions require a credential grant, and an authorized
+shared-base launches ask once per checkout root, default no, before
+mounting state; custom definitions require a credential grant, and an authorized
 `--auth` can override `mount_auth = false`. Describe `--no-auth` as suppressing
 jms-managed agent-state mounts for the invocation.
 

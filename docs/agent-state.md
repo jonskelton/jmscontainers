@@ -60,10 +60,14 @@ base is pruned its versions are gone:
 jms launch --no-auth --no-network -w ~/some/project --bin npm -- ls -g --depth=0
 ```
 
+Use `--no-auth` to suppress jms-managed agent-state mounts for any launch,
+including shared-base launches. For shared-base launches, `--auth` is
+consent for that one launch; see
+[Launches without a definition](#launches-without-a-definition).
+
 For custom definitions, project build/run approval and credential approval
 are separate, and a new interactive credential question defaults to no.
-Use `--no-auth` to suppress jms-managed agent-state mounts for that launch,
-including shared-base launches. A manifest can set `run.mount_auth = false`
+A manifest can set `run.mount_auth = false`
 to suppress the default mount; an explicit `--auth` overrides that setting
 when credential access has been granted. `--auth` alone does not authorize
 access: without a current credential grant or an applicable exact-fingerprint
