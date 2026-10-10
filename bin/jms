@@ -1523,7 +1523,10 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
         # the stored fingerprint already matches.
         build_ok = False
         auth_ok = False
-    if record and record.get("tf") != tf:
+    if record and record.get("tf") == BASE_CREDENTIAL_TF:
+        print("project definition added since the credential answer for this checkout was recorded",
+              file=sys.stderr)
+    elif record and record.get("tf") != tf:
         print("project definition changed since it was last trusted (fingerprint " +
               record["tf"][:12] + " -> " + tf[:12] + ")", file=sys.stderr)
     if action == "trust" or getattr(args, "trust", False) or not build_ok or (wants_auth and not auth_ok):
@@ -1568,6 +1571,90 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
         if auth_ok and live and not getattr(args, "trust", False):
             record_approval(True)
     return build_ok, auth_ok and not no_auth
+
+
+# A launch with no definition records its credential answer in the ordinary
+# schema-2 store under this fingerprint: the hash of an empty definition.
+# discover() refuses a definition without a Containerfile, so no real
+# definition can hash to it, and a definition that appears later mismatches
+# it and goes through full consent like any other changed definition.
+BASE_CREDENTIAL_TF = trust_fingerprint([])
+
+BASE_CREDENTIAL_SCOPE_NOTE = ("note: the answer is remembered for this checkout path, not for its code -- "
+                              "any branch or pull request later checked out here gets it without asking; "
+                              "launch with --no-auth to review code you did not write")
+
+
+def base_credential_root(workdir: bytes) -> bytes:
+    """The path a no-definition launch's credential answer is keyed on.
+
+    The enclosing checkout, so launching from any subdirectory reuses one
+    answer; the workdir itself outside a checkout.  Every lookup of a
+    no-definition record goes through here.
+    """
+    return vcs_root(workdir) or workdir
+
+
+def base_credential_records(store: dict, workdir: bytes):
+    """Return (root, base_record, vanished) for a no-definition workdir.
+
+    base_record is the remembered answer at base_credential_root(), if any.
+    vanished is the nearest (root, record) for a definition that was trusted
+    at the workdir or an ancestor inside the checkout but is gone now.
+    """
+    root = base_credential_root(workdir)
+    base, vanished, current = None, None, workdir
+    while True:
+        record = store["projects"].get(hashlib.sha256(current).hexdigest())
+        if record and record["tf"] != BASE_CREDENTIAL_TF:
+            vanished = vanished or (current, record)
+        elif record and current == root:
+            base = record
+        if current == root or current == b"/":
+            return root, base, vanished
+        current = parent(current)
+
+
+def base_launch_auth(workdir: bytes, args) -> bool:
+    """Whether a no-definition launch mounts agent state.
+
+    Nothing is mounted without consent: a remembered answer for the checkout,
+    an explicit --auth for this invocation, or a default-No question asked
+    once and remembered.  Off a terminal there is no question, only a notice.
+    Unlike the definition path, --auth needs no fingerprint pin here: the pin
+    protects the identity of project build/run code, and there is none.
+    """
+    if args.no_auth:
+        return False
+    root, base, vanished = base_credential_records(read_store(), workdir)
+    if vanished:
+        # Re-asking would hand whoever deleted the definition a reflexive yes.
+        print("warning: " + quote(vanished[0]) + " has a trust record for a project definition that "
+              "is no longer present; " + ("mounting agent state for this launch only (--auth)"
+                                          if args.auth else "not mounting agent state (pass --auth "
+                                          "to mount it for this launch)"), file=sys.stderr)
+        return args.auth
+    if args.auth:
+        return True
+    if base:
+        return base["grants"]["auth"]
+    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+        print("note: not mounting agent state (credentials and configuration): no recorded answer for "
+              + quote(root) + " and no terminal to ask on; pass --auth to mount it for this launch",
+              file=sys.stderr)
+        return False
+    print(quote(root) + " has no project definition and no recorded credential answer.", file=sys.stderr)
+    print(BASE_CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
+    answer = consent_input("Mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
+    pid = hashlib.sha256(root).hexdigest()
+    new = {"root": root.decode("utf-8"), "tf": BASE_CREDENTIAL_TF,
+           "grants": {"build_run": True, "auth": answer},
+           "granted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "jms_version": __version__}
+    def remember(store):
+        store["projects"][pid] = new
+        return True
+    update_store(remember)
+    return answer
 
 
 def runtime_ready():
@@ -2113,9 +2200,10 @@ def cmd_launch(args):
         image, _ = build_project(data, args)
         plan = launch_plan(workdir, data, args, image, auth)
     else:
+        auth = base_launch_auth(workdir, args)
         runtime_ready()
         ensure_base(args)
-        plan = launch_plan(workdir, None, args, BASE, not args.no_auth)
+        plan = launch_plan(workdir, None, args, BASE, auth)
     runtime_run(runtime().run_argv(plan), replace=True)
 
 
@@ -2157,7 +2245,11 @@ def cmd_trust(args):
         if not args.path: fail("trust revoke requires a project path", 2)
         workdir, _ = resolve_operand(args.path)
         root, _ = discover(workdir, consume_spec=False)
-        root = root or workdir
+        if root is None:
+            # A vanished definition's record first, so revoking it is possible;
+            # otherwise the checkout's remembered no-definition answer.
+            base_root, _, vanished = base_credential_records(read_store(), workdir)
+            root = vanished[0] if vanished else base_root
         pid = hashlib.sha256(root).hexdigest()
         if args.purge_images:
             runtime()  # select before mutating the store: a refusal leaves it untouched
@@ -2207,6 +2299,17 @@ def cmd_inspect(args):
         print("root: " + quote(workdir)); print("spec: shared base")
         print("project_id: " + hashlib.sha256(workdir).hexdigest())
         print("target_image: " + BASE)
+        try:
+            credential_root, base, vanished = base_credential_records(read_store(), workdir)
+        except JMSException as exc:
+            print("trust_store: error: " + str(exc))
+            return
+        print("trust_store: readable")
+        print("credential_root: " + quote(credential_root))
+        if vanished: grant = "declined (definition at " + quote(vanished[0]) + " vanished)"
+        elif base: grant = "held" if base["grants"]["auth"] else "declined"
+        else: grant = "unrecorded"
+        print("credential_grant: " + grant)
         return
     print("root: " + quote(data["root"])); print("spec: " + quote(data["spec"]))
     print("project_id: " + data["pid"]); print("trust_fingerprint: " + data["tf"])
@@ -2377,7 +2480,7 @@ def parser():
     l.add_argument("name", nargs="?", help=NAME_HELP)
     l.add_argument("-w", "--workdir", help=WORKDIR_HELP)
     flags(l, ("--trust", "one-shot build/run approval for this invocation; never grants credentials"),
-          ("--auth", "mount agent state (asks for the credential grant if not already given)"),
+          ("--auth", "mount agent state (with a definition, asks for the credential grant if not already given)"),
           ("--no-auth", NO_AUTH_HELP), ("--no-cache", NO_CACHE_HELP),
           ("--no-network", "run the container with no network; a project image build still uses it"))
     l.add_argument("-r", "--root", action="store_true", help="run as root instead of the isolation user")
