@@ -77,6 +77,13 @@ The qualified Debian target has no AppArmor or SELinux confinement. See
 - **No nested bubblewrap sandbox.** Codex's full bubblewrap sandbox fails on
   rootless Podman's masked `/proc`. Run the agent without its inner sandbox;
   jms does not weaken container defaults to make nesting work.
+- **Files created as container root are not yours on the host.** The
+  `isolation` user maps to your host UID, but container root (reached
+  through `sudo` inside the container) maps to a subordinate UID. Anything it
+  creates in the project shows up on the host owned by a number like
+  `100000`, and a plain `rm -rf` can fail with `Permission denied`. Remove
+  such files from inside Podman's user namespace instead:
+  `podman unshare rm -rf <path>`.
 - **The `jmscontainers-` image namespace is reserved.** jms cleanup treats
   local image names with that prefix (after stripping `localhost/`) as its
   own state. Do not tag unrelated images into it.

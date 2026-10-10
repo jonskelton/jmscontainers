@@ -8,6 +8,7 @@ import os
 import pathlib
 import pty
 import re
+import socket
 import stat
 import subprocess
 import sys
@@ -296,6 +297,35 @@ class FingerprintTests(unittest.TestCase):
             self.assertEqual(JMS.trust_fingerprint(JMS.spec_entries(os.fsencode(spec))),
                              GOLDEN_SINGLE_TF)
 
+    def test_manifest_is_parsed_from_the_hashed_buffer(self):
+        # One read serves both the parse and the fingerprint: a writer that
+        # changes the file between them cannot split what is shown at consent
+        # from what is recorded.  The fake read returns a manifest that differs
+        # from disk; config and fingerprint must both come from it.
+        with sandbox() as home:
+            root = make_project(home, manifest=b'name = "on-disk"\n')
+            real = JMS.spec_entries
+            reads = []
+
+            def swapped(spec):
+                reads.append(spec)
+                return [(kind, rel, mode, b'name = "hashed"\n' if rel == b"jmscontainer.toml" else content)
+                        for kind, rel, mode, content in real(spec)]
+
+            with mock.patch.object(JMS, "spec_entries", swapped):
+                data = JMS.project_data(JMS.canon(os.fsencode(root)))
+                self.assertEqual(len(reads), 1)
+                self.assertEqual(data["config"]["name"], "hashed")
+                self.assertEqual(data["tf"], JMS.trust_fingerprint(swapped(data["spec"])))
+
+    def test_manifest_symlink_is_refused(self):
+        with sandbox() as home:
+            root = make_project(home)
+            (root / "elsewhere.toml").write_bytes(b'name = "x"\n')
+            os.symlink("../elsewhere.toml", root / ".jmscontainer" / "jmscontainer.toml")
+            with self.assertRaisesRegex(JMS.JMSException, "must be a regular file"):
+                JMS.project_data(JMS.canon(os.fsencode(root)))
+
     def test_fingerprint_is_reproducible_and_creation_order_insensitive(self):
         digests = []
         for order in (("a.txt", "b.txt", "z"), ("z", "b.txt", "a.txt")):
@@ -508,11 +538,11 @@ class ManifestTests(unittest.TestCase):
 
     def test_relative_mounts_resolve_from_project_not_cwd(self):
         with sandbox() as home:
-            sibling = home / "git" / "beadrail"
+            sibling = home / "git" / "sibling"
             sibling.mkdir()
             for preserve in (False, True):
                 raw = ('[run]\npreserve_host_path = %s\n[[mounts]]\n'
-                       'source = "../beadrail/"\ntarget = "../beadrail/"\n'
+                       'source = "../sibling/"\ntarget = "../sibling/"\n'
                        'readonly = true\n' % str(preserve).lower()).encode()
                 root = make_project(home, name="preserved" if preserve else "default", manifest=raw)
                 inner = root / "nested"
@@ -524,7 +554,7 @@ class ManifestTests(unittest.TestCase):
                 mount = config["mounts"][0]
                 self.assertEqual(mount["source"], JMS.canon(os.fsencode(sibling)))
                 expected = (os.fsdecode(JMS.canon(os.fsencode(sibling))) if preserve
-                            else "/beadrail")
+                            else "/sibling")
                 self.assertEqual(mount["target"], expected)
                 self.assertTrue(mount["readonly"])
                 for as_root in (False, True):
@@ -803,6 +833,56 @@ class DiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(JMS.JMSException, "protected jms host directory"):
                 JMS.project_data(JMS.canon(os.fsencode(root)))
 
+    def test_protected_sources_resolve_symlinked_dotfile_dirs(self):
+        """HO-002 R5: a symlinked ~/.config or ~/.local/share still protects."""
+        with sandbox() as home:
+            elsewhere = home.parent / "dotfiles"
+            (elsewhere / "config").mkdir(parents=True)
+            (elsewhere / "share").mkdir(parents=True)
+            (home / ".config").symlink_to(elsewhere / "config")
+            (home / ".local").mkdir()
+            (home / ".local" / "share").symlink_to(elsewhere / "share")
+            # Neither store exists yet: the check must not depend on them.
+            self.assertTrue(JMS.reserved_root(JMS.canon(os.fsencode(elsewhere / "config"))))
+            self.assertTrue(JMS.reserved_root(JMS.canon(os.fsencode(elsewhere / "share"))))
+            store = elsewhere / "config" / "jmscontainers"
+            agents = elsewhere / "share" / "jmscontainers" / "agents"
+            store.mkdir(); agents.mkdir(parents=True); (agents / "claude").mkdir()
+            sources = (str(store), "~/.config/jmscontainers",
+                       str(agents), "~/.local/share/jmscontainers/agents/claude")
+            for index, source in enumerate(sources):
+                with self.subTest(source=source):
+                    manifest = ('[[mounts]]\nsource = "%s"\ntarget = "/opt/steal"\n' % source).encode()
+                    root = make_project(home, name="p%d" % index, manifest=manifest)
+                    with self.assertRaisesRegex(JMS.JMSException, "protected jms host directory"):
+                        JMS.project_data(JMS.canon(os.fsencode(root)))
+            self.assertFalse(JMS.reserved_root(JMS.canon(os.fsencode(home / "git"))))
+
+    def test_summary_never_calls_a_socket_or_fifo_read_only(self):
+        with sandbox() as home:
+            plain = home / "plain"; plain.mkdir()
+            fifo = home / "fifo"; os.mkfifo(fifo)
+            sock_path = home / "s.sock"
+            server = socket.socket(socket.AF_UNIX)
+            self.addCleanup(server.close)
+            server.bind(str(sock_path))
+            manifest = ('[[mounts]]\nsource = "%s"\ntarget = "/opt/a"\n'
+                        '[[mounts]]\nsource = "%s"\ntarget = "/opt/b"\n'
+                        '[[mounts]]\nsource = "%s"\ntarget = "/opt/c"\n'
+                        % (sock_path, fifo, plain)).encode()
+            root = JMS.canon(os.fsencode(home / "git"))
+            config = JMS.parse_manifest(manifest, root)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                JMS.print_capability_summary(root, config)
+            lines = {line.split(" -> ")[1].split()[0]: line
+                     for line in stderr.getvalue().splitlines() if line.startswith("- extra mount:")}
+            self.assertIn("SOCKET", lines['"/opt/a"'])
+            self.assertNotIn("read-only", lines['"/opt/a"'])
+            self.assertIn("FIFO", lines['"/opt/b"'])
+            self.assertNotIn("read-only", lines['"/opt/b"'])
+            self.assertTrue(lines['"/opt/c"'].endswith(" read-only"))
+
     def test_reserved_root_covers_repo_trust_store_and_data_dir(self):
         with sandbox() as home:
             repo = JMS.checkout_root()
@@ -972,6 +1052,24 @@ class ConsentTests(unittest.TestCase):
             self.assertIn("persistent agent state", self.questions[1])
             self.assertIn("credentials", self.questions[1])
 
+    def test_credential_question_says_the_grant_follows_the_path(self):
+        """Both credential questions warn that a grant covers later checkouts."""
+        with sandbox() as home:
+            root = JMS.canon(os.fsencode(make_project(home)))
+            for argv, action, answers in ((["build"], "build", ["y", ""]),
+                                          (["launch", "--auth"], "launch", [""])):
+                with self.subTest(action=action):
+                    stderr = TTYIO(True)
+                    replies = list(answers)
+                    with mock.patch.object(JMS, "consent_input", side_effect=lambda q: replies.pop(0)), \
+                         mock.patch.object(sys, "stdin", TTYIO(True)), \
+                         mock.patch.object(sys, "stderr", stderr):
+                        JMS.approve(root, "a" * 64, JMS.parse_cli(argv), action=action)
+                    self.assertEqual(replies, [])
+                    self.assertEqual(stderr.getvalue().count(JMS.CREDENTIAL_SCOPE_NOTE), 1)
+                    self.assertIn("not to the code", JMS.CREDENTIAL_SCOPE_NOTE)
+                    self.assertIn("--no-auth", JMS.CREDENTIAL_SCOPE_NOTE)
+
     def test_auth_escalation_prompts_and_records(self):
         with sandbox() as home:
             root = JMS.canon(os.fsencode(make_project(home)))
@@ -1075,7 +1173,8 @@ class BuildTests(unittest.TestCase):
             root = make_project(home)
             data = JMS.project_data(JMS.canon(os.fsencode(root)))
             tag = data["tag_prefix"] + ":" + data["tf"][:12]
-            with self.fake(images={tag: image_record(tag)}) as runtime, \
+            labels = {"jms.project": data["pid"], "jms.fingerprint": data["tf"]}
+            with self.fake(images={tag: image_record(tag, labels=labels)}) as runtime, \
                  contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(JMS.build_project(data, self.build_args()), (tag, False))
                 self.assertEqual(runtime.build_count, 0)
@@ -1084,6 +1183,25 @@ class BuildTests(unittest.TestCase):
                 build = next(call["argv"] for call in runtime.calls
                              if call["argv"][:2] == [self.EXE, "build"])
                 self.assertIn("--no-cache", build)
+
+    def test_tag_alone_never_proves_provenance(self):
+        # The tag holds only prefixes of the project id and fingerprint; an
+        # image there without the full matching labels is rebuilt, not run.
+        with sandbox() as home:
+            root = make_project(home)
+            data = JMS.project_data(JMS.canon(os.fsencode(root)))
+            tag = data["tag_prefix"] + ":" + data["tf"][:12]
+            good = {"jms.project": data["pid"], "jms.fingerprint": data["tf"]}
+            for labels in ({}, dict(good, **{"jms.fingerprint": "0" * 64}),
+                           dict(good, **{"jms.project": "0" * 64}),
+                           {"jms.fingerprint": data["tf"]}):
+                with self.subTest(labels=labels), \
+                     self.fake(images={tag: image_record(tag, labels=labels)}) as runtime, \
+                     contextlib.redirect_stdout(io.StringIO()), \
+                     contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(JMS.build_project(data, self.build_args()), (tag, True))
+                    self.assertEqual(runtime.build_count, 1)
+                    self.assertIn("image labels do not match", err.getvalue())
 
     def test_no_cache_never_resolves_the_project_tag(self):
         # An explicitly requested rebuild must not depend on resolving the
@@ -1715,6 +1833,22 @@ class LaunchTests(unittest.TestCase):
             with self.assertRaisesRegex(JMS.JMSException, "protected jms host directory"):
                 JMS.cmd_launch(JMS.parse_cli(["launch", "-w", str(config)]))
 
+    def test_launch_rejects_workdir_in_symlinked_dotfile_dirs(self):
+        """HO-002 R5: -w into the store or pool via a symlinked parent is refused."""
+        with sandbox() as home:
+            elsewhere = home.parent / "dotfiles"
+            store = elsewhere / "config" / "jmscontainers"
+            agents = elsewhere / "share" / "jmscontainers" / "agents"
+            store.mkdir(parents=True); agents.mkdir(parents=True)
+            (home / ".config").symlink_to(elsewhere / "config")
+            (home / ".local").mkdir()
+            (home / ".local" / "share").symlink_to(elsewhere / "share")
+            for workdir in (store, home / ".config" / "jmscontainers",
+                            agents, home / ".local" / "share" / "jmscontainers" / "agents"):
+                with self.subTest(workdir=str(workdir)):
+                    with self.assertRaisesRegex(JMS.JMSException, "protected jms host directory"):
+                        JMS.cmd_launch(JMS.parse_cli(["launch", "-w", str(workdir)]))
+
     def test_launch_defaulted_to_cwd_inside_checkout_is_rejected(self):
         with sandbox():
             checkout = os.fsdecode(JMS.checkout_root())
@@ -1756,15 +1890,15 @@ class LaunchTests(unittest.TestCase):
 
     def test_relative_sibling_mount_reaches_runtime_readonly(self):
         with sandbox() as home:
-            (home / "git" / "beadrail").mkdir()
+            (home / "git" / "sibling").mkdir()
             root = make_project(home, manifest=(
                 b'[run]\npreserve_host_path = true\n[[mounts]]\n'
-                b'source = "../beadrail/"\ntarget = "../beadrail/"\nreadonly = true\n'))
+                b'source = "../sibling/"\ntarget = "../sibling/"\nreadonly = true\n'))
             data = JMS.project_data(JMS.canon(os.fsencode(root)))
             tag = data["tag_prefix"] + ":" + data["tf"][:12]
             argv = self.launch_argv(home, ["launch", "--trust", "--no-auth", "-w", str(root)],
                                     images={tag: image_record(tag)})
-            sibling = os.fsdecode(JMS.canon(os.fsencode(home / "git" / "beadrail")))
+            sibling = os.fsdecode(JMS.canon(os.fsencode(home / "git" / "sibling")))
             mount_arg = next(arg for arg in argv if "target=" + sibling in arg)
             self.assertIn(self.MOUNT + sibling + ",target=" + sibling, mount_arg)
             self.assertIn("readonly", mount_arg)
@@ -1868,7 +2002,9 @@ class LaunchOutputTests(unittest.TestCase):
                             "trust", str(root), "--fingerprint", data["tf"], "--no-auth"]))
                     if scenario in ("warm", "stale", "retention"):
                         base_id = images[JMS.BASE]["ident"] if scenario != "stale" else fake_hex_id("old-base")
-                        images[tag] = image_record(tag, labels={"jms.base": base_id})
+                        images[tag] = image_record(tag, labels={
+                            "jms.project": data["pid"], "jms.fingerprint": data["tf"],
+                            "jms.base": base_id})
                     if scenario == "retention":
                         flags.append("--no-cache")
                         for day in range(1, 4):
@@ -2881,6 +3017,21 @@ class PodmanReadinessTests(unittest.TestCase):
 class MountGrammarTests(unittest.TestCase):
     """R7.6: per-backend grammar, identical rejection behavior and error text."""
 
+    def test_manifest_target_with_control_character_is_rejected(self):
+        for target in ("/opt/x\ny", "/opt/x\ry", "/opt/x\ty", "/opt/x\x1by", "/opt/x\x7fy", "x\ny"):
+            with self.subTest(target=target), sandbox() as home:
+                manifest = ('[[mounts]]\nsource = "/tmp"\ntarget = %s\n'
+                            % json.dumps(target)).encode()
+                with self.assertRaisesRegex(JMS.JMSException, r"mounts\[0\]\.target"):
+                    JMS.parse_manifest(manifest, JMS.canon(os.fsencode(home / "git")))
+
+    def test_runtime_path_rejects_control_characters(self):
+        for raw in (b"/tmp/a\nb", b"/tmp/a\rb", b"/tmp/a\tb", b"/tmp/a\x7fb"):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(JMS.JMSException, "control characters"):
+                    JMS.runtime_path(raw)
+        self.assertEqual(JMS.runtime_path(b"/tmp/a b~"), "/tmp/a b~")
+
     def test_mount_grammar_per_backend(self):
         apple, podman = JMS.ContainerBackend(), JMS.PodmanBackend()
         self.assertEqual(apple.mount_argument("/tmp/x", "/work"), "source=/tmp/x,target=/work")
@@ -2893,7 +3044,10 @@ class MountGrammarTests(unittest.TestCase):
     def test_mount_rejections_identical_across_backends(self):
         cases = [(b"/tmp/a,b", "/work"), (b"/tmp/a=b", "/work"),
                  (b"/tmp/a\0b", "/work"), (b"/tmp/\xff\xfe", "/work"),
-                 (b"/tmp/x", "/work,x"), (b"/tmp/x", "/work=x")]
+                 (b"/tmp/x", "/work,x"), (b"/tmp/x", "/work=x"),
+                 (b"/tmp/a\nb", "/work"), (b"/tmp/a\x7fb", "/work"),
+                 (b"/tmp/x", "/opt/x\ny"), (b"/tmp/x", "/opt/x\ry"), (b"/tmp/x", "/opt/x\ty"),
+                 (b"/tmp/x", "/opt/x\x7fy")]
         for source, target in cases:
             messages = []
             for backend in (JMS.ContainerBackend(), JMS.PodmanBackend()):
@@ -2920,6 +3074,20 @@ class IsolationUidPinTests(unittest.TestCase):
         self.assertIn("useradd -m -s /bin/bash -u %d -g %d isolation" % (uid, gid), base)
         self.assertIn("groupadd --gid %d isolation" % gid, standalone)
         self.assertIn("--uid %d --gid %d isolation" % (uid, gid), standalone)
+
+
+class BaseBuildContextTests(unittest.TestCase):
+    """The base build context is the checkout; the builder is offered none of it."""
+
+    def test_base_context_is_fully_ignored_and_unused(self):
+        root = pathlib.Path(JMS.__file__).parents[1]
+        patterns = [line.strip() for line in
+                    (root / ".containerignore").read_text().splitlines()
+                    if line.strip() and not line.lstrip().startswith("#")]
+        self.assertEqual(patterns, ["*"])
+        base = (root / "Containerfile").read_text()
+        # A COPY/ADD here needs a matching `!` re-include in .containerignore.
+        self.assertIsNone(re.search(r"^\s*(COPY|ADD)\s", base, re.M | re.I))
 
 
 class SupportVocabularyTests(unittest.TestCase):

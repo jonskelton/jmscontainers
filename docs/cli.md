@@ -92,8 +92,11 @@ explicit path to act on a directory that does not meet the bar.
 `build` realizes the discovered project's image, or the shared base when
 `--base` is passed or no definition is discovered. The build context is the
 project's `.jmscontainer/` directory itself (the repository checkout for the
-base); `COPY`/`ADD` sources must live inside it. An image whose tag matches
-the current trust fingerprint is reused; `--no-cache` forces a rebuild without
+base, whose `.containerignore` excludes every file); `COPY`/`ADD` sources
+must live inside it. An image whose tag matches the current trust
+fingerprint is reused only when its `jms.project` and `jms.fingerprint`
+labels match the project and fingerprint in full; otherwise it is rebuilt
+over; `--no-cache` forces a rebuild without
 reusable layers. `--pull` refreshes `FROM` references and is valid only with
 `--base`: project Containerfiles reference the local-only tag
 `jmscontainers-base:latest`, which a pull-mode build would try to resolve

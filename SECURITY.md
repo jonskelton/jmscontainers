@@ -6,9 +6,11 @@
 threat model. jmscontainers fingerprints its exact contents and requires an
 explicit build/run grant before the project can be built or launched; the
 fingerprint is re-checked immediately before the build and a changed
-fingerprint requires fresh consent. Credential mounting is a second, distinct
-grant and defaults to no. In non-interactive automation, use an audited exact
-fingerprint; do not use a boolean bypass.
+fingerprint requires fresh consent. For a project definition, credential
+mounting is a second, distinct grant and defaults to no. A launch without a
+project definition uses the shared base and mounts agent state read-write
+without asking; `--no-auth` suppresses that mount. In non-interactive
+automation, use an audited exact fingerprint; do not use a boolean bypass.
 
 Everything else running as the invoking user on the host — the filesystem
 outside project definitions, the container runtime and its output, and other
@@ -19,11 +21,20 @@ Granting both grants hands the project's image — and every transitive
 dependency it pulls in — read/write access to your agents' persistent state:
 their credentials and their configuration. The `isolation` user is not a security boundary
 (passwordless sudo is by design);
-the container boundary limits blast radius to the *host*, not to anything
-mounted into the container. Credential mounts stay read-write because the
+the container boundary protects the rest of the host, not anything mounted
+into the container. The mounted checkout, `.git` included, holds files that
+host tools later read or run, so a container's writes there can reach the
+host through those tools. Credential mounts stay read-write because the
 agent CLIs refresh tokens in place (`--mount …,readonly` exists but would
 break auth persistence); recovery from corruption is "delete the dir and log
-in again." Prefer dedicated, least-privileged agent accounts for third-party
+in again." Deleting the directory does not revoke a token that has already
+left the container; see
+[Suspect a leak?](docs/agent-state.md#suspect-a-leak) for per-agent
+revocation. A credential grant is keyed to the project path and the
+definition's fingerprint, not to the code checked out there: a pull request
+or branch later checked out at a granted path, with the definition
+unchanged, receives the same access without a prompt. Prefer dedicated,
+least-privileged agent accounts for third-party
 work; per-project auth profiles are future work. Never claim the container
 boundary meaningfully limits exfiltration of mounted credentials.
 
@@ -112,10 +123,38 @@ Unchanged on both platforms: the protected-source rules, the read-only
 shell-mount rationale, the trust-store location, and the credential-mount
 warning, none of which depend on the boundary type.
 
+The container's terminal output is not filtered. `jms launch` hands your
+terminal to the runtime, so escape sequences a container prints reach the
+host terminal as-is: window-title changes, hyperlinks whose text and target
+differ, and — on terminals (or tmux configurations) that honor OSC 52 —
+writes to the host clipboard. Treat text copied from or pasted after a
+container session as container-supplied, and check it before running it in a
+host shell.
+
 Do not put secrets in Containerfiles, manifests, or files under
 `.jmscontainer/`: the whole directory is the build context, so build inputs
-and image layers are not a secret channel. Network access is available to
-approved builds and containers.
+and image layers are not a secret channel.
+
+Network access is not restricted. jms passes no network option to either
+runtime, so approved builds and containers get the runtime's default
+network: NAT through the host on macOS, and on Linux whatever
+`containers.conf` selects — `pasta` by default for rootless Podman. A
+container can therefore reach the internet and, in general, whatever the
+host can reach: the local network, a VPN or tailnet the host is on, and a
+cloud instance-metadata endpoint (`169.254.169.254`) when the host is a
+cloud VM. Podman's default `pasta` setup does not map the host's gateway
+address into the container, so services bound only to the host's loopback
+interface are not reachable that way; no equivalent claim is made for
+macOS. jms offers no option to disable or filter container networking.
+Do not run jms on a host whose network position you would not hand to the
+project's code.
+
+Do not put secrets in `~/.local/share/jmscontainers/shell/` either. Its
+files are sourced in every container, including projects you never granted
+credential access, so an `export TOKEN=...` in `bashrc` hands that token to
+all of them. jms has no supported way to pass a secret into a container
+yet; `[env]` values are passed to the runtime as `--env KEY=VALUE`
+arguments.
 
 The trust store lives at `~/.config/jmscontainers/store.json`; agent state —
 credentials and configuration — lives under

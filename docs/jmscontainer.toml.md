@@ -37,7 +37,7 @@ coercion is performed, and floats and datetimes are accepted nowhere.
 | `mounts` | array of tables | empty | Each item has `source`, `target`, and optional `readonly` only. |
 | `mounts[].source` | string | — | Required, nonempty host path. `~`, `$VAR`, and `${VAR}` expand once from the host environment; unset or empty expansions fail. Relative paths resolve from the project root (not `.jmscontainer/` or the invoking working directory). The result must already exist: jms canonicalizes it (resolving symlinks) while parsing, so a missing source is a manifest error. |
 | `mounts[].target` | string | — | Required container path. Absolute paths use the allowlist in [Mount targets](#mount-targets); relative paths resolve from the container project path and may leave that allowlist, subject to the system-state and reserved-path checks below. Targets may not overlap each other or any reserved path. |
-| `mounts[].readonly` | boolean | `true` | Set `false` only when the container must write the host path. |
+| `mounts[].readonly` | boolean | `true` | Set `false` only when the container must write the host path. Read-only does not restrict a socket, FIFO or device node: the container can still connect to or write it, and the consent summary says so instead of `read-only`. |
 | `run` | table | defaults below | Only `entry`, `mount_auth`, and `preserve_host_path`. |
 | `run.entry` | array of strings | `["/bin/bash", "-l"]` | Nonempty; first element nonempty; no element contains NUL. |
 | `run.mount_auth` | boolean | `true` | The key name is historical: it gates the agent-state mount (credentials and configuration). If false, mounting requires the user to type `--auth`; it does not change the approval record or prompts. |
@@ -130,12 +130,12 @@ project, other mounts, reserved agent-state paths, or container system paths suc
 as `/etc`, `/usr`, `/proc`, and `/root`. Sources still undergo the existing
 symlink resolution, existence, and protected-host-directory checks.
 
-For sibling checkouts, this preserves `../beadrail/` inside the container:
+For sibling checkouts, this preserves `../sibling/` inside the container:
 
 ```toml
 [[mounts]]
-source = "../beadrail/"
-target = "../beadrail/"
+source = "../sibling/"
+target = "../sibling/"
 readonly = true
 
 [run]
@@ -143,13 +143,17 @@ preserve_host_path = true
 ```
 
 With the default project path `/work`, the same relative target becomes
-`/beadrail`. Resolution is always from the project root, even when launching
+`/sibling`. Resolution is always from the project root, even when launching
 from a nested working directory. Container target resolution does not follow
 host symlinks.
 
 An absolute `target` must be normalized: no trailing slash, no
-empty or `.`/`..` component, and no `,`, `=`, or NUL (the runtime's mount
-grammar cannot carry the first two). It must sit under one of four prefixes:
+empty or `.`/`..` component, and no `,`, `=`, or control character (NUL,
+newline and the rest of U+0000–U+001F, or DEL). The runtime's mount grammar
+cannot carry these: a newline could end the mount record before `readonly`.
+Host paths that reach a mount (the project root, extra mount sources) are
+refused for the same characters. An absolute target must sit under one of four
+prefixes:
 
 - `/home/isolation/` — the home fixed by the
   [project-image user ABI](project-images.md#project-image-user-abi)

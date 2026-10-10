@@ -1,5 +1,6 @@
-# Claude Code's project-settings directory (settings.local.json); it must stay
-# untracked because the checkout is the base image's build context.
+# Claude Code's project-settings directory (settings.local.json); local only.
+# Ignoring it here does not keep it out of the base image's build context
+# (the checkout): .containerignore does that.
 /.claude/
 
 # macOS noise

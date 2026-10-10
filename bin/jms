@@ -254,6 +254,8 @@ class ContainerBackend:
         source_text = runtime_path(os.fsencode(source))
         if "," in target or "=" in target:
             fail("mount paths cannot contain ',' or '=': " + quote(target))
+        if CONTROL_CHARACTER.search(target):
+            fail("mount paths cannot contain control characters: " + quote(target))
         result = "source=" + source_text + ",target=" + target
         return result + ",readonly" if readonly else result
 
@@ -510,6 +512,8 @@ class PodmanBackend:
         source_text = runtime_path(os.fsencode(source))
         if "," in target or "=" in target:
             fail("mount paths cannot contain ',' or '=': " + quote(target))
+        if CONTROL_CHARACTER.search(target):
+            fail("mount paths cannot contain control characters: " + quote(target))
         result = "type=bind,source=" + source_text + ",target=" + target
         return result + ",readonly" if readonly else result
 
@@ -786,11 +790,20 @@ def home_path() -> bytes:
     return canon(home)
 
 
+# C0 controls and DEL.  The runtime's --mount value is a CSV record, so a
+# newline would end it early and could drop a trailing ",readonly"; none of
+# these belongs in a path the consent summary asks a person to read.
+CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
+
+
 def runtime_path(path: str | bytes) -> str:
     """Validate and decode a host mount path before it crosses the runtime boundary."""
     raw = os.fsencode(path)
     if b"\0" in raw:
         fail("path must not contain NUL before it can be passed to the container runtime: " + quote(raw))
+    if CONTROL_CHARACTER.search(os.fsdecode(raw)):
+        fail("rename the directory -- the runtime's mount grammar cannot carry control characters in a path: "
+             + quote(raw))
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -1141,9 +1154,27 @@ def shell_state_root() -> Path:
     return Path(os.fsdecode(home_path())) / ".local" / "share" / "jmscontainers" / "shell"
 
 
+def canon_lenient(path: bytes) -> bytes:
+    """canon() of the deepest existing ancestor, with the missing tail appended.
+
+    Protected roots may not exist yet, but any symlink among their existing
+    ancestors (a dotfile-managed ~/.config or ~/.local) must still be resolved:
+    the paths they are compared against are fully canonical.
+    """
+    head, tail = path, b""
+    while head != b"/" and not os.path.exists(head):
+        head, name = head.rsplit(b"/", 1)
+        head = head or b"/"
+        tail = b"/" + name + tail
+    resolved = canon(head)
+    return (b"" if resolved == b"/" else resolved) + tail
+
+
 def protected_sources() -> list[bytes]:
-    config = home_path() + b"/.config/jmscontainers"
-    data = home_path() + b"/.local/share/jmscontainers"
+    # HO-002 R5: each entry is resolved exactly as mount sources and workdirs
+    # are, or a symlinked ~/.config / ~/.local hides the store from the check.
+    config = canon_lenient(home_path() + b"/.config/jmscontainers")
+    data = canon_lenient(home_path() + b"/.local/share/jmscontainers")
     return [checkout_root(), config, data]
 
 
@@ -1192,7 +1223,7 @@ def expand_mount_source(expression: str, root: bytes | None = None) -> bytes:
 
 def normalized_mount_target(value: str) -> bool:
     if (not value.startswith("/") or value.startswith("//") or value.endswith("/")
-            or "\0" in value or "," in value or "=" in value):
+            or CONTROL_CHARACTER.search(value) or "," in value or "=" in value):
         return False
     parts = value.split("/")[1:]
     if not parts or any(not item or item in (".", "..") for item in parts): return False
@@ -1394,6 +1425,25 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
     return config
 
 
+def extra_mount_mode(mount: dict) -> str:
+    """Consent wording for one extra mount's access.
+
+    A read-only bind refuses writes only to regular files, directories and
+    symlinks.  A socket still accepts connect(), and a FIFO or device node
+    still accepts open-for-write, so "read-only" would misstate what is
+    being granted.
+    """
+    try:
+        mode = os.stat(mount["source"]).st_mode
+    except OSError:
+        mode = 0
+    if stat.S_ISSOCK(mode):
+        return "SOCKET: the container can connect to it; mount flags do not restrict this"
+    if stat.S_ISFIFO(mode) or stat.S_ISCHR(mode) or stat.S_ISBLK(mode):
+        return "DEVICE OR FIFO: the container can write to it; mount flags do not restrict this"
+    return "read-only" if mount["readonly"] else "read-write"
+
+
 def print_capability_summary(root: bytes, config: dict) -> None:
     """Describe every project-controlled runtime capability before consent."""
     print("Project container capabilities:", file=sys.stderr)
@@ -1403,7 +1453,7 @@ def print_capability_summary(root: bytes, config: dict) -> None:
           + (quote(root) + " (host path preserved)" if config["preserve_host_path"] else "\"/work\"")
           + " read-write", file=sys.stderr)
     for mount in config["mounts"]:
-        mode = "read-only" if mount["readonly"] else "read-write"
+        mode = extra_mount_mode(mount)
         print("- extra mount: " + quote(mount["source"]) + " -> " + quote(mount["target"]) + " " + mode,
               file=sys.stderr)
     for key, value in sorted(config["env"].items()):
@@ -1412,6 +1462,14 @@ def print_capability_summary(root: bytes, config: dict) -> None:
     print("- agent state (credentials and configuration for claude, codex, opencode, pi): " +
           ("read-write mount eligible with a separate grant" if config["mount_auth"] else
            "read-write mount suppressed by manifest"), file=sys.stderr)
+
+
+# The credential grant is keyed to the project path and its definition bytes,
+# never to the checked-out code, so the question says so before it is asked.
+CREDENTIAL_SCOPE_NOTE = ("note: a recorded credential grant is tied to this path and its .jmscontainer/ "
+                         "contents, not to the code -- any branch or pull request later checked "
+                         "out here with the same definition gets it without asking; launch with "
+                         "--no-auth to review code you did not write")
 
 
 def consent_input(question: str) -> str:
@@ -1487,11 +1545,13 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
             if not (config or default_config())["mount_auth"]:
                 print("persistent agent state (credentials and configuration): not mounted by default (manifest mount_auth = false); --auth required",
                       file=sys.stderr)
+            print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
             auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
         record_approval(auth_ok)
     elif wants_auth and not auth_ok:
         if not (sys.stdin.isatty() and sys.stderr.isatty()):
             fail("credential access is required but prompting is unavailable", 3)
+        print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
         auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
         # --trust is one-shot for both grants: an accepted escalation applies to
         # this invocation only and leaves any existing record untouched.
@@ -1593,20 +1653,26 @@ def project_data(workdir: bytes):
     if reserved_root(root):
         fail("project root overlaps a protected jms host directory: " + quote(root))
     runtime_path(root)
-    manifest = None
     manifest_path = spec + b"/jmscontainer.toml"
-    if os.path.lexists(manifest_path):
-        if not stat.S_ISREG(os.lstat(manifest_path).st_mode):
-            fail("jmscontainer.toml must be a regular file: " + quote(manifest_path))
-        with open(manifest_path, "rb") as handle:
-            manifest = handle.read()
+    if os.path.lexists(manifest_path) and not stat.S_ISREG(os.lstat(manifest_path).st_mode):
+        fail("jmscontainer.toml must be a regular file: " + quote(manifest_path))
+    # Read the definition once: the manifest that is parsed (and shown at
+    # consent) is the exact buffer the fingerprint hashes, so a concurrent
+    # writer cannot pair one approved view with another recorded fingerprint.
+    entries = spec_entries(spec)
+    manifest = None
+    for kind, rel, _, content in entries:
+        if rel == b"jmscontainer.toml":
+            if kind != b"f":
+                fail("jmscontainer.toml must be a regular file: " + quote(manifest_path))
+            manifest = content
     config = parse_manifest(manifest, root)
     protected = protected_sources()
     for mount in config["mounts"]:
         if any(ancestor(mount["source"], item) or ancestor(item, mount["source"]) for item in protected):
             fail("mount source overlaps a protected jms host directory: " + quote(mount["source"]))
         runtime_path(mount["source"])
-    tf = trust_fingerprint(spec_entries(spec))
+    tf = trust_fingerprint(entries)
     pid = hashlib.sha256(root).hexdigest()
     # Manifest `name` is cosmetic runtime configuration.  Keeping it out of
     # the repository name makes a name-only edit leave the image tag driven
@@ -1773,7 +1839,15 @@ def build_project(data, args):
     # the jms.base label.
     if not getattr(args, "no_cache", False):
         project = resolve_image(tag)
-        if project is not None:
+        # The tag carries only a prefix of the project id and fingerprint, so
+        # it is a cache key, not proof of provenance: reuse requires the full
+        # labels the build stamped.  A label-less or foreign image at the tag
+        # is rebuilt over, never run.
+        if project is not None and (project.labels.get("jms.project") != data["pid"]
+                                    or project.labels.get("jms.fingerprint") != data["tf"]):
+            print("image labels do not match this project definition; rebuilding "
+                  + quote(tag), file=sys.stderr)
+        elif project is not None:
             if base is None or project.labels.get("jms.base") == base.ident:
                 return tag, False
             print("base image changed; rebuilding " + quote(tag), file=sys.stderr)

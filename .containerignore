@@ -1,0 +1,7 @@
+# The checkout is the base image's build context, but the base Containerfile
+# copies nothing from it. Offer the builder nothing, so a future COPY/ADD
+# cannot bake .git/, a gitignored .claude/, or a stray .env into the image.
+# A real build input must be re-included here (e.g. `!path/to/file`).
+# Honored by Podman for COPY/ADD; RUN --mount=type=bind still sees the full
+# checkout.
+*

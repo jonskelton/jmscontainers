@@ -2,15 +2,35 @@
 
 ## Unreleased
 
+- **Security: the protected-path check now resolves symlinked `~/.config`
+  and `~/.local` the same way as mount sources and workdirs.** Affected
+  1.0.0 through 1.1.0: with a symlinked `~/.config`, `~/.local` or
+  `~/.local/share`, the check that keeps the trust store and agent state
+  out of containers compared paths inconsistently.
+
+- **Project images are reused only when their labels match in full.** The
+  project tag carries only prefixes of the project id and trust
+  fingerprint, so an image found at the tag is now reused only when its
+  `jms.project` and `jms.fingerprint` labels equal the full values;
+  otherwise jms rebuilds over the tag. An image at the tag without those
+  labels (one tagged by hand or by another tool) is rebuilt once.
+
+- **The credential question says what a grant covers.** Before either
+  credential question, jms now notes that a recorded grant is tied to the
+  project path and its `.jmscontainer/` contents, not to the code: a branch
+  or pull request later checked out there with the same definition gets the
+  same access without asking. README, SECURITY.md and
+  `docs/agent-state.md` say the same and recommend `--no-auth` for reviews.
+
 - **Manifest mounts accept relative sources and targets.** A
   `mounts[].source` that is not absolute resolves from the project root --
   never from `.jmscontainer/` or the invoking working directory -- so a
-  sibling checkout is `source = "../beadrail/"` regardless of where `jms`
+  sibling checkout is `source = "../sibling/"` regardless of where `jms`
   was run. A relative `mounts[].target` resolves lexically from the
   container project path, which with `run.preserve_host_path = true` mounts
   a sibling at the same path it has on the host, so path-keyed tools agree
-  on both sides. Under the default `/work`, `../beadrail/` becomes
-  `/beadrail`.
+  on both sides. Under the default `/work`, `../sibling/` becomes
+  `/sibling`.
 
   Relative targets are the one way out of the absolute-target allowlist
   (`~/`, `/opt/`, `/mnt/`, `/srv/`), which is a deliberate relaxation: an

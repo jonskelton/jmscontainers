@@ -5,13 +5,17 @@
 [![license](https://img.shields.io/github/license/jonskelton/jmscontainers)](LICENSE)
 
 Run **Claude Code**, **Codex**, **OpenCode**, and **[Pi](https://github.com/earendil-works/pi)** with full permissions
-inside throwaway containers—not on your host.
+inside throwaway containers. The agent runs in the container, not directly
+on your host, but your checkout—`.git` included—is shared with it
+read-write.
 
 `jms` mounts your checkout read-write at `/work`, starts a disposable Fedora
 environment, and removes the container when you exit. It uses a lightweight VM
 per container on macOS and rootless Podman on Linux. Projects can supply their
 own Containerfile, but `jms` fingerprints it and asks before it can build, run,
-or access persistent agent credentials.
+or access persistent agent credentials. A checkout without one runs on the
+shared base with your agent credentials mounted by default; pass `--no-auth`
+to leave them out.
 
 ## Install
 
@@ -86,10 +90,14 @@ shell to remain after the agent exits.
    Keep important work in the mounted project.
 2. **Project definitions require approval.** Any change under
    `.jmscontainer/` changes its SHA-256 fingerprint and triggers a new prompt.
-   Build/run approval and credential access are separate grants.
+   Build/run approval and credential access are separate grants. A
+   credential grant follows the path, not the code: launch with `--no-auth`
+   when an agent reviews a pull request or other code you did not write.
 3. **Mounted data is not protected from the agent.** A container can change
-   the project and, if approved, read or change agent credentials. macOS uses
-   a VM boundary; Linux uses the weaker rootless user-namespace boundary.
+   the project, including `.git` and other files your host tools later read
+   or run, and can read or change any agent credentials mounted into it.
+   macOS uses a VM boundary; Linux uses the weaker rootless user-namespace
+   boundary.
 
 Read [SECURITY.md](SECURITY.md) before granting credential access to a
 third-party project.
@@ -154,8 +162,10 @@ must not vary with the machine the session runs on — see
 ## Credentials and shell setup
 
 Agent credentials and configuration persist under
-`~/.local/share/jmscontainers/agents/`. The first approved custom project asks
-separately whether it may mount that state. Use dedicated, least-privileged
+`~/.local/share/jmscontainers/agents/`. Launches without a project
+definition mount that state by default, without asking; the first approved
+custom project asks separately whether it may mount it. Use `--no-auth` for a
+checkout you do not trust. Use dedicated, least-privileged
 agent accounts for untrusted work.
 
 Container-only `bashrc` and `zshrc` files live under
@@ -182,3 +192,7 @@ an update.
 - [Changelog](CHANGELOG.md)
 
 MIT—see [LICENSE](LICENSE).
+
+jmscontainers is an independent project. It is not affiliated with or
+endorsed by Anthropic, OpenAI, Apple, or the makers of OpenCode, Pi, Podman,
+or Fedora. Product names are trademarks of their respective owners.
