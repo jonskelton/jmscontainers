@@ -24,7 +24,8 @@ their credentials and their configuration. The `isolation` user is not a securit
 the container boundary protects the rest of the host, not anything mounted
 into the container. The mounted checkout, `.git` included, holds files that
 host tools later read or run, so a container's writes there can reach the
-host through those tools. Credential mounts stay read-write because the
+host through those tools; see
+[Files a container can leave for the host](#files-a-container-can-leave-for-the-host). Credential mounts stay read-write because the
 agent CLIs refresh tokens in place (`--mount …,readonly` exists but would
 break auth persistence); recovery from corruption is "delete the dir and log
 in again." Deleting the directory does not revoke a token that has already
@@ -37,6 +38,43 @@ unchanged, receives the same access without a prompt. Prefer dedicated,
 least-privileged agent accounts for third-party
 work; per-project auth profiles are future work. Never claim the container
 boundary meaningfully limits exfiltration of mounted credentials.
+
+## Files a container can leave for the host
+
+The project mount is read-write, `.git` included, and so is every extra
+mount with `readonly = false`. A container can write files there that host
+tools later read or run without asking, and the files persist after the
+container exits. jms neither detects nor undoes such writes. The channels
+to know:
+
+- **Git metadata:** `.git/config` and `.git/hooks/`. Host git runs commands
+  that repository config names, and hooks, during ordinary commands such as
+  `git status`, including the ones an IDE, editor plugin or shell prompt
+  runs for you. A nested repository the container creates anywhere under
+  the mount, including in the directory a launch started from, works the
+  same way once host git runs there.
+- **Editor and agent configuration:** `.vscode/`, `.claude/`, `.mcp.json`,
+  `CLAUDE.md` and `AGENTS.md`, which an IDE or a host-side agent loads when
+  it opens the checkout. Some of these name commands to run.
+- **Build files:** anything your host tools execute, such as Makefiles,
+  package-manager scripts and build scripts.
+
+After a session that ran code you do not trust, inspect these with non-git
+tools (`ls -la`, a pager, a plain `diff -r` against a copy you trust)
+before you run any git command or open the checkout in an IDE. Do not run
+host git, or let an IDE's git integration run, in the checkout while such
+a session is live.
+
+The agent-state directories are one pool per host user, not one per
+project. Every launch that mounts them (each shared-base launch without
+`--no-auth`, and each launch of a project you granted credentials) reads
+and writes the same files. Beside credentials, the pool holds
+configuration the agents load and act on: settings and hooks, skills,
+plugins, rules, MCP server definitions and extensions. A container in one
+granted project can therefore change what an agent does in later sessions
+of every other project that mounts the pool, and jms does not detect it.
+jms has no per-project agent state today; launch work you do not trust
+with `--no-auth` to keep it away from the pool.
 
 ## The container boundary, per platform
 

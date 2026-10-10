@@ -12,6 +12,14 @@
   `~/.cache/odin` mount, which it did not need. A copy of an example made
   before this change keeps its old mounts until edited.
 
+- **SECURITY.md names the files a container can leave for the host.** A
+  new section lists the host-executed channels in a read-write checkout
+  (`.git/config`, `.git/hooks/`, nested repositories, `.vscode/`,
+  `.claude/`, `.mcp.json`, `CLAUDE.md`, `AGENTS.md`, build files), advises
+  inspecting them with non-git tools after an untrusted session, and states
+  that executable agent configuration in the shared agent-state pool is
+  shared by every project granted credentials.
+
 - **Security: the protected-path check now resolves symlinked `~/.config`
   and `~/.local` the same way as mount sources and workdirs.** Affected
   1.0.0 through 1.1.0: with a symlinked `~/.config`, `~/.local` or
