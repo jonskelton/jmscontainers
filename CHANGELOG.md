@@ -6,7 +6,8 @@ Pi joins the shared base image, manifest mounts accept relative sources and
 targets, and a project can keep its host path inside the container.
 Containers run in the host's time zone, a rebuilt base now makes project
 images stale by exact image identity, and jms accepts any apple/container
-from 1.2.2 up instead of one exact version. This release also fixes a protected-path check on
+from 1.2.2 up instead of one exact version. `jms launch --no-network` runs a
+container with loopback only. This release also fixes a protected-path check on
 hosts with symlinked `~/.config` or `~/.local`, stops the examples from
 mounting host toolchain caches, documents which files a container can
 leave for host tools, and moves the license to MIT alone.
@@ -285,8 +286,12 @@ exact base identity and stage-alias exclusion changed the backend protocol
 for both runtimes, so it does not cover this release. The full macOS
 qualification guide procedure — `make test`, both integration tiers, the
 leak sweep, the removal race, and the README/Homebrew walkthrough through
-`jms build --base` that the apple/container pin change from 1.2.0 to 1.2.2
-requires — is still to run. It, the Linux integration tiers, and the
+`jms build --base` with the runtime Homebrew installs (1.5.0 as of
+2026-10-12) — is still to run.
+
+Integration tier A passed on 2026-10-12 on the release-preparation host
+above, on the developer's own account (UID 1000), without sudo, using the
+proxy-based egress check. It, the Linux integration tiers, and the
 clean-host install walkthrough are recorded here when they run.
 
 ## 1.1.0 — 2026-08-03
