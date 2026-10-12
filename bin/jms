@@ -238,7 +238,7 @@ class ContainerBackend:
     version_max = None                   # no ceiling: a newer container warns, never refuses
     # Backend-private policy datum, as on PodmanBackend: the newest
     # apple/container the macOS qualification ran green on.
-    _version_qualified = (1, 2, 2)
+    _version_qualified = (1, 5, 0)
 
     # -- Class A: pure serializers and parsers (no I/O of any kind) --
 

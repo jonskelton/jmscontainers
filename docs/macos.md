@@ -26,7 +26,7 @@ checks the service and starts it automatically.
 
 jms requires apple/container 1.2.2 or newer and accepts whatever version
 Homebrew installs at or above that. This jms release was qualified against
-apple/container 1.2.2. A newer 1.x runs silently; a 2.0 or later runs with
+apple/container 1.5.0. A newer 1.x runs silently; a 2.0 or later runs with
 a one-line warning that the combination is unqualified. If a newer runtime
 breaks something, jms fails with a parse or runtime error naming the
 command; report it, and pin Homebrew's `container` back meanwhile.

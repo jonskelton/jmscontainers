@@ -49,7 +49,7 @@ newer major is still accepted but prints a one-line warning to stderr,
 since it can change the flags, JSON, cleanup, user-namespace, and mount
 semantics the backends parse strictly.
 
-- **apple/container:** ≥ 1.2.2; qualified major 1.x, newest qualified 1.2.2.
+- **apple/container:** ≥ 1.2.2; qualified major 1.x, newest qualified 1.5.0.
 - **Podman:** ≥ 5.4 (Debian 13's packaged version); qualified major 5.x,
   newest qualified 5.4.2. Readiness validates
   `podman info`: local service, rootless mode, subordinate ID coverage of

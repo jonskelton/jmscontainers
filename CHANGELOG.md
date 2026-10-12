@@ -133,7 +133,8 @@ leave for host tools, and moves the license to MIT alone.
   today) every new macOS install failed at the version check until the user
   set `JMS_RUNTIME_ACCEPT`. jms now accepts 1.2.2 or newer, like the Podman
   backend: silent within the qualified major, a one-line stderr warning on
-  a newer major. `JMS_RUNTIME_ACCEPT` is gone; setting it does nothing.
+  a newer major. The newest qualified release is 1.5.0. `JMS_RUNTIME_ACCEPT`
+  is gone; setting it does nothing.
 
 - **The live macOS gate now exercises the shared launch contract.** Darwin no
   longer returns from tier A after the base build: ownership and identity,
@@ -147,15 +148,6 @@ leave for host tools, and moves the license to MIT alone.
   historical branch, fixed unit-test count, or already-closed 1.1.0 release
   issues; it now derives candidate facts at run time and defines the reusable
   interactive gate, clean-install walkthrough, and evidence record.
-
-- **The macOS qualification gate is green.** The 2026-08-14 Apple Silicon
-  run used macOS 26.5.2, apple/container 1.2.2, and Python 3.14.7. `make test`
-  passed 233 tests plus compilation and shellcheck; the full interactive
-  `scripts/integration.sh all` run, credential prompt, survivor set,
-  inherited time zone, preserved host path, leak sweep, and ten-iteration
-  removal race all passed with `JMS_RUNTIME_ACCEPT` unset. The candidate tree
-  is based on `e8aeb42`; rerun the gate if later runtime-affecting changes
-  land before release.
 
 - **Containers now run in the host's time zone.** The base image selects no
   zone, so every container labelled its instants UTC: the clock agreed with
@@ -280,14 +272,40 @@ test` passed, and `podman image inspect` of an absent ref exited 125 with
 | Rootless | yes |
 | Python | 3.13.5 |
 
-macOS: not yet qualified for this candidate. The 2026-08-14
-apple/container 1.2.2 gate above ran on a tree based on `e8aeb42`, before
-exact base identity and stage-alias exclusion changed the backend protocol
-for both runtimes, so it does not cover this release. The full macOS
-qualification guide procedure — `make test`, both integration tiers, the
-leak sweep, the removal race, and the README/Homebrew walkthrough through
-`jms build --base` with the runtime Homebrew installs (1.5.0 as of
-2026-10-12) — is still to run.
+macOS qualification ran on 2026-10-12 at candidate `a7dd855`, with
+apple/container upgraded in place from 1.2.2 to the 1.5.0 Homebrew ships and
+its service stopped at the start (jms started it). The commit recording this
+changes only `ContainerBackend._version_qualified` (1.2.2 to 1.5.0), the test
+that reads it, and documentation.
+
+| Dimension | Tested value |
+| --- | --- |
+| macOS | 27.0.1 (26A434), Darwin 27.0.0 |
+| Architecture | arm64 (Apple Silicon) |
+| apple/container | CLI and API server 1.5.0 (Homebrew) |
+| Python | 3.14.7 |
+| shellcheck | 0.11.0 |
+| Host time zone | America/Los_Angeles (PDT) |
+
+- `make test`: compilation, 311 unit tests, and shellcheck passed.
+- `scripts/integration.sh all` under `script -q` in Terminal.app: the
+  apple exact shared-base identity collision, tier A, and tier B passed,
+  with the credential prompt answered live, and the EXIT-trap leak sweep
+  was clean. Afterwards no integration-owned container or image remained.
+- Removal race: the ten-iteration appendix procedure passed (every
+  `jms clean` exited 0, no failed removal, no ref left, final clean exited
+  0). On 1.5.0 the background delete finished before `jms clean`
+  enumerated in all ten iterations, so a second ten-iteration pass delayed
+  the delete by 0.1 to 1.6 s. In two iterations the external delete
+  succeeded after enumeration and `jms clean` still reported the ref
+  removed and exited 0; every other ordering converged too.
+- The apple/container 1.2.2 fixtures still hold on 1.5.0: an absent-ref
+  `container image inspect` exited 1 with empty stdout and stderr
+  byte-identical to `apple-container-1.2.2-image-inspect-absent.stderr`, and
+  live `image inspect` and `image list` records have the fixtures' shape.
+- The README/Homebrew clean-account walkthrough through `jms build --base`
+  was not performed: as for the Linux fresh-account gate below, the
+  maintainer accepted the own-account run in its place for this release.
 
 Integration tiers A and B both passed on 2026-10-12 on the
 release-preparation host above, on the developer's own account (UID 1000)
@@ -295,8 +313,7 @@ under Python 3.15.0, without sudo; tier A used the proxy-based egress
 check. The release checklist's fresh-account (non-1000 UID, ssh
 login) run and clean-VM install walkthrough were not performed: the
 project has one user, and the maintainer accepted the own-account runs in
-their place for this release. It, the Linux integration tiers, and the
-clean-host install walkthrough are recorded here when they run.
+their place for this release.
 
 ## 1.1.0 — 2026-08-03
 

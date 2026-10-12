@@ -1677,7 +1677,7 @@ class RuntimeGateTests(unittest.TestCase):
             self.probe(b"container CLI version 2.0.0\n")
         warning = stderr.getvalue()
         self.assertIn("container 2.0.0 is newer", warning)
-        self.assertIn("1.2.2", warning)         # the qualified version, from code
+        self.assertIn("1.5.0", warning)         # the qualified version, from code
         self.assertIn("proceeding unqualified", warning)
 
     def test_runtime_json_rejects_invalid_payloads(self):
