@@ -3086,6 +3086,12 @@ class BaseBuildContextTests(unittest.TestCase):
         base = (root / "Containerfile").read_text()
         # A COPY/ADD here needs a matching `!` re-include in .containerignore.
         self.assertIsNone(re.search(r"^\s*(COPY|ADD)\s", base, re.M | re.I))
+        # .containerignore does not hide the context from a bind mount:
+        # RUN --mount=type=bind (the default type) sees the whole checkout,
+        # .git and gitignored files included.
+        joined = re.sub(r"\\\n", " ", base)        # fold line continuations
+        self.assertIsNone(re.search(r"^\s*RUN\b[^\n]*--mount", joined, re.M | re.I),
+                          "the base build context is the checkout; RUN --mount would expose it")
 
 
 class SupportVocabularyTests(unittest.TestCase):
