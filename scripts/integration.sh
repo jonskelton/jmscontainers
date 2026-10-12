@@ -65,7 +65,7 @@ egress_denied() {
     printf 'unqualified-search-registries = ["docker.io"]\n' > "$work/registries.conf"
     CONTAINERS_REGISTRIES_CONF="$work/registries.conf" \
         HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 \
-        https_proxy=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 NO_PROXY= no_proxy= \
+        https_proxy=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 NO_PROXY='' no_proxy='' \
         "$@"
 }
 
