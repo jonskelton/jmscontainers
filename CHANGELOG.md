@@ -289,9 +289,10 @@ leak sweep, the removal race, and the README/Homebrew walkthrough through
 `jms build --base` with the runtime Homebrew installs (1.5.0 as of
 2026-10-12) — is still to run.
 
-Integration tier A passed on 2026-10-12 on the release-preparation host
-above, on the developer's own account (UID 1000), without sudo, using the
-proxy-based egress check. It, the Linux integration tiers, and the
+Integration tiers A and B both passed on 2026-10-12 on the
+release-preparation host above, on the developer's own account (UID 1000)
+under Python 3.15.0, without sudo; tier A used the proxy-based egress
+check. It, the Linux integration tiers, and the
 clean-host install walkthrough are recorded here when they run.
 
 ## 1.1.0 — 2026-08-03
