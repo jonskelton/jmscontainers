@@ -292,7 +292,10 @@ leak sweep, the removal race, and the README/Homebrew walkthrough through
 Integration tiers A and B both passed on 2026-10-12 on the
 release-preparation host above, on the developer's own account (UID 1000)
 under Python 3.15.0, without sudo; tier A used the proxy-based egress
-check. It, the Linux integration tiers, and the
+check. The release checklist's fresh-account (non-1000 UID, ssh
+login) run and clean-VM install walkthrough were not performed: the
+project has one user, and the maintainer accepted the own-account runs in
+their place for this release. It, the Linux integration tiers, and the
 clean-host install walkthrough are recorded here when they run.
 
 ## 1.1.0 — 2026-08-03
