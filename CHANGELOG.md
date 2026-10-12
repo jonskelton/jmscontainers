@@ -5,8 +5,8 @@
 Pi joins the shared base image, manifest mounts accept relative sources and
 targets, and a project can keep its host path inside the container.
 Containers run in the host's time zone, a rebuilt base now makes project
-images stale by exact image identity, and apple/container 1.2.2 is the
-qualified macOS runtime. This release also fixes a protected-path check on
+images stale by exact image identity, and jms accepts any apple/container
+from 1.2.2 up instead of one exact version. This release also fixes a protected-path check on
 hosts with symlinked `~/.config` or `~/.local`, stops the examples from
 mounting host toolchain caches, documents which files a container can
 leave for host tools, and moves the license to MIT alone.
@@ -121,11 +121,12 @@ leave for host tools, and moves the license to MIT alone.
   base in a `FROM` line (external or `ARG`-indirected bases) keep the
   fingerprint-only rule, and a missing local base never forces a rebuild.
 
-- **apple/container 1.2.2 is qualified on macOS.** The exact fail-closed pin
-  now matches the release installed by the documented Homebrew command, so a
-  new installation reaches `jms build --base` without
-  `JMS_RUNTIME_ACCEPT`. Later apple/container versions still require an exact
-  one-invocation override until they are qualified.
+- **apple/container has a minimum version instead of an exact pin.** jms
+  1.1.0 accepted only 1.2.0, so once Homebrew moved on (it ships 1.5.0
+  today) every new macOS install failed at the version check until the user
+  set `JMS_RUNTIME_ACCEPT`. jms now accepts 1.2.2 or newer, like the Podman
+  backend: silent within the qualified major, a one-line stderr warning on
+  a newer major. `JMS_RUNTIME_ACCEPT` is gone; setting it does nothing.
 
 - **The live macOS gate now exercises the shared launch contract.** Darwin no
   longer returns from tier A after the base build: ownership and identity,

@@ -233,8 +233,11 @@ class ContainerBackend:
     name = "container"
     exe = "container"
     install_hint = "install it with: brew install container"
-    version_min = (1, 2, 2)              # exact pin: min == max
-    version_max = (1, 2, 2)
+    version_min = (1, 2, 2)              # the oldest release qualified
+    version_max = None                   # no ceiling: a newer container warns, never refuses
+    # Backend-private policy datum, as on PodmanBackend: the newest
+    # apple/container the macOS qualification ran green on.
+    _version_qualified = (1, 2, 2)
 
     # -- Class A: pure serializers and parsers (no I/O of any kind) --
 
@@ -297,16 +300,19 @@ class ContainerBackend:
     #    module-level runtime_run/runtime_json, looked up at call time) --
 
     def validate_version(self, parsed, first_line):
+        # Floor-only policy, matching PodmanBackend: Homebrew carries one
+        # version, so a ceiling refused every fresh install once upstream
+        # moved past the pin.  A newer major still warns, because it can
+        # change the CLI flags and JSON this backend parses strictly; drift
+        # within a major surfaces as those parsers' own errors.
         if parsed < self.version_min:
-            fail("container runtime is too old; install container %s" % ".".join(map(str, self.version_min)))
-        if parsed > self.version_max:
-            parsed_text = ".".join(map(str, parsed))
-            max_text = ".".join(map(str, self.version_max))
-            if os.environ.get("JMS_RUNTIME_ACCEPT") == parsed_text:
-                print("warning: container %s is not qualified against jms %s (newest qualified: %s); proceeding per JMS_RUNTIME_ACCEPT"
-                      % (parsed_text, __version__, max_text), file=sys.stderr)
-            else:
-                fail("container %s is newer than the newest runtime this jms release is qualified against (%s); upgrade jms, install container %s, or set JMS_RUNTIME_ACCEPT=%s to accept it for one invocation" % (parsed_text, max_text, max_text, parsed_text))
+            fail("container runtime is too old; jms requires container %s or newer"
+                 % ".".join(map(str, self.version_min)))
+        if parsed[0] > self._version_qualified[0]:
+            print("warning: container %s is newer than the container %d.x series jms %s is "
+                  "qualified against (newest qualified: %s); proceeding unqualified"
+                  % (".".join(map(str, parsed)), self._version_qualified[0], __version__,
+                     ".".join(map(str, self._version_qualified))), file=sys.stderr)
 
     def ensure_started(self):
         probe = runtime_run([self.exe, "system", "status"], check=False)
@@ -573,8 +579,7 @@ class PodmanBackend:
         # strand the user.  A new major is still not silent: it changes
         # cleanup, user-namespace, and mount semantics this backend parses
         # strictly, so it warns.  Patch and minor bumps within the qualified
-        # major stay quiet.  JMS_RUNTIME_ACCEPT is meaningful only for
-        # apple/container and has no effect here.
+        # major stay quiet.
         if parsed < self.version_min:
             fail("podman runtime is too old; jms requires podman %s or newer"
                  % ".".join(map(str, self.version_min)))

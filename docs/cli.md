@@ -41,19 +41,17 @@ platforms other than Linux and macOS, uid 0 on Linux, and remote Podman
 services (`host.serviceIsRemote`, checked at readiness). Any other local
 rootless Linux configuration is unqualified but allowed, with no warning.
 
-Qualification policy differs deliberately per runtime:
+Both runtimes have a minimum version and no ceiling: nothing at or above
+the floor is ever refused, because each runtime arrives from a package
+manager (Homebrew or apt) that carries one version, and an upgrade there
+must not strand you. Acceptance is silent within the qualified major; a
+newer major is still accepted but prints a one-line warning to stderr,
+since it can change the flags, JSON, cleanup, user-namespace, and mount
+semantics the backends parse strictly.
 
-- **apple/container** is pinned to one exact qualified version (a
-  single-channel Homebrew install); `JMS_RUNTIME_ACCEPT` can admit one
-  newer version for one invocation.
-- **Podman** has a minimum only (≥ 5.4, Debian 13's packaged version) and no
-  ceiling: nothing at or above the floor is ever refused, because Podman is
-  OS-packaged and a distribution upgrade must not strand you. Acceptance is
-  silent within the qualified major (5.x, newest qualified 5.4.2); a newer
-  major is still accepted but prints a one-line warning to stderr, since it
-  can change the cleanup, user-namespace, and mount semantics this backend
-  parses strictly. `JMS_RUNTIME_ACCEPT` has no effect on this backend — it
-  neither suppresses the warning nor is needed to proceed. Readiness validates
+- **apple/container:** ≥ 1.2.2; qualified major 1.x, newest qualified 1.2.2.
+- **Podman:** ≥ 5.4 (Debian 13's packaged version); qualified major 5.x,
+  newest qualified 5.4.2. Readiness validates
   `podman info`: local service, rootless mode, subordinate ID coverage of
   at least 65536 ids per map, and readable storage metadata.
 
@@ -257,13 +255,6 @@ global sweep.
   `/etc/timezone` are tried in that order. Setting it changes only which zone
   is inherited — it is never passed through unexamined, and a manifest
   `[env] TZ` overrides it.
-- `JMS_RUNTIME_ACCEPT` (apple/container only): accept one exact `container`
-  version newer than the newest runtime this jms release is qualified
-  against, for one invocation, with a "not qualified" warning (e.g.
-  `JMS_RUNTIME_ACCEPT=1.3.0`). Use it to keep working (including
-  `jms clean`) after Homebrew upgrades `container` before a matching jms
-  release ships. The Podman backend is min-only qualified and ignores this
-  variable.
 
 ## Exit codes
 

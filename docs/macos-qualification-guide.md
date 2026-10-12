@@ -40,9 +40,10 @@ date +%Z
 ```
 
 The worktree must contain exactly the candidate changes, Python must meet the
-README floor, and `container --version` must equal both exact
-`ContainerBackend.version_min` and `version_max` values in `bin/jms`. Do not
-set `JMS_RUNTIME_ACCEPT`: an override proves compatibility, not qualification.
+README floor, and `container --version` must be the version Homebrew
+currently installs. After a green run, set `ContainerBackend._version_qualified`
+in `bin/jms` to that version; `version_min` moves only when jms starts
+depending on something an older runtime lacks.
 jms starts a stopped apple/container service itself, so a stopped service is
 valid initial state and should be recorded.
 
@@ -82,8 +83,7 @@ valid initial state and should be recorded.
 
 4. On a clean macOS host or clean qualification account, follow the README
    Homebrew installation path verbatim through `jms build --base`. The command
-   must succeed with the Homebrew-provided qualified runtime and without
-   `JMS_RUNTIME_ACCEPT`. Record whether jms successfully starts the runtime
+   must succeed with the Homebrew-provided runtime. Record whether jms successfully starts the runtime
    service when the walkthrough begins with it stopped.
 
 ## Completion and cleanup

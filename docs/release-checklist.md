@@ -25,9 +25,9 @@
   weaker-than-VM wording, reserved namespace and concurrency limitations)
   is release-blocking (R8.4).
 - Run `make integration` on a macOS host with the qualified apple/container
-  release when the runtime interaction surface changed; keep the
-  `ContainerBackend` version pin matching the newest release it passed
-  against. The first macOS run of the multi-runtime release must also
+  release when the runtime interaction surface changed, or when Homebrew
+  ships a newer apple/container than `ContainerBackend._version_qualified`;
+  set that value to the newest release the run passed against. The first macOS run of the multi-runtime release must also
   determine apple/container's delete-by-ref cascade behavior via the
   survivor-set acceptance run (automated in integration tier B) — a
   discovered cascade is a qualification failure to resolve before release,
@@ -46,9 +46,9 @@
 - Perform the clean-host install walkthrough: a fresh Debian 13 VM plus a
   newly created user follows the README install instructions verbatim,
   recording date, Podman version, architecture, and outcome.
-- When the apple/container pin changes, perform the macOS README/Homebrew
-  walkthrough through `jms build --base` with the qualified runtime and no
-  `JMS_RUNTIME_ACCEPT`, recording the date, candidate commit, macOS version,
+- When `ContainerBackend._version_qualified` changes, perform the macOS
+  README/Homebrew walkthrough through `jms build --base` with the runtime
+  Homebrew installs, recording the date, candidate commit, macOS version,
   architecture, Python version, runtime version, and outcome.
 - For each qualified Podman version, capture `podman image inspect` of an
   absent ref live (exit status, stdout, stderr) and compare it with
