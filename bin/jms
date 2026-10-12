@@ -221,6 +221,7 @@ class LaunchPlan:
                                          # then inherited TZ and manifest env merged and sorted together
     mounts: tuple                        # ordered (source, target, readonly); project mount first
     command: tuple                       # entry[1:] + extra argv
+    network: bool = True                 # False: run with no network (--no-network)
 
     def __post_init__(self):
         if self.user not in ("isolation", "root"):
@@ -292,6 +293,8 @@ class ContainerBackend:
             cmd += ["--env", key + "=" + value]
         for source, target, readonly in mounts:
             cmd += ["--mount", self.mount_argument(source, target, readonly)]
+        if not plan.network:
+            cmd += ["--network", "none"]
         cmd.append(plan.image)
         cmd += list(plan.command)
         return cmd
@@ -567,6 +570,8 @@ class PodmanBackend:
             cmd += ["--env", key + "=" + value]
         for source, target, readonly in mounts:
             cmd += ["--mount", self.mount_argument(source, target, readonly)]
+        if not plan.network:
+            cmd += ["--network", "none"]
         cmd.append(plan.image)
         cmd += list(plan.command)
         return cmd
@@ -2055,7 +2060,8 @@ def launch_plan(workdir: bytes, data, args, image: str, auth: bool) -> LaunchPla
                       workdir=container_workdir, entrypoint=entry[0], image=image,
                       labels=(("jms.project", pid), ("jms.container", "launch")),
                       env=tuple(env), mounts=tuple(mounts),
-                      command=tuple(entry[1:] + args.extra))
+                      command=tuple(entry[1:] + args.extra),
+                      network=not getattr(args, "no_network", False))
 
 
 def cmd_build(args):
@@ -2372,7 +2378,8 @@ def parser():
     l.add_argument("-w", "--workdir", help=WORKDIR_HELP)
     flags(l, ("--trust", "one-shot build/run approval for this invocation; never grants credentials"),
           ("--auth", "mount agent state (asks for the credential grant if not already given)"),
-          ("--no-auth", NO_AUTH_HELP), ("--no-cache", NO_CACHE_HELP))
+          ("--no-auth", NO_AUTH_HELP), ("--no-cache", NO_CACHE_HELP),
+          ("--no-network", "run the container with no network; a project image build still uses it"))
     l.add_argument("-r", "--root", action="store_true", help="run as root instead of the isolation user")
     l.add_argument("-b", "--bin", help="entry program to run instead of the configured entry")
     l.add_argument("-n", "--name", dest="container_name", metavar="NAME", help="container name")

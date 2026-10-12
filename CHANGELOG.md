@@ -121,6 +121,12 @@ leave for host tools, and moves the license to MIT alone.
   base in a `FROM` line (external or `ARG`-indirected bases) keep the
   fingerprint-only rule, and a missing local base never forces a rebuild.
 
+- **`jms launch --no-network` runs a container with loopback only.** It
+  maps to `--network none` on both runtimes and covers the run, not a
+  project image build that the launch triggers. Credential mounting is
+  unchanged, so pair it with `--no-auth` for offline work on untrusted
+  code.
+
 - **apple/container has a minimum version instead of an exact pin.** jms
   1.1.0 accepted only 1.2.0, so once Homebrew moved on (it ships 1.5.0
   today) every new macOS install failed at the version check until the user

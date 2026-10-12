@@ -4,7 +4,7 @@
 jms build   [-w|--workdir PATH] [--base] [--trust] [--no-auth]
             [--no-cache] [--pull]
 jms launch  [-w|--workdir PATH | PATH] [--trust] [--auth|--no-auth]
-            [--no-cache] [-r|--root] [-b|--bin PROGRAM]
+            [--no-cache] [--no-network] [-r|--root] [-b|--bin PROGRAM]
             [-n|--name NAME] [-- ARGS...]
 jms inspect [-w|--workdir PATH | PATH]
 jms trust   [PATH] [--fingerprint HEX64] [--auth|--no-auth]
@@ -140,6 +140,13 @@ from `/home/isolation` to `/root`. Manifest mount targets are never rewritten:
 they are re-checked against the effective home, so a manifest mount aimed at
 `/home/isolation/...` is rejected under `--root` rather than silently landing
 somewhere else.
+
+`--no-network` runs the container with no network: only loopback exists
+inside it (`--network none` on both runtimes). It applies to the run only;
+a project image that needs building is still built with the network, so
+run `jms build` first if that matters. It does not change credential
+mounting: agents that need their cloud service will not work, so pair it
+with `--no-auth` for offline work on code you do not trust.
 
 `--bin` becomes the runtime entrypoint verbatim. The base image ships
 full-permission agent launchers — `yolo-claude`, `yolo-codex`,

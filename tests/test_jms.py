@@ -1807,6 +1807,17 @@ class LaunchTests(unittest.TestCase):
             self.assertIn(JMS.BASE, argv)
             self.assertEqual(argv[argv.index("--workdir") + 1], "/work")
 
+    def test_no_network_reaches_the_run_argv(self):
+        with sandbox() as home:
+            plain = home / "git" / "plain"
+            plain.mkdir()
+            images = {JMS.BASE: image_record(JMS.BASE)}
+            argv = self.launch_argv(home, ["launch", "--no-auth", "-w", str(plain)], images=images)
+            self.assertNotIn("--network", argv)
+            argv = self.launch_argv(home, ["launch", "--no-auth", "--no-network", "-w", str(plain)],
+                                    images=images)
+            self.assertEqual(argv[argv.index("--network") + 1], "none")
+
     def test_shell_config_mounts_read_only_for_both_users(self):
         with sandbox() as home:
             plain = home / "git" / "plain"
@@ -2619,6 +2630,14 @@ class LaunchArgvGoldenTests(unittest.TestCase):
             self.assertEqual(argv[mount_positions[0] + 1], mount_prefix + "/tmp/proj,target=/work")
             self.assertEqual(argv[mount_positions[-1] + 1],
                              mount_prefix + "/tmp/agents/claude,target=/home/isolation/.claude")
+
+    def test_no_network_launch_argv_golden(self):
+        # Both runtimes spell it the same; the option sits after the mounts,
+        # just before the image, and is absent unless asked for.
+        for backend in (JMS.ContainerBackend(), JMS.PodmanBackend()):
+            self.assertNotIn("--network", backend.run_argv(golden_plan()))
+            argv = backend.run_argv(golden_plan(network=False))
+            self.assertEqual(argv[-4:], ["--network", "none", "img:1", "-l"])
 
     def test_no_unmask_in_any_argv(self):
         for plan in (golden_plan(), golden_plan(user="root")):
