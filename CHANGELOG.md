@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.0 — 2026-10-09
+## 1.2.0 — 2026-10-12
 
 Pi joins the shared base image, manifest mounts accept relative sources and
 targets, and a project can keep its host path inside the container.

@@ -1,7 +1,7 @@
 # Proposal: Exclude earlier stage aliases from shared-base detection
 
 Status: Accepted and implemented on 2026-08-26; released in 1.2.0
-(2026-10-09).
+(2026-10-12).
 Target: 1.2.0
 Related change: `9b55c6d` (Base staleness rebuild)
 
