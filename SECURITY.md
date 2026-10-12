@@ -6,7 +6,9 @@
 threat model. jmscontainers fingerprints its exact contents and requires an
 explicit build/run grant before the project can be built or launched; the
 fingerprint is re-checked immediately before the build and a changed
-fingerprint requires fresh consent. For a project definition, credential
+fingerprint requires fresh consent. The runtime reads `COPY` sources
+throughout the build, so a process that can write the checkout can still
+change the definition while a build runs. For a project definition, credential
 mounting is a second, distinct grant and defaults to no. A launch without a
 project definition uses the shared base and mounts agent state read-write
 without asking; `--no-auth` suppresses that mount. In non-interactive
@@ -166,9 +168,12 @@ The container's terminal output is not filtered. `jms launch` hands your
 terminal to the runtime, so escape sequences a container prints reach the
 host terminal as-is: window-title changes, hyperlinks whose text and target
 differ, and — on terminals (or tmux configurations) that honor OSC 52 —
-writes to the host clipboard. Treat text copied from or pasted after a
-container session as container-supplied, and check it before running it in a
-host shell.
+writes to the host clipboard. In tmux, keep `set-clipboard` at its default
+`external` (or `off`): `on` lets any pane, including a container session,
+set the host clipboard. Turn off your terminal's own "allow applications to
+write the clipboard" setting (OSC 52) if it has one. Treat text copied from
+or pasted after a container session as container-supplied, and check it
+before running it in a host shell.
 
 Do not put secrets in Containerfiles, manifests, or files under
 `.jmscontainer/`: the whole directory is the build context, so build inputs
