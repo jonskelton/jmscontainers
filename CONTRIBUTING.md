@@ -13,7 +13,7 @@ make test
 It runs the unit tests and shell lint against the fake backends, so it needs
 no container runtime and no particular host: the apple/container and Podman
 surfaces are both exercised by fakes. PR CI runs exactly that, on Ubuntu
-(Python 3.11 and 3.14) and on macOS.
+(Python 3.11, 3.14 and 3.15) and on macOS.
 
 Real-runtime checks are opt-in and intentionally not part of PR CI. Run
 `make integration` — or `scripts/integration.sh a|b|all` for one tier — on
