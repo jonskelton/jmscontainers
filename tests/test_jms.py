@@ -1,6 +1,7 @@
 import contextlib
 import datetime
 import importlib.machinery
+import importlib.util
 import hashlib
 import io
 import json
@@ -21,9 +22,19 @@ import unittest
 from unittest import mock
 
 
-JMS = importlib.machinery.SourceFileLoader(
-    "jms", str(pathlib.Path(__file__).parents[1] / "bin" / "jms")
-).load_module()
+def load_source(name, path):
+    # Loader.load_module() was removed in 3.15.  The explicit loader is needed
+    # because bin/jms has no .py suffix for spec_from_file_location to match.
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    module = importlib.util.module_from_spec(
+        importlib.util.spec_from_loader(name, loader)
+    )
+    sys.modules[name] = module
+    loader.exec_module(module)
+    return module
+
+
+JMS = load_source("jms", pathlib.Path(__file__).parents[1] / "bin" / "jms")
 
 # Golden trust fingerprints for the fixed trees built by golden_tree() and a
 # single default Containerfile.  A change here is a breaking consent change.
@@ -3146,9 +3157,9 @@ class MissingBaseHintTests(unittest.TestCase):
         self.assertNotIn(JMS.MISSING_BASE_NOTE, output)
 
 
-SWEEP = importlib.machinery.SourceFileLoader(
-    "leak_sweep", str(pathlib.Path(__file__).parents[1] / "scripts" / "leak_sweep.py")
-).load_module()
+SWEEP = load_source(
+    "leak_sweep", pathlib.Path(__file__).parents[1] / "scripts" / "leak_sweep.py"
+)
 
 EPOCH_2026 = int(datetime.datetime.fromisoformat("2026-01-01T00:00:00Z").timestamp())
 
