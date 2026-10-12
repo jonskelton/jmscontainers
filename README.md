@@ -32,7 +32,7 @@ export PATH="$HOME/.local/bin:$PATH"
 jms build --base
 ```
 
-`jms` is qualified against apple/container 1.2.2 and starts its service when
+`jms` requires apple/container 1.2.2 or newer and starts its service when
 needed. See the [macOS guide](docs/macos.md) for PATH setup, version handling,
 and platform notes.
 
@@ -95,9 +95,11 @@ shell to remain after the agent exits.
    when an agent reviews a pull request or other code you did not write.
 3. **Mounted data is not protected from the agent.** A container can change
    the project, including `.git` and other files your host tools later read
-   or run, and can read or change any agent credentials mounted into it.
-   macOS uses a VM boundary; Linux uses the weaker rootless user-namespace
-   boundary.
+   or run, and can read or change any agent credentials and configuration
+   mounted into it. That agent state is one pool shared by every launch
+   that mounts it. macOS uses a VM boundary; Linux uses the weaker rootless
+   user-namespace boundary. See
+   [what a container can leave for the host](SECURITY.md#files-a-container-can-leave-for-the-host).
 
 Read [SECURITY.md](SECURITY.md) before granting credential access to a
 third-party project.

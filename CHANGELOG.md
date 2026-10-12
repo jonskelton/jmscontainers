@@ -1,6 +1,34 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-10-12
+
+Pi joins the shared base image, manifest mounts accept relative sources and
+targets, and a project can keep its host path inside the container.
+Containers run in the host's time zone, a rebuilt base now makes project
+images stale by exact image identity, and jms accepts any apple/container
+from 1.2.2 up instead of one exact version. `jms launch --no-network` runs a
+container with loopback only. This release also fixes a protected-path check on
+hosts with symlinked `~/.config` or `~/.local`, stops the examples from
+mounting host toolchain caches, documents which files a container can
+leave for host tools, and moves the license to MIT alone.
+
+- **The examples no longer mount host toolchain caches.** The go, rust and
+  data-science examples mounted the host's own `~/.cache/go-build`,
+  `~/go/pkg/mod`, `~/.cargo/registry` and `~/.cache/pip` read-write, so a
+  container could change code that host builds of every project later
+  used. They now mount private directories under
+  `~/.cache/jms-examples/<example>/`, which no host toolchain reads; create
+  them first as `examples/README.md` shows. The odin example drops its
+  `~/.cache/odin` mount, which it did not need. A copy of an example made
+  before this change keeps its old mounts until edited.
+
+- **SECURITY.md names the files a container can leave for the host.** A
+  new section lists the host-executed channels in a read-write checkout
+  (`.git/config`, `.git/hooks/`, nested repositories, `.vscode/`,
+  `.claude/`, `.mcp.json`, `CLAUDE.md`, `AGENTS.md`, build files), advises
+  inspecting them with non-git tools after an untrusted session, and states
+  that executable agent configuration in the shared agent-state pool is
+  shared by every project granted credentials.
 
 - **Security: the protected-path check now resolves symlinked `~/.config`
   and `~/.local` the same way as mount sources and workdirs.** Affected
@@ -94,11 +122,19 @@
   base in a `FROM` line (external or `ARG`-indirected bases) keep the
   fingerprint-only rule, and a missing local base never forces a rebuild.
 
-- **apple/container 1.2.2 is qualified on macOS.** The exact fail-closed pin
-  now matches the release installed by the documented Homebrew command, so a
-  new installation reaches `jms build --base` without
-  `JMS_RUNTIME_ACCEPT`. Later apple/container versions still require an exact
-  one-invocation override until they are qualified.
+- **`jms launch --no-network` runs a container with loopback only.** It
+  maps to `--network none` on both runtimes and covers the run, not a
+  project image build that the launch triggers. Credential mounting is
+  unchanged, so pair it with `--no-auth` for offline work on untrusted
+  code.
+
+- **apple/container has a minimum version instead of an exact pin.** jms
+  1.1.0 accepted only 1.2.0, so once Homebrew moved on (it ships 1.5.0
+  today) every new macOS install failed at the version check until the user
+  set `JMS_RUNTIME_ACCEPT`. jms now accepts 1.2.2 or newer, like the Podman
+  backend: silent within the qualified major, a one-line stderr warning on
+  a newer major. The newest qualified release is 1.5.0. `JMS_RUNTIME_ACCEPT`
+  is gone; setting it does nothing.
 
 - **The live macOS gate now exercises the shared launch contract.** Darwin no
   longer returns from tier A after the base build: ownership and identity,
@@ -112,15 +148,6 @@
   historical branch, fixed unit-test count, or already-closed 1.1.0 release
   issues; it now derives candidate facts at run time and defines the reusable
   interactive gate, clean-install walkthrough, and evidence record.
-
-- **The macOS qualification gate is green.** The 2026-08-14 Apple Silicon
-  run used macOS 26.5.2, apple/container 1.2.2, and Python 3.14.7. `make test`
-  passed 233 tests plus compilation and shellcheck; the full interactive
-  `scripts/integration.sh all` run, credential prompt, survivor set,
-  inherited time zone, preserved host path, leak sweep, and ten-iteration
-  removal race all passed with `JMS_RUNTIME_ACCEPT` unset. The candidate tree
-  is based on `e8aeb42`; rerun the gate if later runtime-affecting changes
-  land before release.
 
 - **Containers now run in the host's time zone.** The base image selects no
   zone, so every container labelled its instants UTC: the clock agreed with
@@ -224,6 +251,69 @@
   the terms those tags shipped under; the Apache-2.0 option is simply no
   longer offered going forward. Done now because the project has no install
   base.
+
+### Qualification
+
+Linux matrix of the release-preparation host (2026-10-09). On it, `make
+test` passed, and `podman image inspect` of an absent ref exited 125 with
+`[]` on stdout and a stderr byte-identical to
+`tests/fixtures/podman-5.4.2-image-inspect-absent.stderr`.
+
+| Dimension | Tested value |
+| --- | --- |
+| Podman | 5.4.2 |
+| Architecture | amd64 (`x86_64`) |
+| Kernel | 6.12.107+deb13-amd64 |
+| Distribution | Debian GNU/Linux 13 (trixie) |
+| cgroup | v2, `systemd` manager |
+| OCI runtime | crun 1.21 |
+| Storage driver | `overlay` (extfs backing, native overlay diff) |
+| Network backend | netavark 1.14.0, aardvark-dns 1.14.0, pasta (passt 0.0~git20250503.587980c) |
+| Rootless | yes |
+| Python | 3.13.5 |
+
+macOS qualification ran on 2026-10-12 at candidate `a7dd855`, with
+apple/container upgraded in place from 1.2.2 to the 1.5.0 Homebrew ships and
+its service stopped at the start (jms started it). The commit recording this
+changes only `ContainerBackend._version_qualified` (1.2.2 to 1.5.0), the test
+that reads it, and documentation.
+
+| Dimension | Tested value |
+| --- | --- |
+| macOS | 27.0.1 (26A434), Darwin 27.0.0 |
+| Architecture | arm64 (Apple Silicon) |
+| apple/container | CLI and API server 1.5.0 (Homebrew) |
+| Python | 3.14.7 |
+| shellcheck | 0.11.0 |
+| Host time zone | America/Los_Angeles (PDT) |
+
+- `make test`: compilation, 311 unit tests, and shellcheck passed.
+- `scripts/integration.sh all` under `script -q` in Terminal.app: the
+  apple exact shared-base identity collision, tier A, and tier B passed,
+  with the credential prompt answered live, and the EXIT-trap leak sweep
+  was clean. Afterwards no integration-owned container or image remained.
+- Removal race: the ten-iteration appendix procedure passed (every
+  `jms clean` exited 0, no failed removal, no ref left, final clean exited
+  0). On 1.5.0 the background delete finished before `jms clean`
+  enumerated in all ten iterations, so a second ten-iteration pass delayed
+  the delete by 0.1 to 1.6 s. In two iterations the external delete
+  succeeded after enumeration and `jms clean` still reported the ref
+  removed and exited 0; every other ordering converged too.
+- The apple/container 1.2.2 fixtures still hold on 1.5.0: an absent-ref
+  `container image inspect` exited 1 with empty stdout and stderr
+  byte-identical to `apple-container-1.2.2-image-inspect-absent.stderr`, and
+  live `image inspect` and `image list` records have the fixtures' shape.
+- The README/Homebrew clean-account walkthrough through `jms build --base`
+  was not performed: as for the Linux fresh-account gate below, the
+  maintainer accepted the own-account run in its place for this release.
+
+Integration tiers A and B both passed on 2026-10-12 on the
+release-preparation host above, on the developer's own account (UID 1000)
+under Python 3.15.0, without sudo; tier A used the proxy-based egress
+check. The release checklist's fresh-account (non-1000 UID, ssh
+login) run and clean-VM install walkthrough were not performed: the
+project has one user, and the maintainer accepted the own-account runs in
+their place for this release.
 
 ## 1.1.0 — 2026-08-03
 

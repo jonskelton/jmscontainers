@@ -71,8 +71,7 @@ def sandbox():
         checkout = pathlib.Path(tmp) / "checkout"
         checkout.mkdir()
         env = {key: value for key, value in os.environ.items()
-               if key not in ("JMS_TRUST_FINGERPRINT", "JMS_RUNTIME_ACCEPT",
-                              "JMS_PROJECT_ROOTS")}
+               if key not in ("JMS_TRUST_FINGERPRINT", "JMS_PROJECT_ROOTS")}
         env["HOME"] = str(home)
         with mock.patch.dict(os.environ, env, clear=True), \
              mock.patch.object(JMS, "checkout_root",
@@ -1662,29 +1661,24 @@ class RuntimeGateTests(unittest.TestCase):
         self.probe(b"container CLI version 1.2.2 (build: release, commit: x)\n")
         with self.assertRaisesRegex(JMS.JMSException, "too old"):
             self.probe(b"container CLI version 1.2.1\n")
-        with self.assertRaisesRegex(JMS.JMSException, "newer than the newest runtime"):
-            self.probe(b"container CLI version 1.3.0\n")
         with self.assertRaisesRegex(JMS.JMSException, "cannot parse"):
             self.probe(b"something else\n")
         with self.assertRaisesRegex(JMS.JMSException, "cannot parse"):
             self.probe(b"container CLI version 1.2.2\n", returncode=1)
 
-    def test_runtime_accept_pin_admits_one_exact_newer_version(self):
-        newer = b"container CLI version 1.3.0\n"
-        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.3.0"}):
-            stderr = io.StringIO()
-            with contextlib.redirect_stderr(stderr):
-                self.probe(newer)
-            self.assertIn("not qualified", stderr.getvalue())
-            self.assertIn("JMS_RUNTIME_ACCEPT", stderr.getvalue())
-        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.4.0"}):
-            with self.assertRaisesRegex(JMS.JMSException, "newer than the newest runtime"):
-                self.probe(newer)
-        with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "1.2.1"}):
-            with self.assertRaisesRegex(JMS.JMSException, "too old"):
-                self.probe(b"container CLI version 1.2.1\n")
-        with self.assertRaisesRegex(JMS.JMSException, "JMS_RUNTIME_ACCEPT=1.3.0"):
-            self.probe(newer)
+    def test_newer_container_is_accepted_and_warns_only_on_a_new_major(self):
+        # Homebrew ships one version, so a ceiling stranded every fresh
+        # install once upstream moved past it (1.5.0 vs the 1.2.2 pin).
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.probe(b"container CLI version 1.5.0 (build: release)\n")
+        self.assertEqual(stderr.getvalue(), "")
+        with contextlib.redirect_stderr(stderr):
+            self.probe(b"container CLI version 2.0.0\n")
+        warning = stderr.getvalue()
+        self.assertIn("container 2.0.0 is newer", warning)
+        self.assertIn("1.5.0", warning)         # the qualified version, from code
+        self.assertIn("proceeding unqualified", warning)
 
     def test_runtime_json_rejects_invalid_payloads(self):
         with fake_runtime() as runtime:
@@ -1812,6 +1806,17 @@ class LaunchTests(unittest.TestCase):
                                     images={JMS.BASE: image_record(JMS.BASE)})
             self.assertIn(JMS.BASE, argv)
             self.assertEqual(argv[argv.index("--workdir") + 1], "/work")
+
+    def test_no_network_reaches_the_run_argv(self):
+        with sandbox() as home:
+            plain = home / "git" / "plain"
+            plain.mkdir()
+            images = {JMS.BASE: image_record(JMS.BASE)}
+            argv = self.launch_argv(home, ["launch", "--no-auth", "-w", str(plain)], images=images)
+            self.assertNotIn("--network", argv)
+            argv = self.launch_argv(home, ["launch", "--no-auth", "--no-network", "-w", str(plain)],
+                                    images=images)
+            self.assertEqual(argv[argv.index("--network") + 1], "none")
 
     def test_shell_config_mounts_read_only_for_both_users(self):
         with sandbox() as home:
@@ -2626,6 +2631,14 @@ class LaunchArgvGoldenTests(unittest.TestCase):
             self.assertEqual(argv[mount_positions[-1] + 1],
                              mount_prefix + "/tmp/agents/claude,target=/home/isolation/.claude")
 
+    def test_no_network_launch_argv_golden(self):
+        # Both runtimes spell it the same; the option sits after the mounts,
+        # just before the image, and is absent unless asked for.
+        for backend in (JMS.ContainerBackend(), JMS.PodmanBackend()):
+            self.assertNotIn("--network", backend.run_argv(golden_plan()))
+            argv = backend.run_argv(golden_plan(network=False))
+            self.assertEqual(argv[-4:], ["--network", "none", "img:1", "-l"])
+
     def test_no_unmask_in_any_argv(self):
         for plan in (golden_plan(), golden_plan(user="root")):
             for backend in (JMS.ContainerBackend(), JMS.PodmanBackend()):
@@ -2965,13 +2978,6 @@ class PodmanReadinessTests(unittest.TestCase):
         self.assertIn("podman 6.0.0 is newer", warning)
         self.assertIn("5.4.2", warning)         # the qualified version, from code
         self.assertIn("proceeding unqualified", warning)
-        # JMS_RUNTIME_ACCEPT is meaningful only for apple/container: it
-        # neither suppresses this warning nor is required to proceed.
-        stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr):
-            with mock.patch.dict(os.environ, {"JMS_RUNTIME_ACCEPT": "6.0.0"}):
-                backend.validate_version((6, 0, 0), "podman version 6.0.0")
-        self.assertEqual(stderr.getvalue(), warning)
 
     def test_podman_runtime_ready_end_to_end(self):
         info_payload = json.dumps(self.info()).encode()
@@ -3099,6 +3105,12 @@ class BaseBuildContextTests(unittest.TestCase):
         base = (root / "Containerfile").read_text()
         # A COPY/ADD here needs a matching `!` re-include in .containerignore.
         self.assertIsNone(re.search(r"^\s*(COPY|ADD)\s", base, re.M | re.I))
+        # .containerignore does not hide the context from a bind mount:
+        # RUN --mount=type=bind (the default type) sees the whole checkout,
+        # .git and gitignored files included.
+        joined = re.sub(r"\\\n", " ", base)        # fold line continuations
+        self.assertIsNone(re.search(r"^\s*RUN\b[^\n]*--mount", joined, re.M | re.I),
+                          "the base build context is the checkout; RUN --mount would expose it")
 
 
 class SupportVocabularyTests(unittest.TestCase):

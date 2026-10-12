@@ -1,7 +1,9 @@
 schema = 1
 name = "rust"
 
+# A private cache only this example family uses. Never mount the host's own
+# ~/.cargo/registry: host cargo would build whatever the container left there.
 [[mounts]]
-source = "~/.cargo/registry"
+source = "~/.cache/jms-examples/rust/cargo-registry"
 target = "/home/isolation/.cargo/registry"
 readonly = false

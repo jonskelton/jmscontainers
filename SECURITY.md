@@ -6,7 +6,9 @@
 threat model. jmscontainers fingerprints its exact contents and requires an
 explicit build/run grant before the project can be built or launched; the
 fingerprint is re-checked immediately before the build and a changed
-fingerprint requires fresh consent. For a project definition, credential
+fingerprint requires fresh consent. The runtime reads `COPY` sources
+throughout the build, so a process that can write the checkout can still
+change the definition while a build runs. For a project definition, credential
 mounting is a second, distinct grant and defaults to no. A launch without a
 project definition uses the shared base and mounts agent state read-write
 without asking; `--no-auth` suppresses that mount. In non-interactive
@@ -24,7 +26,9 @@ their credentials and their configuration. The `isolation` user is not a securit
 the container boundary protects the rest of the host, not anything mounted
 into the container. The mounted checkout, `.git` included, holds files that
 host tools later read or run, so a container's writes there can reach the
-host through those tools. Credential mounts stay read-write because the
+host through those tools; see
+[Files a container can leave for the host](#files-a-container-can-leave-for-the-host).
+Credential mounts stay read-write because the
 agent CLIs refresh tokens in place (`--mount …,readonly` exists but would
 break auth persistence); recovery from corruption is "delete the dir and log
 in again." Deleting the directory does not revoke a token that has already
@@ -37,6 +41,43 @@ unchanged, receives the same access without a prompt. Prefer dedicated,
 least-privileged agent accounts for third-party
 work; per-project auth profiles are future work. Never claim the container
 boundary meaningfully limits exfiltration of mounted credentials.
+
+## Files a container can leave for the host
+
+The project mount is read-write, `.git` included, and so is every extra
+mount with `readonly = false`. A container can write files there that host
+tools later read or run without asking, and the files persist after the
+container exits. jms neither detects nor undoes such writes. The channels
+to know:
+
+- **Git metadata:** `.git/config` and `.git/hooks/`. Host git runs commands
+  that repository config names, and hooks, during ordinary commands such as
+  `git status`, including the ones an IDE, editor plugin or shell prompt
+  runs for you. A nested repository the container creates anywhere under
+  the mount, including in the directory a launch started from, works the
+  same way once host git runs there.
+- **Editor and agent configuration:** `.vscode/`, `.claude/`, `.mcp.json`,
+  `CLAUDE.md` and `AGENTS.md`, which an IDE or a host-side agent loads when
+  it opens the checkout. Some of these name commands to run.
+- **Build files:** anything your host tools execute, such as Makefiles,
+  package-manager scripts and build scripts.
+
+After a session that ran code you do not trust, inspect these with non-git
+tools (`ls -la`, a pager, a plain `diff -r` against a copy you trust)
+before you run any git command or open the checkout in an IDE. Do not run
+host git, or let an IDE's git integration run, in the checkout while such
+a session is live.
+
+The agent-state directories are one pool per host user, not one per
+project. Every launch that mounts them (each shared-base launch without
+`--no-auth`, and each launch of a project you granted credentials) reads
+and writes the same files. Beside credentials, the pool holds
+configuration the agents load and act on: settings and hooks, skills,
+plugins, rules, MCP server definitions and extensions. A container in one
+granted project can therefore change what an agent does in later sessions
+of every other project that mounts the pool, and jms does not detect it.
+jms has no per-project agent state today; launch work you do not trust
+with `--no-auth` to keep it away from the pool.
 
 ## The container boundary, per platform
 
@@ -99,9 +140,9 @@ The precise Linux claims:
   files and mounted credentials are exposed to the agent by design; the
   credential-exfiltration warning above applies regardless of boundary
   type.
-- SELinux-**enforcing** hosts are **unqualified but allowed** in 1.1.0,
-  like every local rootless Linux configuration outside the qualified
-  Debian 13/amd64 matrix: jms does not detect enforcing mode and prints no
+- SELinux-**enforcing** hosts are **unqualified but allowed**, like every
+  local rootless Linux configuration outside the qualified Debian 13/amd64
+  matrix: jms does not detect enforcing mode and prints no
   warning, and no qualification or support guarantee is made for the
   configuration. Enforcing-mode qualification is planned alongside the
   Fedora host target.
@@ -127,26 +168,31 @@ The container's terminal output is not filtered. `jms launch` hands your
 terminal to the runtime, so escape sequences a container prints reach the
 host terminal as-is: window-title changes, hyperlinks whose text and target
 differ, and — on terminals (or tmux configurations) that honor OSC 52 —
-writes to the host clipboard. Treat text copied from or pasted after a
-container session as container-supplied, and check it before running it in a
-host shell.
+writes to the host clipboard. In tmux, keep `set-clipboard` at its default
+`external` (or `off`): `on` lets any pane, including a container session,
+set the host clipboard. Turn off your terminal's own "allow applications to
+write the clipboard" setting (OSC 52) if it has one. Treat text copied from
+or pasted after a container session as container-supplied, and check it
+before running it in a host shell.
 
 Do not put secrets in Containerfiles, manifests, or files under
 `.jmscontainer/`: the whole directory is the build context, so build inputs
 and image layers are not a secret channel.
 
-Network access is not restricted. jms passes no network option to either
-runtime, so approved builds and containers get the runtime's default
-network: NAT through the host on macOS, and on Linux whatever
-`containers.conf` selects — `pasta` by default for rootless Podman. A
-container can therefore reach the internet and, in general, whatever the
-host can reach: the local network, a VPN or tailnet the host is on, and a
-cloud instance-metadata endpoint (`169.254.169.254`) when the host is a
-cloud VM. Podman's default `pasta` setup does not map the host's gateway
-address into the container, so services bound only to the host's loopback
-interface are not reachable that way; no equivalent claim is made for
-macOS. jms offers no option to disable or filter container networking.
-Do not run jms on a host whose network position you would not hand to the
+Network access is not restricted by default. jms passes no network option
+to either runtime unless you ask, so approved builds and containers get
+the runtime's default network: NAT through the host on macOS, and on Linux
+whatever `containers.conf` selects — `pasta` by default for rootless
+Podman. A container can therefore reach the internet and, in general,
+whatever the host can reach: the local network, a VPN or tailnet the host
+is on, and a cloud instance-metadata endpoint (`169.254.169.254`) when the
+host is a cloud VM. Podman's default `pasta` setup does not map the host's
+gateway address into the container, so services bound only to the host's
+loopback interface are not reachable that way; no equivalent claim is made
+for macOS. `jms launch --no-network` runs a container with loopback only;
+it does not cover the image build, and an agent that needs its cloud
+service cannot work under it. jms offers no way to filter networking. Do
+not run jms on a host whose network position you would not hand to the
 project's code.
 
 Do not put secrets in `~/.local/share/jmscontainers/shell/` either. Its

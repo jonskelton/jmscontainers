@@ -51,6 +51,15 @@ Then delete the agent's state directory and log in again. A container that
 could write this state could also have left settings, hooks, or extensions
 in it, and deleting the directory removes those as well.
 
+If the worry is a compromised agent package rather than a project, check
+which versions your base image holds before rebuilding it. Each
+`jms build --base` installs whatever npm resolves that day, and once the old
+base is pruned its versions are gone:
+
+```sh
+jms launch --no-auth --no-network -w ~/some/project --bin npm -- ls -g --depth=0
+```
+
 For custom definitions, project build/run approval and credential approval
 are separate, and a new interactive credential question defaults to no.
 Use `--no-auth` to suppress jms-managed agent-state mounts for that launch,

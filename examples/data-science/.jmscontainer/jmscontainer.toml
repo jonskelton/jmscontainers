@@ -4,7 +4,9 @@ name = "data-science"
 [env]
 PYTHONUNBUFFERED = "1"
 
+# A private cache only this example family uses. Never mount the host's own
+# ~/.cache/pip: host pip would install whatever the container left there.
 [[mounts]]
-source = "~/.cache/pip"
+source = "~/.cache/jms-examples/data-science/pip"
 target = "/home/isolation/.cache/pip"
 readonly = false

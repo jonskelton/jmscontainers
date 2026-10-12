@@ -15,7 +15,7 @@
 #            and complete project-image user ABI.
 #
 # Exit codes: 0 pass; 1 test failure or leak; 2 sweep failure; 3 harness
-# failure (egress-denial install/remove problems, unsupported platform).
+# failure (apple collision restore problems, unsupported platform).
 # When more than one applies the highest number wins: a harness failure
 # outranks a sweep failure, which outranks a tier failure.
 # This intentionally does not run in PR CI; the qualified Linux run happens
@@ -41,67 +41,32 @@ command -v "$runtime" >/dev/null 2>&1 || {
     exit 1
 }
 
-# Tier A installs a harness-owned nftables egress denial partway through;
-# discovering a missing prerequisite there wastes a base build and leaves the
-# run half-done.  Check it up front -- before mktemp, so nothing is created
-# and the EXIT trap is not yet armed.  Scoped to the selections that actually
-# reach install_egress_denial: tier B never touches nftables, and `b` is a
-# supported standalone invocation that must run on a host without sudo.
-if [ "$runtime" = podman ] && [ "$tier" != b ]; then
-    # The probe is what the harness actually needs, so it is authoritative:
-    # nft lives in /usr/sbin and `command -v` can miss it for a user whose
-    # PATH omits the sbin directories even though `sudo nft` works.  It only
-    # classifies the failure for the hint.
-    if ! sudo -n nft list tables >/dev/null 2>&1; then
-        echo "harness failure: Linux tier A needs passwordless 'sudo nft' for the egress denial" >&2
-        if command -v nft >/dev/null 2>&1 || [ -x /usr/sbin/nft ]; then
-            echo "hint: grant this user NOPASSWD access to /usr/sbin/nft in sudoers" >&2
-        else
-            echo "hint: install nftables first (sudo apt install nftables)" >&2
-        fi
-        exit 3
-    fi
-fi
-
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-mkdir -p "$HOME/.cache/odin" "$HOME/.cache/pip" \
-    "$HOME/.cache/go-build" "$HOME/go/pkg/mod" "$HOME/.cargo/registry"
+mkdir -p "$HOME/.cache/jms-examples/data-science/pip" \
+    "$HOME/.cache/jms-examples/go/go-build" "$HOME/.cache/jms-examples/go/mod" \
+    "$HOME/.cache/jms-examples/rust/cargo-registry"
 work=$(mktemp -d)
-nft_table="jms-integration-$$"
-nft_installed=0
 apple_collision_active=0
 apple_collision_had_qualified=0
 apple_collision_qualified="docker.io/library/jmscontainers-base:latest"
 apple_collision_saved="docker.io/library/jms-itest-base-save-$$:keep"
 apple_collision_probes=""
 
-install_egress_denial() {
-    # Harness-owned nftables table dropping all non-loopback output whose
-    # socket UID is the test user's (MIR-056).  Namespace wrappers are
-    # rejected: unprivileged netns either maps the invoker to euid 0
-    # (tripping jms's uid-0 refusal) or destroys the subordinate ranges.
-    uid=$(id -u)
-    if ! sudo -n nft add table inet "$nft_table" 2>/dev/null; then
-        echo "harness failure: could not install the nftables egress denial (sudo nft)" >&2
-        exit 3
-    fi
-    nft_installed=1
-    if ! sudo -n nft "add chain inet $nft_table output { type filter hook output priority 0 ; }" ||
-       ! sudo -n nft "add rule inet $nft_table output oif lo accept" ||
-       ! sudo -n nft "add rule inet $nft_table output meta skuid $uid drop"; then
-        echo "harness failure: could not populate the nftables egress denial" >&2
-        exit 3
-    fi
-}
-
-remove_egress_denial() {
-    [ "$nft_installed" = 1 ] || return 0
-    nft_installed=0
-    if ! sudo -n nft delete table inet "$nft_table" 2>/dev/null; then
-        echo "harness failure: could not remove the nftables egress denial table $nft_table" >&2
-        harness_failed=1
-    fi
+egress_denied() {
+    # Run "$@" with registry egress refused (MIR-056), unprivileged: a dead
+    # HTTP(S) proxy, plus a search registry so a short-name FROM that is not
+    # local actually reaches the network path the proxy refuses.  Without
+    # the search registry the lookup never leaves the host and the check
+    # discriminates nothing.  Verified on podman 5.4.2: an absent base
+    # fails with "proxyconnect", a present one builds, and --pull=always
+    # fails; --pull=newer is not caught (nor was it by the nftables rule
+    # this replaces), which the golden argv test covers.
+    printf 'unqualified-search-registries = ["docker.io"]\n' > "$work/registries.conf"
+    CONTAINERS_REGISTRIES_CONF="$work/registries.conf" \
+        HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 \
+        https_proxy=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 NO_PROXY='' no_proxy='' \
+        "$@"
 }
 
 apple_image_id() {
@@ -188,7 +153,6 @@ restore_apple_collision() {
 harness_failed=0
 on_exit() {
     status=$?
-    remove_egress_denial
     restore_apple_collision
     for project in "$work"/*; do
         [ -d "$project" ] || continue
@@ -200,7 +164,7 @@ on_exit() {
     python3 "$root/scripts/leak_sweep.py" "$runtime" "$work" || sweep_status=$?
     rm -rf "$work"
     # Precedence: a harness failure means the run itself is untrustworthy and
-    # the host may still carry the egress-denial table, so it outranks both
+    # the host may still carry harness state, so it outranks both
     # the sweep result and the tier status (§9).
     if [ "$harness_failed" -ne 0 ]; then
         exit 3
@@ -471,20 +435,20 @@ tier_a() {
     # FROM resolution (R3.7/MIR-041): under egress denial, a present base
     # resolves locally with the production --pull=missing argv; an absent
     # base fails non-interactively with the conditional missing-base hint.
-    install_egress_denial
     rm -f "$proj/probe-default" "$proj/probe-root" "$proj/probe-fail"
     jms clean --images -w "$proj" >/dev/null 2>&1 || true
-    jms build --trust --no-auth --no-cache -w "$proj" \
+    egress_denied jms build --trust --no-auth --no-cache -w "$proj" \
         || fail "project build from the local base contacted a registry or failed"
     jms clean --images -w "$proj" >/dev/null
     podman image rm --ignore localhost/jmscontainers-base:latest >/dev/null
     status=0
-    jms build --trust --no-auth --no-cache -w "$proj" </dev/null \
+    egress_denied jms build --trust --no-auth --no-cache -w "$proj" </dev/null \
         2> "$work/missing-base.err" || status=$?
     [ "$status" -ne 0 ] || fail "build with the base absent unexpectedly succeeded"
+    grep -q "proxyconnect" "$work/missing-base.err" \
+        || fail "absent-base build never reached the refused proxy (check is vacuous)"
     grep -q "run \`jms build\` in the base directory first" "$work/missing-base.err" \
         || fail "missing-base failure lacked the conditional hint"
-    remove_egress_denial
     jms build --base    # restore (cached layers make this fast)
     jms clean --images -w "$proj" >/dev/null 2>&1 || true
     echo "== tier A passed =="

@@ -11,7 +11,9 @@ and the hostname with `testhost`; JSON is re-serialized with sorted keys and
 ## apple/container 1.2.2 (macOS capture)
 
 Provenance: container CLI 1.2.2 (Homebrew), Apple Silicon (arm64),
-macOS 26.5.2, captured 2026-08-14.
+macOS 26.5.2, captured 2026-08-14. Re-observed unchanged on container 1.5.0
+(macOS 27.0.1) on 2026-10-12: the absent-ref stderr is byte-identical, and
+live list and inspect records have the same shape.
 
 | File | Command | Notes |
 | --- | --- | --- |
