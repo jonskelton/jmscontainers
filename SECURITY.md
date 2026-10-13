@@ -227,6 +227,18 @@ editing the trust store or the jms code the host will run next. To hack on
 jms itself inside a container, work from a scratch clone of the checkout
 rather than the live one.
 
+Host sockets are refused too, because a read-only mount does not stop a
+container connecting to one. A manifest mount whose source is a socket,
+FIFO, or device node needs its own `allow_socket = true`, and a mount that
+contains or sits inside a known socket directory (`$XDG_RUNTIME_DIR`,
+`/run/user/<uid>`, `/run`, `/var/run`, `/tmp/tmux-<uid>`, `/tmp/.X11-unix`)
+or contains the socket named by `$SSH_AUTH_SOCK` or a `unix://`
+`$DOCKER_HOST` is refused outright; only an exact opted-in socket path is
+exempt, which is how ssh-agent forwarding works. This list is
+**best-effort**: a socket no environment variable names, such as an agent
+under `$HOME`, is not detected. See
+[Host sockets](docs/jmscontainer.toml.md#host-sockets).
+
 ## Reporting a vulnerability
 
 The supported version is the latest release; older releases receive no
