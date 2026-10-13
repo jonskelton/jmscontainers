@@ -104,8 +104,9 @@ agent state without consent:
   project into a credentialed one.
 
 The remembered answer follows the checkout path, not the code, exactly like
-a definition's grant. To change it, run `jms trust revoke PATH` and launch
-again on a terminal; `jms inspect PATH` shows the answer as
+a definition's grant. To change it, run `jms trust PATH --auth` or
+`jms trust PATH --no-auth` (no terminal needed), or `jms trust revoke PATH`
+and launch again on a terminal; `jms inspect PATH` shows the answer as
 `credential_grant`. These launches now read the trust store, so an
 unreadable or newer-schema store stops them unless `--no-auth` is passed.
 
