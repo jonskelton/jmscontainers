@@ -13,7 +13,7 @@ _jms_dirs() {
 _jms_completion() {
     local cur prev words cword
     _init_completion -n : || return
-    local commands='build launch inspect trust init clean'
+    local commands='build launch inspect trust init clean -h --help --version'
     if (( cword == 1 )); then
         COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
         return
