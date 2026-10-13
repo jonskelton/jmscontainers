@@ -120,5 +120,75 @@ class ExitCodeConsistencyTests(unittest.TestCase):
         self.assertEqual((code, out, err), (130, "", ""))
 
 
+class CleanConfirmationTests(unittest.TestCase):
+    def clean(self, argv, backend, **kwargs):
+        with sandbox(), mock.patch.object(JMS, "_RUNTIME", backend), \
+             mock.patch.object(JMS, "runtime_ready", lambda: None):
+            return run_main(["clean", *argv], **kwargs)
+
+    def test_terminal_decline_removes_nothing_and_exits_1(self):
+        backend = FakeBackend(containers=["jms-demo-1"], images=[JMS.BASE])
+        code, out, err = self.clean(["--all", "--images"], backend,
+                                    stdin_tty=True, stderr_tty=True, answer="\n")
+        self.assertEqual(code, 1)
+        self.assertEqual(backend.removed, [])
+        self.assertIn('- container "jms-demo-1"', err)
+        self.assertIn("- image " + JMS.quote(JMS.BASE), err)
+        self.assertIn("rebuilds it from scratch", err)
+        self.assertIn("Remove these? [y/N] ", err)
+        self.assertIn("error: clean declined; nothing was removed", err)
+        self.assertEqual(out, "")
+
+    def test_terminal_eof_is_the_default_no(self):
+        backend = FakeBackend(containers=["jms-demo-1"])
+        code, _, _ = self.clean(["--all"], backend, stdin_tty=True, stderr_tty=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(backend.removed, [])
+
+    def test_terminal_yes_proceeds(self):
+        backend = FakeBackend(containers=["jms-demo-1"])
+        code, out, _ = self.clean(["--all"], backend,
+                                  stdin_tty=True, stderr_tty=True, answer="y\n")
+        self.assertEqual(code, 0)
+        self.assertEqual(backend.removed, [("stop", "jms-demo-1"), ("rm", "jms-demo-1")])
+        self.assertIn('removed container "jms-demo-1"', out)
+
+    def test_yes_flag_skips_the_question(self):
+        for flag in ("--yes", "-y"):
+            backend = FakeBackend(containers=["jms-demo-1"])
+            with mock.patch.object(JMS, "consent_input", self.fail):
+                code, _, _ = self.clean(["--all", flag], backend,
+                                        stdin_tty=True, stderr_tty=True)
+            self.assertEqual(code, 0)
+            self.assertIn(("rm", "jms-demo-1"), backend.removed)
+
+    def test_off_a_terminal_clean_proceeds_without_asking(self):
+        # Compatible with 2.0: scripts and pipes never see a prompt.
+        for stdin_tty, stderr_tty in ((False, False), (True, False), (False, True)):
+            backend = FakeBackend(containers=["jms-demo-1"])
+            with mock.patch.object(JMS, "consent_input", self.fail):
+                code, _, _ = self.clean(["--all"], backend,
+                                        stdin_tty=stdin_tty, stderr_tty=stderr_tty)
+            self.assertEqual(code, 0)
+            self.assertIn(("rm", "jms-demo-1"), backend.removed)
+
+    def test_dry_run_never_asks(self):
+        backend = FakeBackend(containers=["jms-demo-1"])
+        with mock.patch.object(JMS, "consent_input", self.fail):
+            code, out, _ = self.clean(["--all", "--dry-run"], backend,
+                                      stdin_tty=True, stderr_tty=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(backend.removed, [])
+        self.assertIn("would remove container", out)
+
+    def test_empty_selection_says_so_on_stderr(self):
+        for extra in ([], ["--dry-run"]):
+            backend = FakeBackend()
+            with mock.patch.object(JMS, "consent_input", self.fail):
+                code, out, err = self.clean(["--all", *extra], backend,
+                                            stdin_tty=True, stderr_tty=True)
+            self.assertEqual((code, out, err), (0, "", "nothing to remove\n"))
+
+
 if __name__ == "__main__":
     unittest.main()

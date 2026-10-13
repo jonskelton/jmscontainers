@@ -2662,10 +2662,27 @@ def cmd_clean(args):
     image_refs = sorted(set(image_refs))
     for value in [*ids, *image_refs]:
         runtime_argument(value, usage=False)
+    if not ids and not image_refs:
+        print("nothing to remove", file=sys.stderr)
+        return
     if args.dry_run:
         for ident in ids: print("would remove container " + quote(ident))
         for ref in image_refs: print("would remove image " + quote(ref))
         return
+    # A selected container is usually a live session (launch runs --rm), and
+    # --all --images takes the shared base, so a person at a terminal is asked
+    # first.  Off a terminal clean proceeds as it always has (UX-04).
+    if not args.yes and sys.stdin.isatty() and sys.stderr.isatty():
+        for ident in ids: print("- container " + quote(ident), file=sys.stderr)
+        for ref in image_refs: print("- image " + quote(ref), file=sys.stderr)
+        if ids:
+            print("running containers are stopped first, ending any session inside them",
+                  file=sys.stderr)
+        if BASE in image_refs:
+            print("removing the shared base means the next build rebuilds it from scratch",
+                  file=sys.stderr)
+        if consent_input("Remove these? [y/N] ").strip().lower() not in ("y", "yes"):
+            fail("clean declined; nothing was removed")
     # Attempt every scheduled removal, containers before images; aggregate
     # failures and exit 1 rather than aborting mid-list (MIR-048).
     failures = []
@@ -2764,6 +2781,8 @@ def parser():
     flags(c, ("--all", "select all jms containers (and the shared base with --images)"),
           ("--images", "also remove the selection's images"),
           ("--dry-run", "report the selection without mutating"))
+    c.add_argument("-y", "--yes", action="store_true",
+                   help="do not ask for confirmation on a terminal")
     c.set_defaults(func=cmd_clean)
     return p
 

@@ -156,7 +156,7 @@ on_exit() {
     restore_apple_collision
     for project in "$work"/*; do
         [ -d "$project" ] || continue
-        "$root/bin/jms" clean --images -w "$project" >/dev/null 2>&1 || true
+        "$root/bin/jms" clean --yes --images -w "$project" >/dev/null 2>&1 || true
     done
     # The sweep runs from the trap so a partial failure can never skip leak
     # detection; sweep failure stays distinct from leak (§9).
@@ -422,7 +422,7 @@ tier_a() {
 
     if [ "$runtime" = container ]; then
         rm -f "$proj/probe-default" "$proj/probe-root" "$proj/probe-fail"
-        jms clean --images -w "$proj" >/dev/null 2>&1 || true
+        jms clean --yes --images -w "$proj" >/dev/null 2>&1 || true
         echo "== tier A passed =="
         return 0
     fi
@@ -458,10 +458,10 @@ tier_a() {
     # resolves locally with the production --pull=missing argv; an absent
     # base fails non-interactively with the conditional missing-base hint.
     rm -f "$proj/probe-default" "$proj/probe-root" "$proj/probe-fail"
-    jms clean --images -w "$proj" >/dev/null 2>&1 || true
+    jms clean --yes --images -w "$proj" >/dev/null 2>&1 || true
     egress_denied jms build --trust --no-auth --no-cache -w "$proj" \
         || fail "project build from the local base contacted a registry or failed"
-    jms clean --images -w "$proj" >/dev/null
+    jms clean --yes --images -w "$proj" >/dev/null
     podman image rm --ignore localhost/jmscontainers-base:latest >/dev/null
     status=0
     egress_denied jms build --trust --no-auth --no-cache -w "$proj" </dev/null \
@@ -472,7 +472,7 @@ tier_a() {
     grep -q "run \`jms build\` in the base directory first" "$work/missing-base.err" \
         || fail "missing-base failure lacked the conditional hint"
     jms build --base    # restore (cached layers make this fast)
-    jms clean --images -w "$proj" >/dev/null 2>&1 || true
+    jms clean --yes --images -w "$proj" >/dev/null 2>&1 || true
     echo "== tier A passed =="
 }
 
@@ -487,7 +487,7 @@ tier_b() {
         jms inspect -w "$work/$example"
         jms launch --trust --no-auth --bin /bin/true -w "$work/$example"
         jms clean --images --dry-run -w "$work/$example"
-        jms clean --images -w "$work/$example"
+        jms clean --yes --images -w "$work/$example"
     done
 
     # A COPY source outside .jmscontainer/ must fail with the v2 context rule.
@@ -498,7 +498,7 @@ tier_b() {
     fi
     grep -q "jmscontainer/ only" "$work/escape.err" \
         || fail "build failure did not explain the v2 context rule"
-    jms clean --images -w "$work/escape"
+    jms clean --yes --images -w "$work/escape"
 
     # Manifest env and auth-mount assertions (R7.9/R7.12).
     proj="$work/tier-b-manifest"
@@ -522,7 +522,7 @@ tier_b() {
     [ "$owner" = "$(id -u)" ] || fail "agent-state write owned by $owner, not invoking user"
     grep -q "/.claude" "$agent_probe" || fail "CLAUDE_CONFIG_DIR not visible inside"
     rm -f "$agent_probe"
-    jms clean --images -w "$proj"
+    jms clean --yes --images -w "$proj"
 
     # Preserved host path: path-keyed tools must see the canonical checkout
     # path on both sides, and the mount remains a writable host round trip.
@@ -542,7 +542,7 @@ tier_b() {
     [ "$(cat "$canonical_proj/preserve-path-probe")" = container ] \
         || fail "preserved-path write did not round trip its content"
     rm -f "$canonical_proj/preserve-path-probe"
-    jms clean --images -w "$canonical_proj"
+    jms clean --yes --images -w "$canonical_proj"
 
     if [ "$runtime" = podman ]; then
         # Survivor-set graph run (R5.4, MIR-042/047): a manual alias outside
@@ -561,7 +561,7 @@ tier_b() {
         podman import --quiet "$work/dangle-a.tar" itest-dangle:latest >/dev/null
         dangling=$(podman images --format '{{.ID}} {{.Repository}}' | awk '$2=="localhost/itest-dangle" {print $1}')
         podman import --quiet "$work/dangle-b.tar" itest-dangle:latest >/dev/null
-        jms clean --images -w "$proj"
+        jms clean --yes --images -w "$proj"
         podman image exists itest-survivor-alias:keep \
             || fail "manual alias outside the reserved namespace was removed"
         podman image exists "$built" || fail "aliased image identity was deleted, not untagged"
@@ -596,7 +596,7 @@ tier_b() {
         expected_owner="$(id -u):$(id -g)"
         [ "$owner" = "$expected_owner" ] \
             || fail "standalone /work write owned by $owner, not invoking user $expected_owner"
-        jms clean --images -w "$work/clean-store"
+        jms clean --yes --images -w "$work/clean-store"
     elif [ "$runtime" = container ]; then
         # Survivor-set graph run (R5.4, MIR-042/047), apple/container half.
         # This run *determines* the engine's delete-by-ref cascade behavior:
@@ -624,7 +624,7 @@ for record in json.load(sys.stdin):
         built_id=${built%% *}
         built_ref=${built#* }
         container image tag "$built_ref" itest-survivor-alias:keep
-        jms clean --images -w "$proj"
+        jms clean --yes --images -w "$proj"
         survivors=$(container image list --format json | python3 -c '
 import json, sys
 for record in json.load(sys.stdin):

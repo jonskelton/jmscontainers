@@ -12,7 +12,7 @@ jms trust   list
 jms trust   revoke PATH [--purge-images]
 jms trust   prune
 jms init    [-w|--workdir PATH] [--with-manifest]
-jms clean   [-w|--workdir PATH | --all] [--images] [--dry-run]
+jms clean   [-w|--workdir PATH | --all] [--images] [--dry-run] [-y|--yes]
 ```
 
 Every `PATH` is any nonempty path, and the positional and `--workdir` forms
@@ -268,6 +268,14 @@ nested project will shadow the outer one.
 `clean` removes this project's containers (or all jms containers with
 `--all`); `--images` also removes the project's images (plus the shared base
 under `--all`). `--dry-run` reports the selection without mutating.
+
+On a terminal (stdin and stderr both a TTY), `clean` lists what it selected
+and asks `Remove these? [y/N]` before it stops or removes anything; the
+default is no. Selected containers are usually live sessions, since
+`launch` runs them with `--rm`. Declining removes nothing and exits 1.
+`-y`/`--yes` skips the question. Off a terminal, `clean` does not ask and
+proceeds, as before. When nothing matches, `clean` (and `clean --dry-run`)
+prints `nothing to remove` on stderr and exits 0.
 
 Container ownership requires two labels jms applies to every container it
 creates: the `jms.project` scope label **and** the `jms.container=launch`

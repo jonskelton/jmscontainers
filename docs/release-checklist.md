@@ -107,7 +107,7 @@ macOS qualification host with apple/container at the qualified version.
    for i in 1 2 3 4 5 6 7 8 9 10; do
        jms build --trust --no-auth -w /tmp/jms-race
        container image delete "$ref" >/dev/null 2>&1 &
-       jms clean --images -w /tmp/jms-race || echo "FAIL: exit $? on iteration $i"
+       jms clean --yes --images -w /tmp/jms-race || echo "FAIL: exit $? on iteration $i"
        wait
    done
    ```
@@ -118,7 +118,7 @@ macOS qualification host with apple/container at the qualified version.
      between enumeration and removal);
    - no iteration reports a failed removal for the vanished ref;
    - after the loop, `container image list` shows no
-     `jmscontainers-jms-race` ref, and a final `jms clean --images -w
+     `jmscontainers-jms-race` ref, and a final `jms clean --yes --images -w
      /tmp/jms-race` exits 0 with nothing left to remove (convergence).
 
 5. Record the run (date, apple/container version, outcome) in the release

@@ -116,7 +116,7 @@ jms launch -b yolo-codex         # start an agent directly
 jms inspect                      # show discovery, fingerprint, and trust
 jms init                         # create .jmscontainer/Containerfile
 jms trust                        # review and approve a project definition
-jms clean                        # remove this project's containers
+jms clean                        # remove this project's containers (asks first)
 jms clean --all                  # remove all jms containers
 ```
 
