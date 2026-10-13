@@ -233,6 +233,53 @@ class LaunchPlan:
             raise AssertionError("launch plan user must be isolation or root")
 
 
+def _launch_argv(exe, plan, user, mount_argument, runtime_flags=()):
+    """The run argv both backends share, so its security-relevant flags are written once (MAINT-03).
+
+    A backend supplies only what differs: its --user value, its mount
+    serializer, and flags that sit between the labels and the environment.
+    The order is part of the contract the golden argv tests pin: the roster's
+    config variables (CLAUDE_CONFIG_DIR) precede the project mount, then the
+    remaining environment, the other mounts, and --network none.
+    """
+    cmd = [exe, "run", "--rm", "--interactive"]
+    if plan.tty:
+        cmd.append("--tty")
+    cmd += ["--name", plan.name, "--user", user, "--workdir", plan.workdir,
+            "--entrypoint", plan.entrypoint]
+    for key, value in plan.labels:
+        cmd += ["--label", key + "=" + value]
+    cmd += list(runtime_flags)
+    env = list(plan.env)
+    for config_env in (entry.config_env for entry in AGENT_ROSTER if entry.config_env):
+        if env and env[0][0] == config_env:
+            key, value = env.pop(0)
+            cmd += ["--env", key + "=" + value]
+    mounts = list(plan.mounts)
+    source, target, readonly = mounts.pop(0)
+    cmd += ["--mount", mount_argument(source, target, readonly)]
+    for key, value in env:
+        cmd += ["--env", key + "=" + value]
+    for source, target, readonly in mounts:
+        cmd += ["--mount", mount_argument(source, target, readonly)]
+    if not plan.network:
+        cmd += ["--network", "none"]
+    cmd.append(plan.image)
+    cmd += list(plan.command)
+    return cmd
+
+
+def _mount_spec(prefix, source, target, readonly):
+    """One --mount value; the target checks are shared by both backends' mount_argument."""
+    source_text = runtime_path(os.fsencode(source))
+    if "," in target or "=" in target:
+        fail("mount paths cannot contain ',' or '=': " + quote(target))
+    if CONTROL_CHARACTER.search(target):
+        fail("mount paths cannot contain control characters: " + quote(target))
+    result = prefix + "source=" + source_text + ",target=" + target
+    return result + ",readonly" if readonly else result
+
+
 class ContainerBackend:
     """apple/container on macOS (Apple Silicon)."""
 
@@ -263,13 +310,7 @@ class ContainerBackend:
         return ref[len(prefix):] if ref.startswith(prefix) else ref
 
     def mount_argument(self, source, target, readonly=False):
-        source_text = runtime_path(os.fsencode(source))
-        if "," in target or "=" in target:
-            fail("mount paths cannot contain ',' or '=': " + quote(target))
-        if CONTROL_CHARACTER.search(target):
-            fail("mount paths cannot contain control characters: " + quote(target))
-        result = "source=" + source_text + ",target=" + target
-        return result + ",readonly" if readonly else result
+        return _mount_spec("", source, target, readonly)
 
     def build_argv(self, context, tag, labels, *, no_cache, pull, project):
         cmd = [self.exe, "build", "--tag", tag, "--file", context + "/Containerfile"]
@@ -283,29 +324,7 @@ class ContainerBackend:
         return cmd
 
     def run_argv(self, plan):
-        cmd = [self.exe, "run", "--rm", "--interactive"]
-        if plan.tty:
-            cmd.append("--tty")
-        cmd += ["--name", plan.name, "--user", plan.user, "--workdir", plan.workdir,
-                "--entrypoint", plan.entrypoint]
-        for key, value in plan.labels:
-            cmd += ["--label", key + "=" + value]
-        env = list(plan.env)
-        if env and env[0][0] == "CLAUDE_CONFIG_DIR":
-            key, value = env.pop(0)
-            cmd += ["--env", key + "=" + value]
-        mounts = list(plan.mounts)
-        source, target, readonly = mounts.pop(0)
-        cmd += ["--mount", self.mount_argument(source, target, readonly)]
-        for key, value in env:
-            cmd += ["--env", key + "=" + value]
-        for source, target, readonly in mounts:
-            cmd += ["--mount", self.mount_argument(source, target, readonly)]
-        if not plan.network:
-            cmd += ["--network", "none"]
-        cmd.append(plan.image)
-        cmd += list(plan.command)
-        return cmd
+        return _launch_argv(self.exe, plan, plan.user, self.mount_argument)
 
     # -- Class B: executing queries and policy (every process crosses the
     #    module-level runtime_run/runtime_json, looked up at call time) --
@@ -527,13 +546,7 @@ class PodmanBackend:
         return ref[len(prefix):] if ref.startswith(prefix) else ref
 
     def mount_argument(self, source, target, readonly=False):
-        source_text = runtime_path(os.fsencode(source))
-        if "," in target or "=" in target:
-            fail("mount paths cannot contain ',' or '=': " + quote(target))
-        if CONTROL_CHARACTER.search(target):
-            fail("mount paths cannot contain control characters: " + quote(target))
-        result = "type=bind,source=" + source_text + ",target=" + target
-        return result + ",readonly" if readonly else result
+        return _mount_spec("type=bind,", source, target, readonly)
 
     def build_argv(self, context, tag, labels, *, no_cache, pull, project):
         cmd = [self.exe, "build", "--tag", tag, "--file", context + "/Containerfile"]
@@ -551,9 +564,6 @@ class PodmanBackend:
         return cmd
 
     def run_argv(self, plan):
-        cmd = [self.exe, "run", "--rm", "--interactive"]
-        if plan.tty:
-            cmd.append("--tty")
         # --user is numeric so the image's /etc/passwd can never choose the
         # runtime UID; --userns is explicit so ambient PODMAN_USERNS or
         # containers.conf values cannot alter the mapping (MIR-034/040).
@@ -563,27 +573,8 @@ class PodmanBackend:
         else:
             user = "0:0"
             userns = "--userns=host"
-        cmd += ["--name", plan.name, "--user", user, "--workdir", plan.workdir,
-                "--entrypoint", plan.entrypoint]
-        for key, value in plan.labels:
-            cmd += ["--label", key + "=" + value]
-        cmd += ["--hostname", "container", "--security-opt", "label=disable", userns]
-        env = list(plan.env)
-        if env and env[0][0] == "CLAUDE_CONFIG_DIR":
-            key, value = env.pop(0)
-            cmd += ["--env", key + "=" + value]
-        mounts = list(plan.mounts)
-        source, target, readonly = mounts.pop(0)
-        cmd += ["--mount", self.mount_argument(source, target, readonly)]
-        for key, value in env:
-            cmd += ["--env", key + "=" + value]
-        for source, target, readonly in mounts:
-            cmd += ["--mount", self.mount_argument(source, target, readonly)]
-        if not plan.network:
-            cmd += ["--network", "none"]
-        cmd.append(plan.image)
-        cmd += list(plan.command)
-        return cmd
+        return _launch_argv(self.exe, plan, user, self.mount_argument,
+                            ["--hostname", "container", "--security-opt", "label=disable", userns])
 
     # -- Class B: executing queries and policy --
 
@@ -1085,16 +1076,29 @@ def store_directory() -> Path:
     return Path(os.fsdecode(home_path())) / ".config" / "jmscontainers"
 
 
+# The schema-2 trust-store record.  make_trust_record() is the only writer and
+# valid_store() the only reader of its shape, so a schema change touches both
+# here and nowhere else (MAINT-08).
+TRUST_RECORD_FIELDS = frozenset({"root", "tf", "grants", "granted_at", "jms_version"})
+TRUST_GRANT_FIELDS = frozenset({"build_run", "auth"})
+
+
+def make_trust_record(root: bytes, tf: str, auth: bool) -> dict:
+    """A fresh store record for a canonical root: build/run granted, auth as answered, stamped now."""
+    return {"root": root.decode("utf-8"), "tf": tf, "grants": {"build_run": True, "auth": auth},
+            "granted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "jms_version": __version__}
+
+
 def valid_store(data) -> bool:
     if type(data) is not dict or set(data) != {"schema", "projects"} or data["schema"] != 2 or not isinstance(data["projects"], dict):
         return False
     for pid, record in data["projects"].items():
         if (not isinstance(pid, str) or not re.fullmatch(r"[0-9a-f]{64}", pid) or not isinstance(record, dict)
-                or set(record) != {"root", "tf", "grants", "granted_at", "jms_version"}
+                or set(record) != TRUST_RECORD_FIELDS
                 or not isinstance(record["root"], str) or not isinstance(record["tf"], str)
                 or not re.fullmatch(r"[0-9a-f]{64}", record["tf"])
                 or hashlib.sha256(record["root"].encode()).hexdigest() != pid
-                or not isinstance(record["grants"], dict) or set(record["grants"]) != {"build_run", "auth"}
+                or not isinstance(record["grants"], dict) or set(record["grants"]) != TRUST_GRANT_FIELDS
                 or record["grants"].get("build_run") is not True or not isinstance(record["grants"].get("auth"), bool)
                 or not isinstance(record["granted_at"], str) or not re.fullmatch(UTC_SECONDS, record["granted_at"])
                 or not isinstance(record["jms_version"], str)):
@@ -1151,7 +1155,45 @@ def update_store(change) -> dict:
         return store
 
 
-AGENT_STATE_LEAVES = ("claude", "codex", "opencode", "opencode-config", "pi")
+@dataclass(frozen=True)
+class AgentState:
+    """One persistent agent-state leaf in the pool jms mounts under the credential grant."""
+    leaf: str                            # directory under agent_state_root()
+    target: str                          # HOME-relative container mount target, also
+                                         # listed among the host credential stores
+    agent: str                           # the agent's name, as consent text lists it
+    config_env: str | None = None        # variable a credential launch points at target
+
+
+# The agent roster: the single source for every agent-state site -- the pool
+# leaves and their mounts (agent_state_mounts), the targets a manifest mount
+# may not cover (reserved_mount_targets), the host sign-ins kept behind the
+# credential grant (CREDENTIAL_PATHS), the names the consent text lists
+# (agent_names_text), and the variables a credential launch injects
+# (build_launch_plan, run_argv).  Adding an agent is one row here; a site that
+# hard-codes an agent instead would let a manifest mount over its credentials
+# without the consent text showing anything amiss (MAINT-05).
+AGENT_ROSTER = (
+    AgentState("claude", ".claude", "claude", config_env="CLAUDE_CONFIG_DIR"),
+    AgentState("codex", ".codex", "codex"),
+    AgentState("opencode", ".local/share/opencode", "opencode"),
+    AgentState("opencode-config", ".config/opencode", "opencode"),
+    AgentState("pi", ".pi/agent", "pi"),
+)
+AGENT_STATE_LEAVES = tuple(entry.leaf for entry in AGENT_ROSTER)
+
+
+def agent_names_text(conjunction: str = "") -> str:
+    """The roster's agent names in order, once each: "claude, codex, opencode, and pi"."""
+    names = list(dict.fromkeys(entry.agent for entry in AGENT_ROSTER))
+    if conjunction and len(names) > 1:
+        names[-1] = conjunction + " " + names[-1]
+    return ", ".join(names)
+
+
+def agent_config_env(home: str) -> list[tuple[str, str]]:
+    """The (variable, path) pairs a credential launch injects, in roster order."""
+    return [(entry.config_env, home + "/" + entry.target) for entry in AGENT_ROSTER if entry.config_env]
 
 
 def checkout_root() -> bytes:
@@ -1299,14 +1341,14 @@ def refuse_socket_mounts(config: dict) -> None:
 # is kept only under the project's credential grant; see credential_sources().
 # Best-effort, not exhaustive: a store missing here rides build/run approval
 # like any other mount.  jms's own agent-state pool is not listed because
-# protected_sources() already refuses it outright.
+# protected_sources() already refuses it outright.  The host agents' own
+# sign-ins, which jms never mounts on its own, follow from AGENT_ROSTER's
+# targets in credential_sources().
 CREDENTIAL_PATHS = (
     ".ssh", ".gnupg", ".config/gh", ".aws", ".azure", ".config/gcloud", ".kube",
     ".docker", ".netrc", ".npmrc", ".pypirc", ".git-credentials",
     ".cargo/credentials.toml", ".vault-token", ".terraform.d", ".m2/settings.xml",
     ".gradle/gradle.properties", ".1password", "Library/Keychains",
-    # The host agents' own sign-ins, which jms never mounts on its own.
-    ".claude", ".codex", ".local/share/opencode", ".config/opencode", ".pi/agent",
 )
 # Variables that relocate a credential store; KUBECONFIG is a path list.
 CREDENTIAL_PATH_VARIABLES = ("GNUPGHOME", "DOCKER_CONFIG", "KUBECONFIG", "AWS_SHARED_CREDENTIALS_FILE")
@@ -1315,7 +1357,8 @@ CREDENTIAL_PATH_VARIABLES = ("GNUPGHOME", "DOCKER_CONFIG", "KUBECONFIG", "AWS_SH
 def credential_sources() -> list[bytes]:
     """Canonical credential-store paths, resolved as mount sources are."""
     home = home_path()
-    paths = [home + b"/" + relative.encode() for relative in CREDENTIAL_PATHS]
+    relatives = CREDENTIAL_PATHS + tuple(entry.target for entry in AGENT_ROSTER)
+    paths = [home + b"/" + relative.encode() for relative in relatives]
     for name in CREDENTIAL_PATH_VARIABLES:
         # A relative entry depends on the caller's cwd; only absolute ones are checked.
         paths += [item for item in os.environb.get(name.encode(), b"").split(b":")
@@ -1385,10 +1428,8 @@ def valid_target(value: str, home: str) -> bool:
 
 
 def reserved_mount_targets(home: str) -> frozenset[str]:
-    return frozenset({"/work", home + "/.claude", home + "/.codex",
-                      home + "/.local/share/opencode",
-                      home + "/.config/opencode", home + "/.pi/agent",
-                      home + "/.config/jms-shell"})
+    return frozenset({"/work", home + "/.config/jms-shell"}
+                     | {home + "/" + entry.target for entry in AGENT_ROSTER})
 
 
 def target_overlaps_reserved(value: str, home: str) -> bool:
@@ -1656,7 +1697,7 @@ def print_capability_summary(root: bytes, config: dict, git_writable_flag: bool 
     for key, value in sorted(config["env"].items()):
         print("- environment: " + quote(key + "=" + value), file=sys.stderr)
     print("- entry: " + " ".join(quote(value) for value in config["entry"]), file=sys.stderr)
-    print("- agent state (credentials and configuration for claude, codex, opencode, pi): " +
+    print("- agent state (credentials and configuration for " + agent_names_text() + "): " +
           ("read-write mount eligible with a separate grant" if config["mount_auth"] else
            "read-write mount suppressed by manifest"), file=sys.stderr)
 
@@ -1679,8 +1720,8 @@ def credential_decline_note(command: str) -> str:
 def credential_question(config: dict) -> str:
     """The project credential question, naming every mount it also decides."""
     covered = [mount["source"] for mount in config["mounts"] if mount.get("credential")]
-    return ("Also mount persistent agent state -- credentials and configuration for claude, codex, "
-            "opencode, and pi -- with read-write access"
+    return ("Also mount persistent agent state -- credentials and configuration for "
+            + agent_names_text("and") + " -- with read-write access"
             + (", and keep the manifest's host credential mounts " + ", ".join(quote(item) for item in covered)
                if covered else "") + "? [y/N] ")
 
@@ -1740,8 +1781,7 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
         print_capability_summary(root, config or default_config(),
                                  git_writable_flag=getattr(args, "git_writable", False))
     def record_approval(auth):
-        new = {"root": root.decode("utf-8"), "tf": tf, "grants": {"build_run": True, "auth": auth},
-               "granted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "jms_version": __version__}
+        new = make_trust_record(root, tf, auth)
         def replace(current):
             current["projects"][pid] = new
             return True
@@ -1863,7 +1903,8 @@ def base_launch_auth(workdir: bytes, args) -> bool:
     print(quote(root) + " has no project definition and no recorded credential answer.", file=sys.stderr)
     print(BASE_CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
     print(credential_decline_note("jms trust " + quote(root) + " --auth"), file=sys.stderr)
-    answer = consent_input("Mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
+    answer = consent_input("Mount persistent agent state -- credentials and configuration for "
+                           + agent_names_text("and") + " -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
     record_base_answer(root, answer)
     return answer
 
@@ -1871,9 +1912,7 @@ def base_launch_auth(workdir: bytes, args) -> bool:
 def record_base_answer(root: bytes, answer: bool):
     """Remember a no-definition credential answer for a base_credential_root()."""
     pid = hashlib.sha256(root).hexdigest()
-    new = {"root": root.decode("utf-8"), "tf": BASE_CREDENTIAL_TF,
-           "grants": {"build_run": True, "auth": answer},
-           "granted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "jms_version": __version__}
+    new = make_trust_record(root, BASE_CREDENTIAL_TF, answer)
     def remember(store):
         store["projects"][pid] = new
         return True
@@ -2192,11 +2231,7 @@ def build_project(data, args):
 def agent_state_mounts(user="isolation"):
     root = agent_state_root()
     home = "/root" if user == "root" else "/home/" + user
-    return [(root / "claude", home + "/.claude"),
-            (root / "codex", home + "/.codex"),
-            (root / "opencode", home + "/.local/share/opencode"),
-            (root / "opencode-config", home + "/.config/opencode"),
-            (root / "pi", home + "/.pi/agent")]
+    return [(root / entry.leaf, home + "/" + entry.target) for entry in AGENT_ROSTER]
 
 
 def shell_state_mount(user="isolation"):
@@ -2346,7 +2381,7 @@ def launch_plan(workdir: bytes, data, args, image: str, auth: bool) -> LaunchPla
     mount_auth = auth and (config["mount_auth"] or args.auth)
     env = []
     if mount_auth:
-        env.append(("CLAUDE_CONFIG_DIR", effective_home + "/.claude"))
+        env += agent_config_env(effective_home)
     # The host's zone is merged into the manifest's own environment before
     # sorting, not appended beside it: a manifest that pins TZ must replace
     # the inherited value outright.  Emitting both and relying on a runtime's

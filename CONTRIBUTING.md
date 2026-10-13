@@ -63,6 +63,14 @@ by fakes in `make test`, and per-backend differences that users can observe
 (mount grammar, version qualification, cleanup semantics) need tests
 asserting the two agree wherever they are supposed to.
 
+Security tables are written once and derived everywhere else. Both backends
+build their run argv through `_launch_argv()`, passing only what differs. The
+persistent agents (claude, codex, opencode, pi) are rows in `AGENT_ROSTER`:
+their state mounts, reserved mount targets, host credential paths, consent
+text and injected variables all follow from it, so supporting a new agent is
+one new row, not an edit at each site. Trust-store records are written only
+by `make_trust_record()`.
+
 ## Pull requests
 
 Explain the user-visible behavior, security implications, and tests in the PR.
