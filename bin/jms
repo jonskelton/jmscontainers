@@ -323,7 +323,7 @@ class ContainerBackend:
     def ensure_started(self):
         probe = runtime_run([self.exe, "system", "status"], check=False)
         if probe.returncode:
-            print("starting container runtime...")
+            print("starting container runtime...", file=sys.stderr)
             started = runtime_run([self.exe, "system", "start"], capture=True, check=False)
             recheck = runtime_run([self.exe, "system", "status"], check=False)
             if recheck.returncode:
@@ -2587,7 +2587,8 @@ def cmd_init(args):
     target = Path(os.fsdecode(workdir)) / ".jmscontainer"
     outer_root, _ = discover(parent(workdir), consume_spec=False)
     if outer_root is not None:
-        print("notice: nested project will shadow outer definition at " + quote(outer_root))
+        print("notice: nested project will shadow outer definition at " + quote(outer_root),
+              file=sys.stderr)
     created_files = []
     def create_scaffold(path, contents):
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)

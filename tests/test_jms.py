@@ -3110,6 +3110,19 @@ class InitTests(unittest.TestCase):
                     JMS.cmd_init(JMS.parse_cli(["init", "-w", str(workdir), "--with-manifest"]))
             self.assertFalse((workdir / ".jmscontainer").exists())
 
+    def test_init_nested_notice_goes_to_stderr(self):
+        # docs/cli.md: stdout carries only a command's result.
+        with sandbox() as home:
+            outer = make_project(home)
+            inner = outer / "sub"
+            inner.mkdir()
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                JMS.cmd_init(JMS.parse_cli(["init", "-w", str(inner)]))
+            self.assertIn("notice: nested project will shadow", err.getvalue())
+            self.assertNotIn("notice", out.getvalue())
+            self.assertIn("created ", out.getvalue())
+
     def test_init_refuses_home_and_protected_roots(self):
         with sandbox() as home:
             with self.assertRaisesRegex(JMS.JMSException, r"at \$HOME"):
@@ -3655,6 +3668,26 @@ class OrderingAndCanonTests(unittest.TestCase):
                 JMS.canon(b"/somewhere")
         self.assertIn("coreutils", str(caught.exception))
         self.assertNotIsInstance(caught.exception, JMS.UsageError)
+
+
+class ContainerStartTests(unittest.TestCase):
+    """macOS cold start: the auto-start notice must not reach stdout, which
+    belongs to the launched program (docs/cli.md)."""
+
+    def test_cold_start_notice_goes_to_stderr(self):
+        calls = []
+        def fake(argv, **kwargs):
+            calls.append(argv[1:])
+            # status fails once (not started), then succeeds after start.
+            code = 1 if argv[1:] == ["system", "status"] and len(calls) == 1 else 0
+            return types.SimpleNamespace(returncode=code, stdout=b"", stderr=b"")
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(JMS, "runtime_run", fake), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            JMS.ContainerBackend().ensure_started()
+        self.assertEqual(calls, [["system", "status"], ["system", "start"], ["system", "status"]])
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("starting container runtime...", err.getvalue())
 
 
 class PodmanReadinessTests(unittest.TestCase):
