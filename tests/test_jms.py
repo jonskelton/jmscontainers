@@ -3773,12 +3773,13 @@ class PodmanReadinessTests(unittest.TestCase):
                 JMS.runtime_ready()
 
     def test_podman_diagnostics_match_debian_contract(self):
-        # R4.7: the CLI-missing hint is the one full qualified apt command,
-        # and the ID-map hint names the uidmap package and both files.
+        # R4.7: the CLI-missing hint carries the one full qualified apt
+        # command, labelled as Debian's (ADOPT-14), and the ID-map hint
+        # names the uidmap package and both files.
         apt_command = ("sudo apt install podman uidmap passt dbus-user-session "
                        "fuse-overlayfs coreutils")
-        self.assertEqual(JMS.PodmanBackend.install_hint,
-                         "install the qualified package set: " + apt_command)
+        self.assertTrue(JMS.PodmanBackend.install_hint.endswith(
+            "on Debian the qualified package set is: " + apt_command))
         readme = (pathlib.Path(JMS.__file__).parents[1] / "README.md").read_text()
         self.assertIn(apt_command, readme)          # verbatim agreement (R4.7)
         self.assertIn("/etc/subuid", readme)
