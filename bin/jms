@@ -21,6 +21,7 @@ import signal
 import stat
 import subprocess
 import sys
+import textwrap
 import time
 if sys.version_info < (3, 11):
     raise SystemExit("jms requires Python 3.11+")
@@ -1800,26 +1801,61 @@ def extra_mount_mode(mount: dict) -> str:
 GIT_WRITABLE_NOTE = "container can write .git (hooks and config there run on your host)"
 
 
+# Every capability line beyond what a definition with no manifest gets --
+# the host path kept, a writable .git, any extra host mount -- carries this
+# one marker, so escalations read alike whatever their wording (UX-11).
+ESCALATION_MARK = "!"
+
+
+def capability_bullet(escalation) -> str:
+    """The list bullet: ESCALATION_MARK when escalation is truthy, else "-"."""
+    return (ESCALATION_MARK if escalation else "-") + " "
+
+
+# Consent prose is read on an 80-column terminal (UX-12).
+CONSENT_WIDTH = 76
+QUOTED = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def consent_text(text: str, keep: tuple = ()) -> str:
+    """Wrap one consent sentence, note or question at CONSENT_WIDTH columns.
+
+    Continuation lines are indented two spaces.  A quoted path and every
+    string in keep (a command to copy) are never split across lines; quote()
+    output is ASCII, so a no-break space cannot occur in it.
+    """
+    def glue(span):
+        return span.replace(" ", "\xa0")
+    for item in keep:
+        text = text.replace(item, glue(item))
+    text = QUOTED.sub(lambda match: glue(match.group(0)), text)
+    return textwrap.fill(text, CONSENT_WIDTH, subsequent_indent="  ", break_long_words=False,
+                         break_on_hyphens=False).replace("\xa0", " ")
+
+
 def print_capability_summary(root: bytes, config: dict, git_writable_flag: bool = False) -> None:
     """Describe every project-controlled runtime capability before consent.
 
     git_writable_flag is launch --git-writable, which drops the read-only
     .git bind just as run.git_writable does, so the summary must say so.
     """
-    print("Project container capabilities:", file=sys.stderr)
+    print("Project container capabilities (" + ESCALATION_MARK + " marks access beyond the default):",
+          file=sys.stderr)
     print("- build and run: arbitrary commands with unrestricted network and root via passwordless sudo",
           file=sys.stderr)
-    print("- project mount: " + quote(root) + " -> "
+    print(capability_bullet(config["preserve_host_path"]) + "project mount: " + quote(root) + " -> "
           + (quote(root) + " (host path preserved)" if config["preserve_host_path"] else "\"/work\"")
           + " read-write", file=sys.stderr)
     sources = [name for name, on in (("run.git_writable", config["git_writable"]),
                                      ("--git-writable", git_writable_flag)) if on]
-    print("- project .git: " + (GIT_WRITABLE_NOTE + " (" + ", ".join(sources) + ")" if sources
-                                else "read-only when it is a directory at the project root"),
+    print(capability_bullet(sources) + "project .git: "
+          + (GIT_WRITABLE_NOTE + " (" + ", ".join(sources) + ")" if sources
+             else "read-only when it is a directory at the project root"),
           file=sys.stderr)
     for mount in config["mounts"]:
         mode = extra_mount_mode(mount)
-        print("- extra mount: " + quote(mount["source"]) + " -> " + quote(mount["target"]) + " " + mode
+        print(capability_bullet(True) + "extra mount: " + quote(mount["source"]) + " -> "
+              + quote(mount["target"]) + " " + mode
               + ("; HOST CREDENTIAL PATH: mounted only with the credential grant"
                  if mount.get("credential") else ""), file=sys.stderr)
     for key, value in sorted(config["env"].items()):
@@ -1845,6 +1881,12 @@ def credential_decline_note(command: str) -> str:
             "to change the answer later: " + command)
 
 
+def print_credential_notes(scope_note: str, command: str) -> None:
+    """The notes that precede every credential question."""
+    print(consent_text(scope_note), file=sys.stderr)
+    print(consent_text(credential_decline_note(command), keep=(command,)), file=sys.stderr)
+
+
 def credential_question(config: dict) -> str:
     """The project credential question, naming every mount it also decides."""
     covered = [mount["source"] for mount in config["mounts"] if mount.get("credential")]
@@ -1856,7 +1898,8 @@ def credential_question(config: dict) -> str:
 
 def consent_input(question: str) -> str:
     """Keep the complete prompt on the stderr TTY used by the availability gate."""
-    print(question, end="", file=sys.stderr, flush=True)
+    # Wrapped for display; the trailing space after [y/N] is where the answer goes.
+    print(consent_text(question.rstrip()) + " ", end="", file=sys.stderr, flush=True)
     # An attached `container run --interactive` exits with O_NONBLOCK left on
     # the shared terminal description (observed with apple/container 1.2.2);
     # an empty non-blocking read would surface as the default-No EOF before
@@ -1972,7 +2015,11 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
     if decision.refusal:
         fail(*decision.refusal)
     if decision.notice:
-        print(decision.notice, file=sys.stderr)
+        print(consent_text(decision.notice), file=sys.stderr)
+    if decision.step == "ask_build" and not decision.prompt_refusal:
+        # The header names what is asking before the list it is asking about (UX-11).
+        print(consent_text(quote(root) + " defines a custom container (trust fingerprint " + tf[:12] + ")."),
+              file=sys.stderr)
     if decision.show_summary:
         print_capability_summary(root, config, git_writable_flag=getattr(args, "git_writable", False))
     if decision.prompt_refusal:
@@ -1988,28 +2035,24 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
         record_approval(decision.record_auth)
         return True, decision.record_auth
     if decision.step == "ask_build":
-        print(quote(root) + " defines a custom container (trust fingerprint " + tf[:12] + ").",
-              file=sys.stderr)
-        print("Approving lets it run arbitrary commands at build and run time and mount the project read-write at "
-              + ("its own host path " + quote(root) + " (run.preserve_host_path)."
-                 if config["preserve_host_path"] else "/work."),
+        print(consent_text("Approving lets it run arbitrary commands at build and run time and mount the project "
+                           "read-write at " + ("its own host path " + quote(root) + " (run.preserve_host_path)."
+                                               if config["preserve_host_path"] else "/work.")),
               file=sys.stderr)
         if config["git_writable"]:
-            print("It also sets run.git_writable: " + GIT_WRITABLE_NOTE + ".", file=sys.stderr)
+            print(consent_text("It also sets run.git_writable: " + GIT_WRITABLE_NOTE + "."), file=sys.stderr)
         if consent_input("Allow build & run? [y/N] ").strip().lower() not in ("y", "yes"):
             fail("project trust declined", 3)
         build_ok = True
         if decision.ask_credentials:
             if not config["mount_auth"]:
-                print("persistent agent state (credentials and configuration): not mounted by default (manifest mount_auth = false); --auth required",
-                      file=sys.stderr)
-            print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
-            print(credential_decline_note("jms trust " + quote(root)), file=sys.stderr)
+                print(consent_text("persistent agent state (credentials and configuration): not mounted by "
+                                   "default (manifest mount_auth = false); --auth required"), file=sys.stderr)
+            print_credential_notes(CREDENTIAL_SCOPE_NOTE, "jms trust " + quote(root))
             auth_ok = consent_input(credential_question(config)).strip().lower() in ("y", "yes")
         record_approval(auth_ok)
     elif decision.step == "ask_auth":
-        print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
-        print(credential_decline_note("jms trust " + quote(root)), file=sys.stderr)
+        print_credential_notes(CREDENTIAL_SCOPE_NOTE, "jms trust " + quote(root))
         auth_ok = consent_input(credential_question(config)).strip().lower() in ("y", "yes")
         if auth_ok and decision.persist_auth:
             record_approval(True)
@@ -2086,9 +2129,9 @@ def base_launch_auth(workdir: bytes, args) -> bool:
               + quote(root) + " and no terminal to ask on; pass --auth to mount it for this launch",
               file=sys.stderr)
         return False
-    print(quote(root) + " has no project definition and no recorded credential answer.", file=sys.stderr)
-    print(BASE_CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
-    print(credential_decline_note("jms trust " + quote(root) + " --auth"), file=sys.stderr)
+    print(consent_text(quote(root) + " has no project definition and no recorded credential answer."),
+          file=sys.stderr)
+    print_credential_notes(BASE_CREDENTIAL_SCOPE_NOTE, "jms trust " + quote(root) + " --auth")
     answer = consent_input("Mount persistent agent state -- credentials and configuration for "
                            + agent_names_text("and") + " -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
     record_base_answer(root, answer)
@@ -2871,7 +2914,7 @@ def trust_approve(args):
                  "longer present; run jms trust revoke " + quote(workdir) + " first")
         record_base_answer(root, args.auth)
         if args.auth:
-            print(BASE_CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
+            print(consent_text(BASE_CREDENTIAL_SCOPE_NOTE), file=sys.stderr)
         print("recorded credential answer for " + quote(root) + ": auth=" + ("yes" if args.auth else "no"))
         return
     approve(data["root"], data["tf"], args, action="trust", config=data["config"])
