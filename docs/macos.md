@@ -93,3 +93,9 @@ command -v jms
 Python must be 3.11 or newer, the runtime must be apple/container 1.2.2 or
 newer (see [Runtime version](#runtime-version); there is no override for an
 older one), and `jms` must resolve from `~/.local/bin`.
+
+If jms is sent SIGTERM or SIGHUP while a container is running, it
+forwards the signal to `container run`, and apple/container may print
+`failed to send signal: ... "missing signal in xpc message"`. The signal
+did not reach the program inside, but the container is still removed
+(observed on apple/container 1.5.0); nothing needs cleaning up.
