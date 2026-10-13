@@ -1,6 +1,8 @@
 # 2.1.0 macOS qualification
 
-Status: open. This is the macOS half of qualifying 2.1.0; the
+Status: done 2026-10-13 on `a74f8c7`, apple/container 1.5.0; the results
+are in the 2.1.0 Qualification section of the CHANGELOG. This was the
+macOS half of qualifying 2.1.0; the
 [macOS qualification guide](macos-qualification-guide.md) and the
 [release checklist](release-checklist.md) stay authoritative. 2.1 changes
 how jms drives the runtime (child supervision with timeouts, forwarded

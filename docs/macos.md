@@ -58,10 +58,11 @@ jms trust list            # "missing" marks a deleted checkout
 A project image is named `jmscontainers-<directory>-<id>:<tag>`, where
 `<id>` is the first eight characters of the id `jms trust list` prints.
 Remove one with `container image delete <name>:<tag>`, then drop the stale
-approval with `jms trust prune`. Check `container image --help` for a
-prune command before relying on one; any prune sweeps every unnamed image
-in the runtime, not only the ones jms left. (Not yet verified on a Mac:
-whether apple/container keeps the replaced base as an unnamed image.)
+approval with `jms trust prune`. `container image prune` removes dangling
+images (`--all`: every unused image) across the whole runtime, not only
+the ones jms left. Rebuilding an image under the same name, as
+`jms build --base` does, leaves no unnamed copy of the old one behind
+(observed on apple/container 1.5.0).
 
 ## Resource limits
 
@@ -72,9 +73,10 @@ caps what an agent can consume; the manifest cannot raise or lower it.
 
 ## Proxies
 
-jms has no proxy settings of its own and passes none to `container`.
-Whether apple/container forwards your shell's proxy variables into builds
-and containers has not been qualified. To give a project's containers a
+jms has no proxy settings of its own and passes none to `container`, and
+apple/container does not forward your shell's proxy variables either:
+with `HTTPS_PROXY` set on the host, neither a build nor a container sees
+it (observed on apple/container 1.5.0). To give a project's containers a
 proxy, set `HTTPS_PROXY` and friends under `[env]` in its
 `jmscontainer.toml`; anything set there is visible to the agent.
 
