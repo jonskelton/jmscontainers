@@ -2,7 +2,9 @@
 
 jms supports Apple Silicon Macs running macOS 15 or newer. It selects
 [apple/container](https://github.com/apple/container) automatically; there is
-no runtime switch.
+no runtime switch. **Docker Desktop is not supported**: jms runs only the
+`container` CLI, whose separate VM per container is the boundary jms
+relies on.
 
 ## Install
 
@@ -37,6 +39,42 @@ Each container runs in its own lightweight virtual machine. This is a
 hardware-virtualized boundary, but it does not protect anything deliberately
 mounted into the VM: the project is writable, and approved agent state is
 read-write. See [SECURITY.md](../SECURITY.md) for the complete trust model.
+
+## Disk usage
+
+The shared base is roughly 3 GB, and jms keeps each project's two newest
+images. Images jms can no longer see stay on disk: an old base left without
+a name after `jms build --base`, and the images of a project whose
+directory you deleted (`jms clean` and `jms trust revoke --purge-images`
+need the directory to exist). Before deleting a checkout, run
+`jms clean --images` in it. For what is already left over, use
+apple/container's own commands; jms does not run these for you:
+
+```sh
+container image list      # every image, with its name
+jms trust list            # "missing" marks a deleted checkout
+```
+
+A project image is named `jmscontainers-<directory>-<id>:<tag>`, where
+`<id>` is the first eight characters of the id `jms trust list` prints.
+Remove one with `container image delete <name>:<tag>`, then drop the stale
+approval with `jms trust prune`. `container image prune` sweeps every
+unnamed image in the runtime, not only the ones jms left.
+
+## Resource limits
+
+jms passes no CPU or memory option to `container run`, and
+`jmscontainer.toml` has no key for one, so each container's VM gets
+apple/container's default allocation (see `container run --help`). The VM
+caps what an agent can consume; the manifest cannot raise or lower it.
+
+## Proxies
+
+jms has no proxy settings of its own and passes none to `container`.
+Whether apple/container forwards your shell's proxy variables into builds
+and containers has not been qualified. To give a project's containers a
+proxy, set `HTTPS_PROXY` and friends under `[env]` in its
+`jmscontainer.toml`; anything set there is visible to the agent.
 
 ## Troubleshooting
 
