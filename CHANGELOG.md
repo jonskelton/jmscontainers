@@ -208,8 +208,7 @@ leave for host tools, and moves the license to MIT alone.
   qualified 5.4.2) now prints a one-line stderr warning naming the newest
   qualified version. New majors can change the cleanup, user-namespace, and
   mount semantics this backend parses strictly. Minor and patch bumps
-  within the qualified major remain silent, and `JMS_RUNTIME_ACCEPT` stays
-  apple/container-only: it neither suppresses the warning nor is required.
+  within the qualified major remain silent.
 
 - **Documentation corrections.** `SECURITY.md` said the qualified Debian 13
   target "runs AppArmor"; the checked-in qualification captures report
