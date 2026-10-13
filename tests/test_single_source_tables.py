@@ -87,5 +87,66 @@ class AgentRosterTests(unittest.TestCase):
                               ("NEWAGENT_HOME", HOME + "/.newagent/state")])
 
 
+def plan(**overrides):
+    fields = dict(name="jms-demo-cafe0123", user="isolation", tty=False, workdir="/work",
+                  entrypoint="/bin/bash", image="img:1",
+                  labels=(("jms.project", "p" * 64), ("jms.container", "launch")),
+                  env=(("CLAUDE_CONFIG_DIR", HOME + "/.claude"), ("FOO", "bar")),
+                  mounts=(("/tmp/proj", "/work", False),
+                          ("/tmp/shell", HOME + "/.config/jms-shell", True),
+                          ("/tmp/agents/claude", HOME + "/.claude", False)),
+                  command=("-l",), network=False)
+    fields.update(overrides)
+    return JMS.LaunchPlan(**fields)
+
+
+BACKENDS = ((JMS.ContainerBackend(), "source="), (JMS.PodmanBackend(), "type=bind,source="))
+
+
+class SharedLaunchArgvTests(unittest.TestCase):
+    """MAINT-03: both backends build run argv through one shared helper."""
+
+    def pairs(self, argv, flag):
+        return [argv[index + 1] for index, value in enumerate(argv) if value == flag]
+
+    def test_both_backends_emit_the_shared_security_flags(self):
+        for backend, prefix in BACKENDS:
+            for user in ("isolation", "root"):
+                argv = backend.run_argv(plan(user=user))
+                with self.subTest(backend=backend.name, user=user):
+                    self.assertEqual(argv[:4], [backend.exe, "run", "--rm", "--interactive"])
+                    self.assertNotIn("--tty", argv)
+                    self.assertEqual(self.pairs(argv, "--label"),
+                                     ["jms.project=" + "p" * 64, "jms.container=launch"])
+                    self.assertEqual(self.pairs(argv, "--env"),
+                                     ["CLAUDE_CONFIG_DIR=" + HOME + "/.claude", "FOO=bar"])
+                    self.assertEqual(self.pairs(argv, "--mount"), [
+                        prefix + "/tmp/proj,target=/work",
+                        prefix + "/tmp/shell,target=" + HOME + "/.config/jms-shell,readonly",
+                        prefix + "/tmp/agents/claude,target=" + HOME + "/.claude"])
+                    self.assertEqual(argv[-4:], ["--network", "none", "img:1", "-l"])
+                    self.assertEqual(argv[argv.index("--entrypoint") + 1], "/bin/bash")
+                    self.assertEqual(argv[argv.index("--workdir") + 1], "/work")
+
+    def test_both_backends_refuse_ambiguous_mount_targets(self):
+        for backend, _ in BACKENDS:
+            for target in ("/opt/a,b", "/opt/a=b", "/opt/a\nb"):
+                with self.subTest(backend=backend.name, target=target), \
+                     self.assertRaises(JMS.JMSException):
+                    backend.mount_argument("/tmp/a", target)
+
+    def test_roster_config_variables_precede_the_project_mount_on_both_backends(self):
+        with with_extra_agent():
+            env = tuple(JMS.agent_config_env(HOME)) + (("FOO", "bar"),)
+            for backend, _ in BACKENDS:
+                argv = backend.run_argv(plan(env=env))
+                first_mount = argv.index("--mount")
+                self.assertEqual([value for index, value in enumerate(argv[:first_mount])
+                                  if argv[index - 1] == "--env"],
+                                 ["CLAUDE_CONFIG_DIR=" + HOME + "/.claude",
+                                  "NEWAGENT_HOME=" + HOME + "/.newagent/state"])
+                self.assertGreater(argv.index("FOO=bar"), first_mount)
+
+
 if __name__ == "__main__":
     unittest.main()

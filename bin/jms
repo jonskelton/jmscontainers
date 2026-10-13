@@ -228,6 +228,53 @@ class LaunchPlan:
             raise AssertionError("launch plan user must be isolation or root")
 
 
+def _launch_argv(exe, plan, user, mount_argument, runtime_flags=()):
+    """The run argv both backends share, so its security-relevant flags are written once (MAINT-03).
+
+    A backend supplies only what differs: its --user value, its mount
+    serializer, and flags that sit between the labels and the environment.
+    The order is part of the contract the golden argv tests pin: the roster's
+    config variables (CLAUDE_CONFIG_DIR) precede the project mount, then the
+    remaining environment, the other mounts, and --network none.
+    """
+    cmd = [exe, "run", "--rm", "--interactive"]
+    if plan.tty:
+        cmd.append("--tty")
+    cmd += ["--name", plan.name, "--user", user, "--workdir", plan.workdir,
+            "--entrypoint", plan.entrypoint]
+    for key, value in plan.labels:
+        cmd += ["--label", key + "=" + value]
+    cmd += list(runtime_flags)
+    env = list(plan.env)
+    for config_env in (entry.config_env for entry in AGENT_ROSTER if entry.config_env):
+        if env and env[0][0] == config_env:
+            key, value = env.pop(0)
+            cmd += ["--env", key + "=" + value]
+    mounts = list(plan.mounts)
+    source, target, readonly = mounts.pop(0)
+    cmd += ["--mount", mount_argument(source, target, readonly)]
+    for key, value in env:
+        cmd += ["--env", key + "=" + value]
+    for source, target, readonly in mounts:
+        cmd += ["--mount", mount_argument(source, target, readonly)]
+    if not plan.network:
+        cmd += ["--network", "none"]
+    cmd.append(plan.image)
+    cmd += list(plan.command)
+    return cmd
+
+
+def _mount_spec(prefix, source, target, readonly):
+    """One --mount value; the target checks are shared by both backends' mount_argument."""
+    source_text = runtime_path(os.fsencode(source))
+    if "," in target or "=" in target:
+        fail("mount paths cannot contain ',' or '=': " + quote(target))
+    if CONTROL_CHARACTER.search(target):
+        fail("mount paths cannot contain control characters: " + quote(target))
+    result = prefix + "source=" + source_text + ",target=" + target
+    return result + ",readonly" if readonly else result
+
+
 class ContainerBackend:
     """apple/container on macOS (Apple Silicon)."""
 
@@ -258,13 +305,7 @@ class ContainerBackend:
         return ref[len(prefix):] if ref.startswith(prefix) else ref
 
     def mount_argument(self, source, target, readonly=False):
-        source_text = runtime_path(os.fsencode(source))
-        if "," in target or "=" in target:
-            fail("mount paths cannot contain ',' or '=': " + quote(target))
-        if CONTROL_CHARACTER.search(target):
-            fail("mount paths cannot contain control characters: " + quote(target))
-        result = "source=" + source_text + ",target=" + target
-        return result + ",readonly" if readonly else result
+        return _mount_spec("", source, target, readonly)
 
     def build_argv(self, context, tag, labels, *, no_cache, pull, project):
         cmd = [self.exe, "build", "--tag", tag, "--file", context + "/Containerfile"]
@@ -278,29 +319,7 @@ class ContainerBackend:
         return cmd
 
     def run_argv(self, plan):
-        cmd = [self.exe, "run", "--rm", "--interactive"]
-        if plan.tty:
-            cmd.append("--tty")
-        cmd += ["--name", plan.name, "--user", plan.user, "--workdir", plan.workdir,
-                "--entrypoint", plan.entrypoint]
-        for key, value in plan.labels:
-            cmd += ["--label", key + "=" + value]
-        env = list(plan.env)
-        if env and env[0][0] == "CLAUDE_CONFIG_DIR":
-            key, value = env.pop(0)
-            cmd += ["--env", key + "=" + value]
-        mounts = list(plan.mounts)
-        source, target, readonly = mounts.pop(0)
-        cmd += ["--mount", self.mount_argument(source, target, readonly)]
-        for key, value in env:
-            cmd += ["--env", key + "=" + value]
-        for source, target, readonly in mounts:
-            cmd += ["--mount", self.mount_argument(source, target, readonly)]
-        if not plan.network:
-            cmd += ["--network", "none"]
-        cmd.append(plan.image)
-        cmd += list(plan.command)
-        return cmd
+        return _launch_argv(self.exe, plan, plan.user, self.mount_argument)
 
     # -- Class B: executing queries and policy (every process crosses the
     #    module-level runtime_run/runtime_json, looked up at call time) --
@@ -522,13 +541,7 @@ class PodmanBackend:
         return ref[len(prefix):] if ref.startswith(prefix) else ref
 
     def mount_argument(self, source, target, readonly=False):
-        source_text = runtime_path(os.fsencode(source))
-        if "," in target or "=" in target:
-            fail("mount paths cannot contain ',' or '=': " + quote(target))
-        if CONTROL_CHARACTER.search(target):
-            fail("mount paths cannot contain control characters: " + quote(target))
-        result = "type=bind,source=" + source_text + ",target=" + target
-        return result + ",readonly" if readonly else result
+        return _mount_spec("type=bind,", source, target, readonly)
 
     def build_argv(self, context, tag, labels, *, no_cache, pull, project):
         cmd = [self.exe, "build", "--tag", tag, "--file", context + "/Containerfile"]
@@ -546,9 +559,6 @@ class PodmanBackend:
         return cmd
 
     def run_argv(self, plan):
-        cmd = [self.exe, "run", "--rm", "--interactive"]
-        if plan.tty:
-            cmd.append("--tty")
         # --user is numeric so the image's /etc/passwd can never choose the
         # runtime UID; --userns is explicit so ambient PODMAN_USERNS or
         # containers.conf values cannot alter the mapping (MIR-034/040).
@@ -558,27 +568,8 @@ class PodmanBackend:
         else:
             user = "0:0"
             userns = "--userns=host"
-        cmd += ["--name", plan.name, "--user", user, "--workdir", plan.workdir,
-                "--entrypoint", plan.entrypoint]
-        for key, value in plan.labels:
-            cmd += ["--label", key + "=" + value]
-        cmd += ["--hostname", "container", "--security-opt", "label=disable", userns]
-        env = list(plan.env)
-        if env and env[0][0] == "CLAUDE_CONFIG_DIR":
-            key, value = env.pop(0)
-            cmd += ["--env", key + "=" + value]
-        mounts = list(plan.mounts)
-        source, target, readonly = mounts.pop(0)
-        cmd += ["--mount", self.mount_argument(source, target, readonly)]
-        for key, value in env:
-            cmd += ["--env", key + "=" + value]
-        for source, target, readonly in mounts:
-            cmd += ["--mount", self.mount_argument(source, target, readonly)]
-        if not plan.network:
-            cmd += ["--network", "none"]
-        cmd.append(plan.image)
-        cmd += list(plan.command)
-        return cmd
+        return _launch_argv(self.exe, plan, user, self.mount_argument,
+                            ["--hostname", "container", "--security-opt", "label=disable", userns])
 
     # -- Class B: executing queries and policy --
 
