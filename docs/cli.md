@@ -4,8 +4,8 @@
 jms build   [-w|--workdir PATH] [--base] [--trust] [--no-auth]
             [--no-cache] [--pull]
 jms launch  [-w|--workdir PATH | PATH] [--trust] [--auth|--no-auth]
-            [--no-cache] [--no-network] [-r|--root] [-b|--bin PROGRAM]
-            [-n|--name NAME] [-- ARGS...]
+            [--no-cache] [--no-network] [--git-writable] [-r|--root]
+            [-b|--bin PROGRAM] [-n|--name NAME] [-- ARGS...]
 jms inspect [-w|--workdir PATH | PATH]
 jms trust   [PATH] [--fingerprint HEX64] [--auth|--no-auth]
 jms trust   list
@@ -157,6 +157,18 @@ a project image that needs building is still built with the network, so
 run `jms build` first if that matters. It does not change credential
 mounting: agents that need their cloud service will not work, so pair it
 with `--no-auth` for offline work on code you do not trust.
+
+The project's top-level `.git` is mounted read-only by default, so the
+container cannot plant hooks or change config that host git later runs.
+`git status`, `log`, and `diff` work inside; `git add` and `git commit` fail
+with `Read-only file system`. `--git-writable` mounts it read-write for one
+launch; a definition can set
+[`run.git_writable`](jmscontainer.toml.md#read-only-git) instead, which the
+approval prompt names. Only a real `.git` directory at the project mount
+root is covered: a `.git` file (linked worktree, submodule), a `.git`
+symlink, or a launch from a checkout's subdirectory with no definition gets
+no read-only bind. The bind is verified on Podman; on macOS it is not yet
+qualified.
 
 `--bin` becomes the runtime entrypoint verbatim. The base image ships
 full-permission agent launchers — `yolo-claude`, `yolo-codex`,

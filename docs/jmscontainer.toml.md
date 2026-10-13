@@ -22,6 +22,7 @@ readonly = true
 entry = ["/bin/bash", "-l"]
 mount_auth = true
 preserve_host_path = false
+git_writable = false
 ```
 
 ## Schema
@@ -39,10 +40,11 @@ coercion is performed, and floats and datetimes are accepted nowhere.
 | `mounts[].target` | string | — | Required container path. Absolute paths use the allowlist in [Mount targets](#mount-targets); relative paths resolve from the container project path and may leave that allowlist, subject to the system-state and reserved-path checks below. Targets may not overlap each other or any reserved path. |
 | `mounts[].readonly` | boolean | `true` | Set `false` only when the container must write the host path. A writable host toolchain cache (such as `~/.cargo/registry`, `~/go/pkg/mod` or `~/.cache/pip`) is code host builds of every project will later run, so give a container its own cache directory instead. Read-only does not restrict a socket, FIFO or device node: the container can still connect to or write it, which is why such sources need `allow_socket`. |
 | `mounts[].allow_socket` | boolean | `false` | Permit a source that is a socket, FIFO, or character/block device; without it such a source is refused. The consent summary then names the grant (`SOCKET (allow_socket = true)`) instead of `read-only`. An exact socket path is also exempt from the socket-directory refusal; a directory never is. See [Host sockets](#host-sockets). |
-| `run` | table | defaults below | Only `entry`, `mount_auth`, and `preserve_host_path`. |
+| `run` | table | defaults below | Only `entry`, `mount_auth`, `preserve_host_path`, and `git_writable`. |
 | `run.entry` | array of strings | `["/bin/bash", "-l"]` | Nonempty; first element nonempty; no element contains NUL. |
 | `run.mount_auth` | boolean | `true` | The key name is historical: it gates the agent-state mount (credentials and configuration). If false, mounting requires the user to type `--auth`; it does not change the approval record or prompts. |
 | `run.preserve_host_path` | boolean | `false` | Mount the project at its own host path instead of `/work`, so a path-keyed tool resolves the same key inside and outside. See [Project mount path](#project-mount-path). |
+| `run.git_writable` | boolean | `false` | Mount the project's top-level `.git` read-write instead of read-only. Hooks and config there run on your host, so approval names it. See [Read-only .git](#read-only-git). |
 
 Any byte change under `.jmscontainer/` — including this manifest — changes the
 trust fingerprint and requires fresh consent.
@@ -199,6 +201,45 @@ is refused rather than landing somewhere the manifest did not name.
 The key is manifest content: turning it on changes the trust fingerprint and
 requires fresh consent, and the consent summary names the path that will be
 mounted.
+
+## Read-only .git
+
+Every launch mounts the project's top-level `.git` read-only inside the
+read-write project mount, at `/work/.git` (or `<host path>/.git` with
+`run.preserve_host_path`). Host git runs what lives there: hooks, and config
+such as `core.fsmonitor` and `core.hooksPath`. A container that could write
+`.git` would get code run on your host the next time you type `git status`.
+
+The bind applies only when `.git` at the project mount root is a real
+directory:
+
+- a `.git` **file** (a linked worktree or a submodule) points at a git
+  directory outside the mount, which the container cannot reach; nothing is
+  bound;
+- a `.git` **symlink** is not bound;
+- **no `.git`** at the mount root — a launch with no definition from a
+  checkout's subdirectory mounts only that subdirectory — means nothing is
+  bound. Note that the container can then create a `.git` there, and host git
+  run in that directory would use it.
+
+Inside the container `git status`, `log`, and `diff` work, but `git add` and
+`git commit` fail with `Unable to create '.git/index.lock': Read-only file
+system`. Commit on the host, or relax the default:
+
+```toml
+[run]
+git_writable = true
+```
+
+or, for one launch, `jms launch --git-writable`. Launches with no definition
+have only the flag. The key is manifest content written by the repository
+author, so it is covered by the trust fingerprint, and the approval prompt
+says "container can write .git (hooks and config there run on your host)".
+Approve it only for a repository whose author you trust with your host.
+
+The read-only bind is verified on Podman. On macOS, apple/container's
+handling of a read-only bind nested in a read-write one is not yet
+qualified; do not rely on it there.
 
 ## Mount targets
 

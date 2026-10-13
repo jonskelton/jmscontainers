@@ -35,7 +35,7 @@ dependency it pulls in — read/write access to your agents' persistent state:
 their credentials and their configuration. The `isolation` user is not a security boundary
 (passwordless sudo is by design);
 the container boundary protects the rest of the host, not anything mounted
-into the container. The mounted checkout, `.git` included, holds files that
+into the container. The mounted checkout holds files that
 host tools later read or run, so a container's writes there can reach the
 host through those tools; see
 [Files a container can leave for the host](#files-a-container-can-leave-for-the-host).
@@ -56,8 +56,8 @@ boundary meaningfully limits exfiltration of mounted credentials.
 
 ## Files a container can leave for the host
 
-The project mount is read-write, `.git` included, and so is every extra
-mount with `readonly = false`. A container can write files there that host
+The project mount is read-write, except its top-level `.git` (below), and so
+is every extra mount with `readonly = false`. A container can write files there that host
 tools later read or run without asking, and the files persist after the
 container exits. jms neither detects nor undoes such writes. The channels
 to know:
@@ -65,9 +65,20 @@ to know:
 - **Git metadata:** `.git/config` and `.git/hooks/`. Host git runs commands
   that repository config names, and hooks, during ordinary commands such as
   `git status`, including the ones an IDE, editor plugin or shell prompt
-  runs for you. A nested repository the container creates anywhere under
-  the mount, including in the directory a launch started from, works the
-  same way once host git runs there.
+  runs for you. By default jms mounts the project's top-level `.git`
+  read-only, which closes this channel for that repository: hooks, config,
+  and the rest of the git directory cannot be written, and `.git` cannot be
+  renamed out of the way. It stays open when:
+  - the launch used `--git-writable`, or an approved definition sets
+    `run.git_writable = true`;
+  - `.git` at the mount root is not a directory (a linked worktree's or
+    submodule's `.git` file, or a symlink), or is absent, as in a launch
+    with no definition from a checkout's subdirectory;
+  - the container creates a nested repository anywhere under the mount,
+    including in the directory a launch started from; host git run there
+    uses it;
+  - the platform is macOS, where apple/container's handling of a read-only
+    bind nested in a read-write one is not yet qualified.
 - **Editor and agent configuration:** `.vscode/`, `.claude/`, `.mcp.json`,
   `CLAUDE.md` and `AGENTS.md`, which an IDE or a host-side agent loads when
   it opens the checkout. Some of these name commands to run.
