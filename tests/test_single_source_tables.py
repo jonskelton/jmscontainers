@@ -5,6 +5,7 @@ import importlib.machinery
 import importlib.util
 import os
 import pathlib
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -14,6 +15,7 @@ def load_source(name, path):
     # As tests/test_jms.py: bin/jms has no .py suffix for spec_from_file_location.
     loader = importlib.machinery.SourceFileLoader(name, str(path))
     module = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+    sys.modules[name] = module  # dataclasses resolve string annotations through it
     loader.exec_module(module)
     return module
 
