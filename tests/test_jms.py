@@ -3204,7 +3204,10 @@ class CleanTests(unittest.TestCase):
                           containers=list(containers or []),
                           stop_error=stop_error) as runtime:
             stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
+            # Off a terminal clean never asks; pin that so the suite does not
+            # depend on whether `make test` itself runs on a TTY.
+            with contextlib.redirect_stdout(stdout), \
+                 mock.patch.object(sys, "stdin", TTYIO(False)):
                 JMS.cmd_clean(JMS.parse_cli(argv))
             return runtime, stdout.getvalue()
 
@@ -4651,12 +4654,13 @@ class CleanupPartialFailureTests(unittest.TestCase):
         with sandbox():
             containers = [{"id": "jms-demo-1",
                            "labels": {"jms.project": "0" * 64, "jms.container": "launch"}}]
-            with fake_runtime(containers=containers) as runtime:
+            with fake_runtime(containers=containers) as runtime, \
+                 mock.patch.object(sys, "stdin", TTYIO(False)):
                 with contextlib.redirect_stdout(io.StringIO()):
                     JMS.cmd_clean(JMS.parse_cli(["clean", "--all"]))
                 runtime.containers = []      # removed out-of-band / by first run
                 stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
+                with contextlib.redirect_stdout(stdout), quiet():
                     JMS.cmd_clean(JMS.parse_cli(["clean", "--all"]))
             self.assertNotIn("removed container", stdout.getvalue())
 

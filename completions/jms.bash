@@ -23,7 +23,7 @@ _jms_completion() {
             COMPREPLY=( $(compgen -W 'list revoke prune --fingerprint --auth --no-auth --purge-images' -- "$cur") )
             [[ $cur != -* ]] && _filedir -d ;;
         clean)
-            COMPREPLY=( $(compgen -W '-w --workdir --all --images --dry-run' -- "$cur") )
+            COMPREPLY=( $(compgen -W '-w --workdir --all --images --dry-run -y --yes' -- "$cur") )
             _jms_dirs ;;
         build)
             COMPREPLY=( $(compgen -W '-w --workdir --base --trust --no-auth --no-cache --pull' -- "$cur") )
