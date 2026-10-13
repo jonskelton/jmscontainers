@@ -119,7 +119,12 @@ Integration tiers A and B, including tier A's read-only `.git` probe, passed on
 account (UID 1000), without sudo; no integration-owned container or image
 remained afterwards.
 
-TODO before merge: record the macOS tier A rerun on this candidate.
+Integration tier A, including its read-only `.git` probe, passed again on
+2026-10-12 on this candidate (`c1827a3`) on apple/container 1.5.0 (macOS
+27.0, Apple Silicon), with `make test` passing (380 tests). A launch with the
+documented ssh-agent forwarding mount now stops before consent and build
+with "is not a directory; container mounts only directories", and no
+integration-owned container or image remained afterwards.
 
 The release checklist's fresh-account (non-1000 UID, ssh login) run and
 clean-VM install walkthrough were not performed: the project has one
