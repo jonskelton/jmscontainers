@@ -1666,6 +1666,13 @@ CREDENTIAL_SCOPE_NOTE = ("note: a recorded credential grant is tied to this path
                          "--no-auth to review code you did not write")
 
 
+# What the default No costs and how to undo it, so a cautious answer is not
+# a mystery at the next launch (ADOPT-01).
+def credential_decline_note(command: str) -> str:
+    return ("note: with no, agents keep no login or settings between launches; "
+            "to change the answer later: " + command)
+
+
 def credential_question(config: dict) -> str:
     """The project credential question, naming every mount it also decides."""
     covered = [mount["source"] for mount in config["mounts"] if mount.get("credential")]
@@ -1761,6 +1768,7 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
                 print("persistent agent state (credentials and configuration): not mounted by default (manifest mount_auth = false); --auth required",
                       file=sys.stderr)
             print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
+            print(credential_decline_note("jms trust " + quote(root)), file=sys.stderr)
             auth_ok = consent_input(credential_question(config or default_config())).strip().lower() in ("y", "yes")
         record_approval(auth_ok)
     elif wants_auth and not auth_ok:
@@ -1770,6 +1778,7 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
                  + ("drop --trust and " if getattr(args, "trust", False) else "")
                  + "set JMS_TRUST_FINGERPRINT=" + tf + " and keep --auth", 3)
         print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
+        print(credential_decline_note("jms trust " + quote(root)), file=sys.stderr)
         auth_ok = consent_input(credential_question(config or default_config())).strip().lower() in ("y", "yes")
         # --trust is one-shot for both grants: an accepted escalation applies to
         # this invocation only and leaves any existing record untouched.
@@ -1850,6 +1859,7 @@ def base_launch_auth(workdir: bytes, args) -> bool:
         return False
     print(quote(root) + " has no project definition and no recorded credential answer.", file=sys.stderr)
     print(BASE_CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
+    print(credential_decline_note("jms trust " + quote(root) + " --auth"), file=sys.stderr)
     answer = consent_input("Mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
     record_base_answer(root, answer)
     return answer

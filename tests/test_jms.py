@@ -1188,6 +1188,8 @@ class ConsentTests(unittest.TestCase):
                     self.assertEqual(stderr.getvalue().count(JMS.CREDENTIAL_SCOPE_NOTE), 1)
                     self.assertIn("not to the code", JMS.CREDENTIAL_SCOPE_NOTE)
                     self.assertIn("--no-auth", JMS.CREDENTIAL_SCOPE_NOTE)
+                    self.assertEqual(stderr.getvalue().count(
+                        JMS.credential_decline_note("jms trust " + JMS.quote(root))), 1)
 
     def test_auth_escalation_prompts_and_records(self):
         with sandbox() as home:
@@ -2208,6 +2210,10 @@ class LaunchTests(unittest.TestCase):
             self.assertEqual(len(self.questions), 1)
             self.assertIn("[y/N]", self.questions[0])
             self.assertIn("remembered for this checkout path", self.stderr.getvalue())
+            # The question says what No costs and how to undo it (ADOPT-01).
+            self.assertIn("note: with no, agents keep no login or settings between launches; "
+                          "to change the answer later: jms trust " + JMS.quote(canonical) + " --auth",
+                          self.stderr.getvalue())
             record = JMS.read_store()["projects"][hashlib.sha256(canonical).hexdigest()]
             self.assertEqual(record["root"], canonical.decode())
             self.assertEqual(record["tf"], JMS.BASE_CREDENTIAL_TF)
