@@ -221,10 +221,12 @@ approve.
 contacts the runtime; if image deletion then fails, trust remains revoked.
 Every other `trust` form is store-only and works without the runtime CLI.
 
-`trust revoke PATH` without a definition removes the record of a vanished
-definition at PATH or an ancestor inside its checkout if there is one, and
-otherwise the remembered credential answer for PATH's checkout root; the
-next launch there on a terminal asks again. `trust PATH --auth` (or
+`trust revoke PATH` without a definition removes the records of every
+vanished definition at PATH and its ancestors inside its checkout, naming
+each one, if there are any; a remembered answer for the checkout root then
+applies there again, and a `note:` says so. Otherwise it removes the
+remembered credential answer for PATH's checkout root; the next launch
+there on a terminal asks again. `trust PATH --auth` (or
 `--no-auth`) without a definition records that answer for PATH's checkout
 root directly, replacing any earlier one, and needs no terminal; it refuses
 while a vanished definition's record covers PATH (revoke that first), and
