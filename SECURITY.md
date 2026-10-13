@@ -9,7 +9,13 @@ fingerprint is re-checked immediately before the build and a changed
 fingerprint requires fresh consent. The runtime reads `COPY` sources
 throughout the build, so a process that can write the checkout can still
 change the definition while a build runs. For a project definition, credential
-mounting is a second, distinct grant and defaults to no. A launch without a
+mounting is a second, distinct grant and defaults to no. It covers both the
+agent-state pool and any manifest mount of a listed host credential store
+(`~/.ssh`, `~/.config/gh`, `~/.aws`, and others; see
+[Credential-path mounts](docs/jmscontainer.toml.md#credential-path-mounts)).
+Without the grant those mounts are dropped with a notice. The list is
+best-effort: a credential store it does not name rides build/run approval
+like any other mount. A launch without a
 project definition uses the shared base and mounts no agent state without
 consent: at a checkout with no recorded answer it asks the same default-No
 credential question once and remembers the answer for the checkout root.
