@@ -75,6 +75,12 @@ auth grant, the consent path still applies and unavailable prompting fails.
 See the [CLI trust reference](cli.md#trust) for interactive and automation
 behavior.
 
+The same grant also decides manifest mounts of host credential stores
+such as `~/.ssh` or `~/.config/gh`. Without the grant they are dropped
+with a notice, even when `run.mount_auth = false` is what keeps agent
+state off; see
+[Credential-path mounts](jmscontainer.toml.md#credential-path-mounts).
+
 A credential grant is recorded for the project's path and the exact
 contents of its `.jmscontainer/`, not for the code checked out there. Any
 branch, fork, or pull request later checked out at that path with an

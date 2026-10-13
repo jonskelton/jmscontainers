@@ -52,6 +52,40 @@ before approval; mount sources that touch jms credential, configuration, or tool
 directories are rejected. For the complete security and trust behavior, see
 [SECURITY.md](../SECURITY.md).
 
+### Credential-path mounts
+
+A mount whose canonical source overlaps a host credential store is kept
+only when the launch holds the project's credential grant: the recorded
+answer to the credential question was yes, or a matching
+`JMS_TRUST_FINGERPRINT` pin is combined with `--auth`. Otherwise jms drops
+it and prints one `note: not mounting host credential path ...` line per
+dropped mount; the launch still proceeds. That covers a declined grant,
+`--no-auth`, a bare `--trust`, and a pin without `--auth`. The gate reads
+the grant itself, not `run.mount_auth`: a manifest with
+`mount_auth = false` still keeps its credential mounts when the grant is
+recorded. The consent summary marks these mounts, and the credential
+question names them.
+
+"Overlaps" means the source is one of these paths, inside one, or a
+directory that contains one, after resolving symlinks. Paths are relative
+to `$HOME`:
+
+`.ssh`, `.gnupg`, `.config/gh`, `.aws`, `.azure`, `.config/gcloud`,
+`.kube`, `.docker`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`,
+`.cargo/credentials.toml`, `.vault-token`, `.terraform.d`,
+`.m2/settings.xml`, `.gradle/gradle.properties`, `.1password`,
+`Library/Keychains` (macOS), and the host agents' own `.claude`, `.codex`,
+`.local/share/opencode`, `.config/opencode` and `.pi/agent`.
+
+When set, `$GNUPGHOME`, `$DOCKER_CONFIG`, each absolute entry of
+`$KUBECONFIG`, and `$AWS_SHARED_CREDENTIALS_FILE` are added to the list.
+
+Because a containing directory matches, mounting all of `~/.cargo` or
+`~/.m2` also goes through the credential question; mount the cache
+subdirectory you need (`~/.cargo/registry`) to avoid that. The list is
+best-effort, not exhaustive: a credential store it does not name is
+mounted under build/run approval like any other source.
+
 On the Linux backend, access to a mount source is owner-based: a source is
 supported only if it is reachable through the invoking user's own UID and
 primary GID. Access that exists only via a supplementary group, an ACL grant,

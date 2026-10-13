@@ -211,7 +211,9 @@ without prompting and without persisting anything — the store is not
 written, and the next unflagged invocation prompts as usual. It never
 satisfies a custom definition's credential grant: combined with `--auth`
 it still asks the credential question on a TTY and fails closed without
-one. Use it for
+one. Without a credential grant, manifest mounts of host credential paths
+are dropped with a notice; see
+[Credential-path mounts](jmscontainer.toml.md#credential-path-mounts). Use it for
 throwaway experiments on definitions you just read; for automation, prefer
 a durable `jms trust --fingerprint HEX64` grant or a per-invocation
 `JMS_TRUST_FINGERPRINT` pin, both of which name the exact fingerprint they
@@ -282,7 +284,8 @@ global sweep.
 - `JMS_TRUST_FINGERPRINT`: one-invocation exact trust fingerprint pin. This is
   also the only non-interactive path to a one-shot credential grant: with a
   matching pin, `--auth` mounts the persistent agent state (credentials and
-  configuration) without prompting. The
+  configuration) and keeps manifest credential-path mounts without
+  prompting; a pin without `--auth` drops those mounts with a notice. The
   boolean `--trust` flag never grants credential access; combined with
   `--auth` it still asks the credential question on a TTY and fails closed
   without one.
