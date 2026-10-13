@@ -528,6 +528,22 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(JMS.JMSException, "run.git_writable"):
                 JMS.parse_manifest(raw)
 
+    def test_a_writable_mount_reaching_git_needs_git_writable(self):
+        with sandbox() as home:
+            root = make_project(home)
+            (root / ".git" / "hooks").mkdir()
+            def load(source, readonly, run=b""):
+                (root / ".jmscontainer" / "jmscontainer.toml").write_bytes(
+                    b'[[mounts]]\nsource = "%s"\ntarget = "/opt/g"\nreadonly = %s\n%s'
+                    % (source, b"true" if readonly else b"false", run))
+                return JMS.project_data(JMS.canon(os.fsencode(root)))
+            # .git itself, a path inside it, and the root that contains it.
+            for source in (b".git", b".git/hooks", b"."):
+                with self.assertRaisesRegex(JMS.JMSException, "would make the project .git writable"):
+                    load(source, readonly=False)
+            self.assertTrue(load(b".git", readonly=True))
+            self.assertTrue(load(b".git", readonly=False, run=b"[run]\ngit_writable = true\n"))
+
     def test_invalid_fields_are_reported_together(self):
         with self.assertRaisesRegex(JMS.JMSException, "invalid jmscontainer.toml fields"):
             JMS.parse_manifest(b'nonsense = 1\n[env]\n"BAD KEY" = "x"\n')

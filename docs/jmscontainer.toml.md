@@ -118,6 +118,11 @@ A mount with `allow_socket = true` whose source is exactly a socket skips
 the two directory rules; a directory never does, because it would carry
 every socket created in it later.
 
+A socket inside a credential path (`~/.ssh/agent.sock`,
+`~/.1password/agent.sock`, a gpg-agent socket under `~/.gnupg`) is also a
+credential mount: it is kept only with the credential grant and is otherwise
+dropped with a `note:`, see [Credential-path mounts](#credential-path-mounts).
+
 The list is **best-effort**, not a guarantee. Agent sockets elsewhere that
 no environment variable names (under `$HOME`, say) are not detected, so
 review every extra mount at consent as a grant of whatever it contains.
@@ -232,7 +237,10 @@ git_writable = true
 ```
 
 or, for one launch, `jms launch --git-writable`. Launches with no definition
-have only the flag. The key is manifest content written by the repository
+have only the flag. Without the key, a definition's own read-write
+`[[mounts]]` entry whose source is `.git`, a path inside it, or a directory
+containing it (such as `.`) is refused, since it would hand the same
+directory back writable under another target; a read-only one is fine. The key is manifest content written by the repository
 author, so it is covered by the trust fingerprint, and the approval prompt
 says "container can write .git (hooks and config there run on your host)".
 Approve it only for a repository whose author you trust with your host.
