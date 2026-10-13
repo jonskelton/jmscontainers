@@ -48,5 +48,6 @@ container --version
 command -v jms
 ```
 
-Python must be 3.11 or newer, the runtime must match the qualified version (or
-be explicitly accepted), and `jms` must resolve from `~/.local/bin`.
+Python must be 3.11 or newer, the runtime must be apple/container 1.2.2 or
+newer (see [Runtime version](#runtime-version); there is no override for an
+older one), and `jms` must resolve from `~/.local/bin`.

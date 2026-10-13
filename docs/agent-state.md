@@ -17,7 +17,9 @@ without a project definition ask their own question (see
 | `pi/` | `~/.pi/agent` |
 
 Log in once inside a container; later containers that mount this state reuse
-that login. Pi uses `/login` inside its interactive session; its state mount
+that login. When this state is mounted, jms also sets `CLAUDE_CONFIG_DIR` to
+the container's `~/.claude`, so Claude Code keeps its configuration inside
+the mounted directory. Pi uses `/login` inside its interactive session; its state mount
 also persists settings, sessions, and extensions. With `jms launch --root`, the same directories mount under `/root`.
 
 The state is shared across custom-project and shared-base launches that

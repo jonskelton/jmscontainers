@@ -11,7 +11,10 @@ top-level `.git` is read-only by default, so commit on the host or launch
 with `--git-writable`.
 
 `jms` mounts your checkout read-write at `/work`, starts a disposable Fedora
-environment, and removes the container when you exit. It uses a lightweight VM
+environment, and removes the container when you exit. (Launched from a
+subdirectory of a checkout with no project definition, it mounts only that
+subdirectory, with no read-only `.git`; launch from the checkout root to get
+both.) It uses a lightweight VM
 per container on macOS and rootless Podman on Linux. Projects can supply their
 own Containerfile, but `jms` fingerprints it and asks before it can build, run,
 or access persistent agent credentials. A checkout without one runs on the
@@ -85,7 +88,13 @@ jms launch -b yolo-pi
 The container exits with the agent. Use plain `jms launch` when you want a
 shell to remain after the agent exits. The first launch in a checkout asks
 whether to mount your agent credentials; answer `y` for an agent that should
-stay logged in. Without a terminal, pass `--auth` to mount them.
+stay logged in. Without a terminal, pass `--auth` to mount them. If you
+answered no, `jms trust --auth` in the checkout changes the answer.
+
+Your host's agent logins do not carry over: the container keeps its own
+agent state, so log in once inside the container (for example, `yolo-claude`
+opens Claude Code's login). Later launches that mount the credentials reuse
+that login.
 
 ## Know these three things
 

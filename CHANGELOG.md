@@ -1,5 +1,66 @@
 # Changelog
 
+## 2.0.2 — 2026-10-13
+
+- **stdout belongs to the launched program on macOS too.** The
+  "starting container runtime..." line printed on a cold start, and
+  `jms init`'s nested-project notice, now go to stderr. A script that
+  captures `jms launch ... -- cmd` no longer gets an extra line once per
+  boot.
+- **The missing-base hint names `jms build --base`.** It used to say to
+  run `jms build` "in the base directory", which no document defines.
+- **Refusals end with the command that gets past them.** The no-terminal
+  trust refusals name `jms trust PATH` and the exact
+  `--fingerprint`/`JMS_TRUST_FINGERPRINT` alternative; fingerprint
+  mismatches show the supplied and current 12-character prefixes; a bare
+  `jms launch` outside a checkout names `jms launch .`. Exit codes are
+  unchanged.
+- **Invalid manifest fields say why.** A missing mount source reports
+  `mount source does not exist: PATH` and the `mkdir -p` that fixes it
+  instead of only `"mounts[0].source"`; an unknown key lists the keys
+  allowed there.
+- **The credential question says what "no" costs.** Declining means
+  agents keep no login between launches; the prompt now says so and
+  names the `jms trust` command that changes the answer.
+- **Podman readiness hints print on their own line.** The four
+  "rootless podman is not usable" errors showed a literal `\x0a` where
+  the `hint:` line should start; the hint is now a separate stderr line.
+- **Smaller wording fixes.** `-b ''` names `--bin`; a failed build no
+  longer ends in an empty `-- ""`.
+- **Docs.** The CLI reference documents `jms trust PATH --fingerprint
+  HEX64 --auth` (a durable credential grant without a question) and that
+  `--trust` overrides `JMS_TRUST_FINGERPRINT`; the README says a
+  subdirectory launch without a definition mounts only that subdirectory
+  and binds no read-only `.git`, and that you log in once inside the container; the
+  macOS guide no longer mentions the version-acceptance override removed
+  in 1.2.0; SECURITY.md lists every argv pin.
+
+### Qualification
+
+Linux matrix of the release-preparation host (2026-10-13), unchanged from
+2.0.1. On it, `make test` passed (389 tests), integration tier A passed,
+and `podman image inspect` of an absent ref exited 125 with `[]` on stdout
+and a stderr byte-identical to
+`tests/fixtures/podman-5.4.2-image-inspect-absent.stderr`.
+
+| Dimension | Tested value |
+| --- | --- |
+| Podman | 5.4.2 |
+| Architecture | amd64 (`x86_64`) |
+| Kernel | 6.12.107+deb13-amd64 |
+| Distribution | Debian GNU/Linux 13 (trixie) |
+| cgroup | v2, `systemd` manager |
+| OCI runtime | crun 1.21 |
+| Storage driver | `overlay` |
+| Network backend | netavark 1.14.0, aardvark-dns 1.14.0, pasta (passt 0.0~git20250503.587980c) |
+| Rootless | yes |
+| Python | 3.15.0 |
+
+The changes are to wording, documentation and which stream two notices
+use; the runtime argv and the readiness checks are unchanged, so macOS
+integration was not rerun and `ContainerBackend._version_qualified` is
+unchanged (CI's macOS leg runs `make test`).
+
 ## 2.0.1 — 2026-10-12
 
 - **The approval summary names `--git-writable`.** A first launch with

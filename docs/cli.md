@@ -126,8 +126,9 @@ canonical local base never forces an existing project image to rebuild.
 
 ## launch
 
-During `launch`, jms build progress and automatic image-retention diagnostics
-go to stderr, leaving the launched program's stdout available for capture.
+During `launch`, jms build progress, automatic image-retention diagnostics
+and the macOS runtime auto-start notice go to stderr, leaving the launched
+program's stdout available for capture.
 The container runtime and launched program can also write to stderr.
 
 `launch` discovers the nearest definition, applies the consent gate, builds
@@ -209,7 +210,11 @@ trusted definition vanished.
 
 `jms trust PATH` interactively (re)approves a definition; with
 `--fingerprint HEX64` it records durable trust non-interactively when the
-value matches the current fingerprint. `list`, `revoke`, and `prune` are
+value matches the current fingerprint. Combined with `--auth`, it also
+records the credential grant without asking — the strongest
+non-interactive grant jms offers, so pin only a definition you have
+reviewed; without `--auth` it records the credential grant as declined,
+replacing any earlier answer. `list`, `revoke`, and `prune` are
 reserved words in the `trust` grammar: a project directory literally named
 `list` must be passed as an absolute path. During any interactive approval,
 `--no-auth` suppresses the credential question and records the credential
@@ -296,10 +301,13 @@ global sweep.
   also the only non-interactive path to a one-shot credential grant: with a
   matching pin, `--auth` mounts the persistent agent state (credentials and
   configuration) and keeps manifest credential-path mounts without
-  prompting; a pin without `--auth` drops those mounts with a notice. The
+  prompting; a pin without `--auth` drops those mounts with a notice unless
+  a credential grant is already recorded. For a durable non-interactive
+  grant, use `jms trust PATH --fingerprint HEX64 --auth`. The
   boolean `--trust` flag never grants credential access; combined with
   `--auth` it still asks the credential question on a TTY and fails closed
-  without one.
+  without one. `--trust` takes precedence over the pin: with `--trust`,
+  `JMS_TRUST_FINGERPRINT` is ignored, even when it does not match.
 - `TZ`: read from the host, not defined by jms. When it names a zone present
   in the host's `/usr/share/zoneinfo`, it is the first source `launch` uses
   for the zone it passes into the container; otherwise `/etc/localtime` and

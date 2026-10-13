@@ -548,6 +548,24 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(JMS.JMSException, "invalid jmscontainer.toml fields"):
             JMS.parse_manifest(b'nonsense = 1\n[env]\n"BAD KEY" = "x"\n')
 
+    def test_invalid_field_errors_keep_their_reason(self):
+        """ADOPT-03/ADOPT-09: say why a field is invalid, not only which."""
+        with self.assertRaises(JMS.JMSException) as caught:
+            JMS.parse_manifest(b'[run]\nentrypoint = ["sh"]\n')
+        self.assertEqual(str(caught.exception),
+                         'invalid jmscontainer.toml fields: "run.entrypoint" (unknown key; allowed: '
+                         'entry, git_writable, mount_auth, preserve_host_path)')
+        with sandbox() as home:
+            missing = home / ".cache" / "go-build"
+            with self.assertRaises(JMS.JMSException) as caught:
+                JMS.parse_manifest(('[[mounts]]\nsource = "%s"\ntarget = "/opt/c"\nbogus = 1\n'
+                                    % missing).encode())
+            shown = JMS.quote(os.fsencode(missing))
+            self.assertEqual(str(caught.exception),
+                             'invalid jmscontainer.toml fields: "mounts[0].bogus" (unknown key; allowed: '
+                             'allow_socket, readonly, source, target), "mounts[0].source" (mount source '
+                             'does not exist: ' + shown + '; create it first: mkdir -p ' + shown + ')')
+
     def test_newer_schema_is_rejected(self):
         with self.assertRaisesRegex(JMS.JMSException, "newer than this jms"):
             JMS.parse_manifest(b"schema = 2\n")
@@ -1071,6 +1089,39 @@ class ConsentTests(unittest.TestCase):
                 self.approve(root, "a" * 64, ["build"], tty=False)
             self.assertEqual(caught.exception.exit_code, 3)
 
+    def test_trust_refusals_end_with_the_command_that_gets_past_them(self):
+        """C-05: each no-TTY or mismatch refusal names its next step; exit 3 is unchanged."""
+        with sandbox() as home:
+            root = JMS.canon(os.fsencode(make_project(home)))
+            shown, tf = JMS.quote(root), "a" * 64
+            with self.assertRaises(JMS.TrustError) as caught:
+                self.approve(root, tf, ["build"], tty=False)
+            self.assertEqual(caught.exception.exit_code, 3)
+            self.assertTrue(str(caught.exception).endswith(
+                "jms trust " + shown + " --fingerprint " + tf), str(caught.exception))
+            self.assertIn("on a terminal with: jms trust " + shown + ";", str(caught.exception))
+            # Credential refusal: the env pin is the one-shot route; --trust masks it.
+            self.approve(root, tf, ["build"], answers=["y", ""])
+            for argv, drop in ((["launch", "--auth"], False), (["launch", "--trust", "--auth"], True)):
+                with self.subTest(argv=argv):
+                    with self.assertRaises(JMS.TrustError) as caught:
+                        self.approve(root, tf, argv, action="launch", tty=False)
+                    message = str(caught.exception)
+                    self.assertEqual(caught.exception.exit_code, 3)
+                    self.assertIn("credential access is required", message)
+                    self.assertIn("set JMS_TRUST_FINGERPRINT=" + tf + " and keep --auth", message)
+                    self.assertEqual("drop --trust" in message, drop)
+            # Mismatches show both 12-character prefixes and where to get the value.
+            with self.assertRaises(JMS.TrustError) as caught:
+                self.approve(root, tf, ["trust", "--fingerprint", "b" * 64], action="trust")
+            self.assertIn('(given "' + "b" * 12 + '", current ' + "a" * 12 + ")", str(caught.exception))
+            self.assertTrue(str(caught.exception).endswith("jms inspect " + shown))
+            with mock.patch.dict(os.environ, {"JMS_TRUST_FINGERPRINT": "c" * 64}), \
+                    self.assertRaises(JMS.TrustError) as caught:
+                self.approve(root, tf, ["build"], tty=False)
+            self.assertIn('(pin "' + "c" * 12 + '", current ' + "a" * 12 + ")", str(caught.exception))
+            self.assertEqual(caught.exception.exit_code, 3)
+
     def test_interactive_grant_and_decline_matrix(self):
         with sandbox() as home:
             root = JMS.canon(os.fsencode(make_project(home)))
@@ -1137,6 +1188,8 @@ class ConsentTests(unittest.TestCase):
                     self.assertEqual(stderr.getvalue().count(JMS.CREDENTIAL_SCOPE_NOTE), 1)
                     self.assertIn("not to the code", JMS.CREDENTIAL_SCOPE_NOTE)
                     self.assertIn("--no-auth", JMS.CREDENTIAL_SCOPE_NOTE)
+                    self.assertEqual(stderr.getvalue().count(
+                        JMS.credential_decline_note("jms trust " + JMS.quote(root))), 1)
 
     def test_auth_escalation_prompts_and_records(self):
         with sandbox() as home:
@@ -1417,7 +1470,7 @@ class CliSurfaceTests(unittest.TestCase):
                         function(JMS.parse_cli(argv))
 
     def test_launch_rejects_empty_runtime_arguments_before_discovery(self):
-        for argv, message in ((["launch", "-b", ""], "binary must be nonempty"),
+        for argv, message in ((["launch", "-b", ""], "--bin must be nonempty"),
                               (["launch", "-n", ""], "container name must be nonempty")):
             with self.subTest(argv=argv), mock.patch.object(JMS, "resolve_operand") as resolve:
                 with self.assertRaisesRegex(JMS.UsageError, message):
@@ -2157,6 +2210,10 @@ class LaunchTests(unittest.TestCase):
             self.assertEqual(len(self.questions), 1)
             self.assertIn("[y/N]", self.questions[0])
             self.assertIn("remembered for this checkout path", self.stderr.getvalue())
+            # The question says what No costs and how to undo it (ADOPT-01).
+            self.assertIn("note: with no, agents keep no login or settings between launches; "
+                          "to change the answer later: jms trust " + JMS.quote(canonical) + " --auth",
+                          self.stderr.getvalue())
             record = JMS.read_store()["projects"][hashlib.sha256(canonical).hexdigest()]
             self.assertEqual(record["root"], canonical.decode())
             self.assertEqual(record["tf"], JMS.BASE_CREDENTIAL_TF)
@@ -2322,8 +2379,10 @@ class LaunchTests(unittest.TestCase):
             outside = home / "elsewhere"
             outside.mkdir()
             with mock.patch.object(os, "getcwd", return_value=str(outside)):
-                with self.assertRaisesRegex(JMS.UsageError, "not inside a checkout"):
+                with self.assertRaisesRegex(JMS.UsageError, "not inside a checkout") as caught:
                     JMS.cmd_launch(JMS.parse_cli(["launch"]))
+            # The refusal names the explicit form that gets past it (ADOPT-05).
+            self.assertTrue(str(caught.exception).endswith(": jms launch ."))
 
     def test_launch_refuses_home_even_when_home_is_a_repository(self):
         with sandbox() as home:
@@ -3110,6 +3169,19 @@ class InitTests(unittest.TestCase):
                     JMS.cmd_init(JMS.parse_cli(["init", "-w", str(workdir), "--with-manifest"]))
             self.assertFalse((workdir / ".jmscontainer").exists())
 
+    def test_init_nested_notice_goes_to_stderr(self):
+        # docs/cli.md: stdout carries only a command's result.
+        with sandbox() as home:
+            outer = make_project(home)
+            inner = outer / "sub"
+            inner.mkdir()
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                JMS.cmd_init(JMS.parse_cli(["init", "-w", str(inner)]))
+            self.assertIn("notice: nested project will shadow", err.getvalue())
+            self.assertNotIn("notice", out.getvalue())
+            self.assertIn("created ", out.getvalue())
+
     def test_init_refuses_home_and_protected_roots(self):
         with sandbox() as home:
             with self.assertRaisesRegex(JMS.JMSException, r"at \$HOME"):
@@ -3657,6 +3729,43 @@ class OrderingAndCanonTests(unittest.TestCase):
         self.assertNotIsInstance(caught.exception, JMS.UsageError)
 
 
+class ContainerStartTests(unittest.TestCase):
+    """macOS cold start: the auto-start notice must not reach stdout, which
+    belongs to the launched program (docs/cli.md)."""
+
+    def test_cold_start_notice_goes_to_stderr(self):
+        calls = []
+        def fake(argv, **kwargs):
+            calls.append(argv[1:])
+            # status fails once (not started), then succeeds after start.
+            code = 1 if argv[1:] == ["system", "status"] and len(calls) == 1 else 0
+            return types.SimpleNamespace(returncode=code, stdout=b"", stderr=b"")
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(JMS, "runtime_run", fake), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            JMS.ContainerBackend().ensure_started()
+        self.assertEqual(calls, [["system", "status"], ["system", "start"], ["system", "status"]])
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("starting container runtime...", err.getvalue())
+
+
+class RuntimeRunFailureTests(unittest.TestCase):
+    """UX-18: a failed command whose output was streamed has no `-- ""` tail."""
+
+    def fail_with(self, output):
+        error = subprocess.CalledProcessError(1, ["container", "build"], output=output[0], stderr=output[1])
+        with mock.patch.object(JMS.subprocess, "run", side_effect=error), \
+                self.assertRaises(JMS.JMSException) as caught:
+            JMS.runtime_run(["container", "build", "."], capture=output != (None, None))
+        return str(caught.exception)
+
+    def test_streamed_failure_has_no_empty_detail(self):
+        self.assertEqual(self.fail_with((None, None)), 'command failed: "container build ."')
+
+    def test_captured_failure_keeps_its_detail(self):
+        self.assertEqual(self.fail_with((b"", b"boom")), 'command failed: "container build ." -- "boom"')
+
+
 class PodmanReadinessTests(unittest.TestCase):
     """R4.3/R4.4/R4.7: version floor and full podman-info validation."""
 
@@ -3694,8 +3803,9 @@ class PodmanReadinessTests(unittest.TestCase):
                                   {"container_id": 1, "host_id": 100000, "size": size}]
         self.ensure(self.info(lambda p: self.maps(p).update(uidmap=singleton(65535))))
         for key in ("uidmap", "gidmap"):
-            with self.assertRaisesRegex(JMS.JMSException, key + r"[\s\S]*/etc/subuid"):
+            with self.assertRaisesRegex(JMS.JMSException, key + " does not cover") as caught:
                 self.ensure(self.info(lambda p: self.maps(p).update({key: singleton(65534)})))
+            self.assertIn("/etc/subuid", caught.exception.hint)
         # A gap below 65536 fails even when the total size is sufficient.
         gapped = [{"container_id": 0, "host_id": 1000, "size": 1},
                   {"container_id": 2, "host_id": 100000, "size": 65536}]
@@ -3786,9 +3896,22 @@ class PodmanReadinessTests(unittest.TestCase):
         singleton = [{"container_id": 0, "host_id": 1000, "size": 1}]
         with self.assertRaises(JMS.JMSException) as caught:
             self.ensure(self.info(lambda p: self.maps(p).update(uidmap=singleton)))
-        message = str(caught.exception)
         for expected in ("uidmap package", "/etc/subuid", "/etc/subgid", "adduser"):
-            self.assertIn(expected, message)
+            self.assertIn(expected, caught.exception.hint)
+
+    def test_readiness_hint_prints_on_its_own_line(self):
+        # The hint used to be joined to the message with a newline, which
+        # main() escapes, so users saw a literal \x0a instead of a line break.
+        singleton = [{"container_id": 0, "host_id": 1000, "size": 1}]
+        info = self.info(lambda p: self.maps(p).update(uidmap=singleton))
+        with mock.patch.object(JMS, "parse_cli", side_effect=lambda: self.ensure(info)), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(JMS.main(), 1)
+        lines = err.getvalue().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith("error: rootless podman is not usable: the uidmap"))
+        self.assertTrue(lines[1].startswith("hint: rootless podman needs"))
+        self.assertNotIn("\\x0a", err.getvalue())
 
     def test_podman_image_exists_tristate(self):
         def fake(code, stderr=b""):
@@ -3917,8 +4040,8 @@ class MissingBaseHintTests(unittest.TestCase):
     def test_missing_base_hint_wording(self):
         self.assertEqual(JMS.MISSING_BASE_NOTE,
                          "note: the shared base image jmscontainers-base:latest is not "
-                         "present; if this project builds from it, run `jms build` in "
-                         "the base directory first")
+                         "present; if this project builds from it, run `jms build --base` "
+                         "first")
 
     def build_failure_stderr(self, images):
         with sandbox() as home:

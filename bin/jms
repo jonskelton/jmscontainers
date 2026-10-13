@@ -33,7 +33,7 @@ from pathlib import Path
 # the marker, and the release commit strips it (docs/release-checklist.md),
 # so `jms --version` and the `jms_version` stamped into trust records can
 # never claim to be a tagged release they are not.
-__version__ = "2.0.2.dev"
+__version__ = "2.0.2"
 BASE_REPOSITORY = "jmscontainers-base"
 BASE = BASE_REPOSITORY + ":latest"
 UTC_SECONDS = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
@@ -47,12 +47,13 @@ ISOLATION_GID = 1000
 CONTEXT_NOTE = ("note: the build context is .jmscontainer/ only; "
                 "COPY/ADD sources must live inside it (see README)")
 MISSING_BASE_NOTE = ("note: the shared base image " + BASE + " is not present; "
-                     "if this project builds from it, run `jms build` in the "
-                     "base directory first")
+                     "if this project builds from it, run `jms build --base` "
+                     "first")
 
 
 class JMSException(Exception):
     exit_code = 1
+    hint = None
 
 
 class UsageError(JMSException):
@@ -85,8 +86,9 @@ def terminal_safe_text(value: bytes | str) -> str:
     return "".join(chr(byte) if 32 <= byte <= 126 else "\\x%02x" % byte for byte in raw)
 
 
-def fail(message: str, code: int = 1) -> None:
+def fail(message: str, code: int = 1, hint: str | None = None) -> None:
     exc = UsageError(message) if code == 2 else TrustError(message) if code == 3 else JMSException(message)
+    exc.hint = hint
     raise exc
 
 
@@ -132,8 +134,10 @@ def runtime_run(argv, *, capture=True, check=True, stdin=None, stdout=None, stde
     except FileNotFoundError:
         fail(runtime().exe + " CLI not found; " + runtime().install_hint)
     except subprocess.CalledProcessError as exc:
-        detail = quote(exc.stderr or exc.stdout or b"")
-        fail("command failed: " + quote(" ".join(map(str, argv))) + " -- " + detail)
+        # Streamed (uncaptured) output is already on the terminal; an empty
+        # `-- ""` suffix would only suggest the runtime said nothing.
+        detail = exc.stderr or exc.stdout
+        fail("command failed: " + quote(" ".join(map(str, argv))) + (" -- " + quote(detail) if detail else ""))
 
 
 def runtime_json(argv) -> object:
@@ -323,7 +327,7 @@ class ContainerBackend:
     def ensure_started(self):
         probe = runtime_run([self.exe, "system", "status"], check=False)
         if probe.returncode:
-            print("starting container runtime...")
+            print("starting container runtime...", file=sys.stderr)
             started = runtime_run([self.exe, "system", "start"], capture=True, check=False)
             recheck = runtime_run([self.exe, "system", "status"], check=False)
             if recheck.returncode:
@@ -608,13 +612,13 @@ class PodmanBackend:
         if not isinstance(host, dict) or not isinstance(store, dict):
             fail("podman info returned malformed output: expected host and store objects")
         if host.get("serviceIsRemote") is not False:
-            fail("rootless podman is not usable: a remote podman service is configured\n"
-                 "hint: jms supports a local rootless engine only; unset CONTAINER_HOST and "
+            fail("rootless podman is not usable: a remote podman service is configured",
+                 hint="jms supports a local rootless engine only; unset CONTAINER_HOST and "
                  "CONTAINER_CONNECTION and remove any containers.conf remote connection")
         security = host.get("security")
         if not isinstance(security, dict) or security.get("rootless") is not True:
-            fail("rootless podman is not usable: podman is not running rootless\n"
-                 "hint: jms supports rootless podman only; run as a regular user")
+            fail("rootless podman is not usable: podman is not running rootless",
+                 hint="jms supports rootless podman only; run as a regular user")
         mappings = host.get("idMappings")
         if not isinstance(mappings, dict):
             fail("podman info returned malformed idMappings output")
@@ -641,8 +645,8 @@ class PodmanBackend:
                     break
                 covered = max(covered, end)
             if covered < 65536:
-                fail("rootless podman is not usable: the " + key + " does not cover container ids 0-65535\n"
-                     "hint: rootless podman needs an entry of at least 65536 ids for your user in "
+                fail("rootless podman is not usable: the " + key + " does not cover container ids 0-65535",
+                     hint="rootless podman needs an entry of at least 65536 ids for your user in "
                      "/etc/subuid and /etc/subgid; on Debian the uidmap package provides "
                      "newuidmap/newgidmap and adduser provisions ranges for new users; see podman(1)")
         driver = store.get("graphDriverName")
@@ -650,8 +654,8 @@ class PodmanBackend:
             # Proves only that podman initialized and reported its storage
             # configuration; storage-operation failures surface at the first
             # build or launch with podman's own stderr (MIR-050).
-            fail("rootless podman is not usable: podman info reported no storage graph driver\n"
-                 "hint: podman storage failed to initialize; check ~/.local/share/containers "
+            fail("rootless podman is not usable: podman info reported no storage graph driver",
+                 hint="podman storage failed to initialize; check ~/.local/share/containers "
                  "and any storage.conf override")
 
     def image_exists(self, image):
@@ -1359,7 +1363,8 @@ def expand_mount_source(expression: str, root: bytes | None = None) -> bytes:
         if root is None: fail("relative mount source requires a project root: " + quote(result))
         result = os.path.join(root, result)
     if not os.path.exists(result):
-        fail("mount source does not exist: " + quote(result))
+        fail("mount source does not exist: " + quote(result) + "; create it first: mkdir -p "
+             + quote(result))
     return canon(result)
 
 
@@ -1505,11 +1510,16 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
         data = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         fail("invalid jmscontainer.toml: " + quote(str(exc)))
-    errors = []
-    def err(path): errors.append(path)
+    errors, details = [], {}
+    def err(path, detail=None):
+        errors.append(path)
+        if detail: details.setdefault(path, detail)
+    def unknown(path, allowed):
+        err(path, "unknown key; allowed: " + ", ".join(sorted(allowed)))
     if not isinstance(data, dict): err("manifest")
     for key in data:
-        if key not in {"schema", "name", "env", "mounts", "run"}: err(key)
+        if key not in {"schema", "name", "env", "mounts", "run"}:
+            unknown(key, {"schema", "name", "env", "mounts", "run"})
     schema = data.get("schema", 1)
     if type(schema) is not int or schema < 1: err("schema")
     elif schema > 1: fail("manifest schema is newer than this jms version; upgrade jms")
@@ -1527,7 +1537,8 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
     if type(run) is not dict: err("run")
     else:
         for key in run:
-            if key not in {"entry", "mount_auth", "preserve_host_path", "git_writable"}: err("run." + key)
+            if key not in {"entry", "mount_auth", "preserve_host_path", "git_writable"}:
+                unknown("run." + key, {"entry", "mount_auth", "preserve_host_path", "git_writable"})
         if "entry" in run:
             entry = run["entry"]
             if type(entry) is not list or not entry or any(type(x) is not str or "\0" in x for x in entry) or not entry[0]: err("run.entry")
@@ -1549,7 +1560,7 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
             prefix = "mounts[%d]" % index
             if type(mount) is not dict: err(prefix); continue
             for key in set(mount) - {"source", "target", "readonly", "allow_socket"}:
-                err(prefix + "." + str(key))
+                unknown(prefix + "." + str(key), {"source", "target", "readonly", "allow_socket"})
             source_valid = type(mount.get("source")) is str and bool(mount.get("source"))
             target = mount.get("target")
             relative_target = type(target) is str and bool(target) and not target.startswith("/")
@@ -1574,8 +1585,10 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
             if source_valid:
                 try:
                     source = expand_mount_source(mount["source"], root)
-                except JMSException:
-                    err(prefix + ".source")
+                except JMSException as exc:
+                    # Keep the reason ("does not exist: PATH"): the field name
+                    # alone reads like a syntax error in the manifest.
+                    err(prefix + ".source", str(exc))
             if (source is not None and target_valid and readonly_valid and allow_socket_valid
                     and not (set(mount) - {"source", "target", "readonly", "allow_socket"})):
                 parsed_mount = {"source": source, "target": target, "readonly": readonly,
@@ -1585,7 +1598,9 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
                 config["mounts"].append(parsed_mount)
     targets = [mount["target"] for mount in config["mounts"]]
     if len(set(targets)) != len(targets) or any(a != b and (a.startswith(b + "/") or b.startswith(a + "/")) for a in targets for b in targets): err("mounts targets overlap")
-    if errors: fail("invalid jmscontainer.toml fields: " + ", ".join(quote(value) for value in sorted(set(errors))))
+    if errors: fail("invalid jmscontainer.toml fields: " + ", ".join(
+        quote(value) + (" (" + details[value] + ")" if value in details else "")
+        for value in sorted(set(errors))))
     return config
 
 
@@ -1653,6 +1668,13 @@ CREDENTIAL_SCOPE_NOTE = ("note: a recorded credential grant is tied to this path
                          "--no-auth to review code you did not write")
 
 
+# What the default No costs and how to undo it, so a cautious answer is not
+# a mystery at the next launch (ADOPT-01).
+def credential_decline_note(command: str) -> str:
+    return ("note: with no, agents keep no login or settings between launches; "
+            "to change the answer later: " + command)
+
+
 def credential_question(config: dict) -> str:
     """The project credential question, naming every mount it also decides."""
     covered = [mount["source"] for mount in config["mounts"] if mount.get("credential")]
@@ -1686,13 +1708,17 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
     if getattr(args, "trust", False):
         env_pin = None
     if env_pin is not None and env_pin != tf:
-        fail("JMS_TRUST_FINGERPRINT does not match this project spec", 3)
+        fail("JMS_TRUST_FINGERPRINT does not match this project spec (pin " + quote(env_pin[:12])
+             + ", current " + tf[:12] + ") -- review the definition, then get the full "
+             "fingerprint with: jms inspect " + quote(root), 3)
     live = record if record and record.get("tf") == tf else None
     one_shot = getattr(args, "trust", False) or env_pin == tf or getattr(args, "fingerprint", None) == tf
     wants_auth = getattr(args, "auth", False)
     no_auth = getattr(args, "no_auth", False)
     if getattr(args, "fingerprint", None) and args.fingerprint != tf:
-        fail("--fingerprint does not match this project spec", 3)
+        fail("--fingerprint does not match this project spec (given " + quote(args.fingerprint[:12])
+             + ", current " + tf[:12] + ") -- review the definition, then get the full "
+             "fingerprint with: jms inspect " + quote(root), 3)
     interactive_replacement = action == "trust" and getattr(args, "fingerprint", None) is None
     build_ok = bool(live and live.get("grants", {}).get("build_run")) or one_shot
     # A one-shot credential grant requires the audited exact pin; the boolean
@@ -1725,7 +1751,9 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
         return True, wants_auth and not no_auth
     if not build_ok:
         if not (sys.stdin.isatty() and sys.stderr.isatty()):
-            fail("project trust is required but prompting is unavailable", 3)
+            fail("project trust is required but prompting is unavailable -- approve it on a "
+                 "terminal with: jms trust " + quote(root) + "; or, after reviewing the "
+                 "capabilities above: jms trust " + quote(root) + " --fingerprint " + tf, 3)
         print(quote(root) + " defines a custom container (trust fingerprint " + tf[:12] + ").",
               file=sys.stderr)
         print("Approving lets it run arbitrary commands at build and run time and mount the project read-write at "
@@ -1742,12 +1770,17 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
                 print("persistent agent state (credentials and configuration): not mounted by default (manifest mount_auth = false); --auth required",
                       file=sys.stderr)
             print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
+            print(credential_decline_note("jms trust " + quote(root)), file=sys.stderr)
             auth_ok = consent_input(credential_question(config or default_config())).strip().lower() in ("y", "yes")
         record_approval(auth_ok)
     elif wants_auth and not auth_ok:
         if not (sys.stdin.isatty() and sys.stderr.isatty()):
-            fail("credential access is required but prompting is unavailable", 3)
+            fail("credential access is required but prompting is unavailable -- grant it on a "
+                 "terminal with: jms trust " + quote(root) + "; or, for one invocation, "
+                 + ("drop --trust and " if getattr(args, "trust", False) else "")
+                 + "set JMS_TRUST_FINGERPRINT=" + tf + " and keep --auth", 3)
         print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
+        print(credential_decline_note("jms trust " + quote(root)), file=sys.stderr)
         auth_ok = consent_input(credential_question(config or default_config())).strip().lower() in ("y", "yes")
         # --trust is one-shot for both grants: an accepted escalation applies to
         # this invocation only and leaves any existing record untouched.
@@ -1828,6 +1861,7 @@ def base_launch_auth(workdir: bytes, args) -> bool:
         return False
     print(quote(root) + " has no project definition and no recorded credential answer.", file=sys.stderr)
     print(BASE_CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
+    print(credential_decline_note("jms trust " + quote(root) + " --auth"), file=sys.stderr)
     answer = consent_input("Mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
     record_base_answer(root, answer)
     return answer
@@ -2232,7 +2266,7 @@ def validate_launch_cli_runtime_args(args) -> None:
         if not args.container_name: fail("container name must be nonempty UTF-8 without NUL", 2)
         runtime_argument(args.container_name)
     if args.bin is not None:
-        if not args.bin: fail("binary must be nonempty UTF-8 without NUL", 2)
+        if not args.bin: fail("--bin must be nonempty UTF-8 without NUL", 2)
         runtime_argument(args.bin)
     for value in args.extra:
         runtime_argument(value)
@@ -2399,7 +2433,8 @@ def cmd_launch(args):
         runtime_path(workdir)
     if not data and not explicit:
         refusal = implicit_workdir_refusal(workdir)
-        if refusal: fail(refusal + " -- cd into a project or pass a workdir", 2)
+        if refusal: fail(refusal + " -- cd into a checkout, or name this directory to mount "
+                         "it anyway: jms launch .", 2)
     validate_agent_state_sources("root" if args.root else "isolation")
     validate_shell_state_source()
     if data:
@@ -2587,7 +2622,8 @@ def cmd_init(args):
     target = Path(os.fsdecode(workdir)) / ".jmscontainer"
     outer_root, _ = discover(parent(workdir), consume_spec=False)
     if outer_root is not None:
-        print("notice: nested project will shadow outer definition at " + quote(outer_root))
+        print("notice: nested project will shadow outer definition at " + quote(outer_root),
+              file=sys.stderr)
     created_files = []
     def create_scaffold(path, contents):
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
@@ -2788,6 +2824,8 @@ def main():
         args.func(args)
     except JMSException as exc:
         print("error: " + terminal_safe_text(str(exc)), file=sys.stderr)
+        if exc.hint:
+            print("hint: " + terminal_safe_text(exc.hint), file=sys.stderr)
         return exc.exit_code
     except OSError as exc:
         # Host files and directories can disappear or change between any two
