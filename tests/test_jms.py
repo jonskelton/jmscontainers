@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 import hashlib
 import io
+import itertools
 import json
 import os
 import pathlib
@@ -290,6 +291,11 @@ def fake_runtime(backend="container", **kwargs):
 
 def quiet():
     return contextlib.redirect_stderr(io.StringIO())
+
+
+def unwrap(text):
+    """Undo consent_text() wrapping so a test can match a whole sentence."""
+    return text.replace("\n  ", " ")
 
 
 class TTYIO(io.StringIO):
@@ -942,7 +948,7 @@ class DiscoveryTests(unittest.TestCase):
             with contextlib.redirect_stderr(stderr):
                 JMS.print_capability_summary(root, config)
             lines = {line.split(" -> ")[1].split()[0]: line
-                     for line in stderr.getvalue().splitlines() if line.startswith("- extra mount:")}
+                     for line in stderr.getvalue().splitlines() if line.startswith("! extra mount:")}
             self.assertIn("SOCKET", lines['"/opt/a"'])
             self.assertNotIn("read-only", lines['"/opt/a"'])
             self.assertIn("FIFO", lines['"/opt/b"'])
@@ -962,6 +968,57 @@ class DiscoveryTests(unittest.TestCase):
             self.assertTrue(JMS.reserved_root(JMS.canon(os.fsencode(agents))))
             self.assertTrue(JMS.reserved_root(JMS.canon(os.fsencode(agents.parent))))
             self.assertFalse(JMS.reserved_root(JMS.canon(os.fsencode(home / "git"))))
+
+
+class TrustDecisionTableTests(unittest.TestCase):
+    """trust_decision() is pure, so its security rules hold over every input."""
+
+    TF = "a" * 64
+
+    def table(self):
+        def rec(tf, build, auth):
+            return {"tf": tf, "grants": {"build_run": build, "auth": auth}}
+        records = (None, rec(self.TF, True, False), rec(self.TF, True, True), rec(self.TF, False, True),
+                   rec("b" * 64, True, True), rec(JMS.BASE_CREDENTIAL_TF, True, True))
+        for record, action, trust, wants_auth, no_auth, fingerprint, env_pin, tty in itertools.product(
+                records, ("build", "launch", "trust"), (False, True), (False, True), (False, True),
+                (None, "", self.TF, "c" * 64), (None, self.TF, "c" * 64), (False, True)):
+            inputs = dict(action=action, trust=trust, fingerprint=fingerprint, env_pin=env_pin,
+                          wants_auth=wants_auth, no_auth=no_auth, tty=tty)
+            yield record, inputs, JMS.trust_decision(b"/p", self.TF, record, **inputs)
+
+    def test_boolean_trust_never_grants_credentials(self):
+        for record, inputs, decision in self.table():
+            if inputs["trust"] and decision.step != "record":
+                granted = bool(record and record["tf"] == self.TF and record["grants"]["auth"])
+                # It may withhold a recorded grant (`jms trust` re-asks), never add one.
+                self.assertLessEqual(decision.auth_ok, granted, inputs)
+                self.assertFalse(decision.persist_auth, inputs)
+
+    def test_nothing_is_granted_without_a_record_pin_or_flag(self):
+        for record, inputs, decision in self.table():
+            if (record is None and not inputs["trust"] and inputs["env_pin"] is None
+                    and not inputs["fingerprint"]):
+                self.assertIn(decision.step, ("ask_build",), inputs)
+                self.assertFalse(decision.build_ok or decision.auth_ok, inputs)
+
+    def test_a_question_without_a_terminal_is_a_refusal(self):
+        for _, inputs, decision in self.table():
+            if decision.step in ("ask_build", "ask_auth"):
+                self.assertEqual(decision.prompt_refusal is not None, not inputs["tty"], inputs)
+                if decision.prompt_refusal:
+                    self.assertEqual(decision.prompt_refusal[1], 3)
+            else:
+                self.assertIsNone(decision.prompt_refusal, inputs)
+
+    def test_a_mismatched_pin_or_fingerprint_refuses_before_output(self):
+        for _, inputs, decision in self.table():
+            bad_pin = not inputs["trust"] and inputs["env_pin"] not in (None, self.TF)
+            bad_fingerprint = inputs["fingerprint"] not in (None, "", self.TF)
+            self.assertEqual(decision.step == "refused", bad_pin or bad_fingerprint, inputs)
+            if decision.refusal:
+                self.assertEqual(decision.refusal[1], 3)
+                self.assertIsNone(decision.notice)
 
 
 class ConsentTests(unittest.TestCase):
@@ -1171,6 +1228,46 @@ class ConsentTests(unittest.TestCase):
             self.assertIn("persistent agent state", self.questions[1])
             self.assertIn("credentials", self.questions[1])
 
+    def test_consent_header_comes_first_and_escalations_share_one_marker(self):
+        """UX-11: say what is asking before the list; mark every escalation alike."""
+        with sandbox() as home:
+            root = JMS.canon(os.fsencode(make_project(home)))
+            config = dict(JMS.default_config(), preserve_host_path=True, git_writable=True,
+                          env={"A": "1"}, mounts=[{"source": b"/nonexistent/data", "target": "/data",
+                                                   "readonly": True}])
+            stderr, stdin = TTYIO(True), TTYIO(True)
+            stdin.fileno = lambda: 0
+            replies = ["y", ""]
+            def answer():  # the terminal echoes the reply and its newline
+                print(replies[0], file=stderr)
+                return replies.pop(0)
+            with mock.patch("builtins.input", side_effect=answer), \
+                 mock.patch.object(os, "set_blocking"), \
+                 mock.patch.object(sys, "stdin", stdin), mock.patch.object(sys, "stderr", stderr):
+                JMS.approve(root, "a" * 64, JMS.parse_cli(["build"]), action="build", config=config)
+            lines = stderr.getvalue().splitlines()
+            header = [i for i, line in enumerate(lines) if "defines a custom container" in line]
+            title = lines.index("Project container capabilities (! marks access beyond the default):")
+            self.assertEqual(header, [0])
+            self.assertLess(header[0], title)
+            marked = [line[2:].split(":")[0] for line in lines if line.startswith("! ")]
+            self.assertEqual(marked, ["project mount", "project .git", "extra mount"])
+            for line in lines:
+                if not line.startswith(("- ", "! ")):  # capability lines are one fact per line
+                    self.assertLessEqual(len(line), JMS.CONSENT_WIDTH + len(" [y/N] "), line)
+
+    def test_consent_text_wraps_without_splitting_paths_or_commands(self):
+        """UX-12: wrap at CONSENT_WIDTH; a quoted path or a command stays whole."""
+        path = JMS.quote(b"/srv/a checkout with spaces/" + b"x" * 30)
+        command = "jms trust " + path + " --auth"
+        text = JMS.consent_text("note: " + "word " * 30 + "to change the answer later: " + command,
+                                keep=(command,))
+        self.assertEqual(unwrap(text), "note: " + "word " * 30 + "to change the answer later: " + command)
+        self.assertIn(command, text.split("\n")[-1])
+        self.assertTrue(all(len(line) <= JMS.CONSENT_WIDTH for line in text.split("\n")[:-1]))
+        self.assertTrue(all(line.startswith("  ") for line in text.split("\n")[1:]))
+        self.assertIn(path, JMS.consent_text("x " * 30 + path))
+
     def test_credential_question_says_the_grant_follows_the_path(self):
         """Both credential questions warn that a grant covers later checkouts."""
         with sandbox() as home:
@@ -1185,10 +1282,10 @@ class ConsentTests(unittest.TestCase):
                          mock.patch.object(sys, "stderr", stderr):
                         JMS.approve(root, "a" * 64, JMS.parse_cli(argv), action=action)
                     self.assertEqual(replies, [])
-                    self.assertEqual(stderr.getvalue().count(JMS.CREDENTIAL_SCOPE_NOTE), 1)
+                    self.assertEqual(unwrap(stderr.getvalue()).count(JMS.CREDENTIAL_SCOPE_NOTE), 1)
                     self.assertIn("not to the code", JMS.CREDENTIAL_SCOPE_NOTE)
                     self.assertIn("--no-auth", JMS.CREDENTIAL_SCOPE_NOTE)
-                    self.assertEqual(stderr.getvalue().count(
+                    self.assertEqual(unwrap(stderr.getvalue()).count(
                         JMS.credential_decline_note("jms trust " + JMS.quote(root))), 1)
 
     def test_auth_escalation_prompts_and_records(self):
@@ -1345,7 +1442,7 @@ class SocketMountTests(unittest.TestCase):
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
                 JMS.print_capability_summary(root, config)
-            line = [item for item in stderr.getvalue().splitlines() if item.startswith("- extra mount:")][0]
+            line = [item for item in stderr.getvalue().splitlines() if item.startswith("! extra mount:")][0]
             self.assertIn("SOCKET (allow_socket = true)", line)
             self.assertNotIn("read-only", line)
 
@@ -2218,7 +2315,7 @@ class LaunchTests(unittest.TestCase):
             # The question says what No costs and how to undo it (ADOPT-01).
             self.assertIn("note: with no, agents keep no login or settings between launches; "
                           "to change the answer later: jms trust " + JMS.quote(canonical) + " --auth",
-                          self.stderr.getvalue())
+                          unwrap(self.stderr.getvalue()))
             record = JMS.read_store()["projects"][hashlib.sha256(canonical).hexdigest()]
             self.assertEqual(record["root"], canonical.decode())
             self.assertEqual(record["tf"], JMS.BASE_CREDENTIAL_TF)
@@ -2495,15 +2592,17 @@ class LaunchTests(unittest.TestCase):
 
     def test_capability_summary_names_the_git_writable_source(self):
         """The consent summary must not call .git read-only when it is writable."""
-        cases = ((None, [], "read-only when it is a directory"),
-                 (None, ["--git-writable"], "(--git-writable)"),
-                 (b"[run]\ngit_writable = true\n", [], "(run.git_writable)"),
-                 (b"[run]\ngit_writable = true\n", ["--git-writable"], "(run.git_writable, --git-writable)"))
-        for manifest, extra, expected in cases:
+        # A writable .git is an escalation, so it carries the "!" marker.
+        cases = ((None, [], "- ", "read-only when it is a directory"),
+                 (None, ["--git-writable"], "! ", "(--git-writable)"),
+                 (b"[run]\ngit_writable = true\n", [], "! ", "(run.git_writable)"),
+                 (b"[run]\ngit_writable = true\n", ["--git-writable"], "! ", "(run.git_writable, --git-writable)"))
+        for manifest, extra, marker, expected in cases:
             with self.subTest(manifest=manifest, extra=extra), sandbox() as home:
                 self.project_launch(home, manifest, extra=extra)
                 line = [item for item in self.stderr.getvalue().splitlines()
-                        if item.startswith("- project .git:")][0]
+                        if item[2:].startswith("project .git:")][0]
+                self.assertTrue(line.startswith(marker), line)
                 self.assertIn(expected, line)
 
     def test_manifest_git_writable_drops_the_read_only_git_mount(self):

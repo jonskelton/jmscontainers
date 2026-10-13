@@ -21,6 +21,7 @@ import signal
 import stat
 import subprocess
 import sys
+import textwrap
 import time
 if sys.version_info < (3, 11):
     raise SystemExit("jms requires Python 3.11+")
@@ -1800,26 +1801,61 @@ def extra_mount_mode(mount: dict) -> str:
 GIT_WRITABLE_NOTE = "container can write .git (hooks and config there run on your host)"
 
 
+# Every capability line beyond what a definition with no manifest gets --
+# the host path kept, a writable .git, any extra host mount -- carries this
+# one marker, so escalations read alike whatever their wording (UX-11).
+ESCALATION_MARK = "!"
+
+
+def capability_bullet(escalation) -> str:
+    """The list bullet: ESCALATION_MARK when escalation is truthy, else "-"."""
+    return (ESCALATION_MARK if escalation else "-") + " "
+
+
+# Consent prose is read on an 80-column terminal (UX-12).
+CONSENT_WIDTH = 76
+QUOTED = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def consent_text(text: str, keep: tuple = ()) -> str:
+    """Wrap one consent sentence, note or question at CONSENT_WIDTH columns.
+
+    Continuation lines are indented two spaces.  A quoted path and every
+    string in keep (a command to copy) are never split across lines; quote()
+    output is ASCII, so a no-break space cannot occur in it.
+    """
+    def glue(span):
+        return span.replace(" ", "\xa0")
+    for item in keep:
+        text = text.replace(item, glue(item))
+    text = QUOTED.sub(lambda match: glue(match.group(0)), text)
+    return textwrap.fill(text, CONSENT_WIDTH, subsequent_indent="  ", break_long_words=False,
+                         break_on_hyphens=False).replace("\xa0", " ")
+
+
 def print_capability_summary(root: bytes, config: dict, git_writable_flag: bool = False) -> None:
     """Describe every project-controlled runtime capability before consent.
 
     git_writable_flag is launch --git-writable, which drops the read-only
     .git bind just as run.git_writable does, so the summary must say so.
     """
-    print("Project container capabilities:", file=sys.stderr)
+    print("Project container capabilities (" + ESCALATION_MARK + " marks access beyond the default):",
+          file=sys.stderr)
     print("- build and run: arbitrary commands with unrestricted network and root via passwordless sudo",
           file=sys.stderr)
-    print("- project mount: " + quote(root) + " -> "
+    print(capability_bullet(config["preserve_host_path"]) + "project mount: " + quote(root) + " -> "
           + (quote(root) + " (host path preserved)" if config["preserve_host_path"] else "\"/work\"")
           + " read-write", file=sys.stderr)
     sources = [name for name, on in (("run.git_writable", config["git_writable"]),
                                      ("--git-writable", git_writable_flag)) if on]
-    print("- project .git: " + (GIT_WRITABLE_NOTE + " (" + ", ".join(sources) + ")" if sources
-                                else "read-only when it is a directory at the project root"),
+    print(capability_bullet(sources) + "project .git: "
+          + (GIT_WRITABLE_NOTE + " (" + ", ".join(sources) + ")" if sources
+             else "read-only when it is a directory at the project root"),
           file=sys.stderr)
     for mount in config["mounts"]:
         mode = extra_mount_mode(mount)
-        print("- extra mount: " + quote(mount["source"]) + " -> " + quote(mount["target"]) + " " + mode
+        print(capability_bullet(True) + "extra mount: " + quote(mount["source"]) + " -> "
+              + quote(mount["target"]) + " " + mode
               + ("; HOST CREDENTIAL PATH: mounted only with the credential grant"
                  if mount.get("credential") else ""), file=sys.stderr)
     for key, value in sorted(config["env"].items()):
@@ -1845,6 +1881,12 @@ def credential_decline_note(command: str) -> str:
             "to change the answer later: " + command)
 
 
+def print_credential_notes(scope_note: str, command: str) -> None:
+    """The notes that precede every credential question."""
+    print(consent_text(scope_note), file=sys.stderr)
+    print(consent_text(credential_decline_note(command), keep=(command,)), file=sys.stderr)
+
+
 def credential_question(config: dict) -> str:
     """The project credential question, naming every mount it also decides."""
     covered = [mount["source"] for mount in config["mounts"] if mount.get("credential")]
@@ -1856,7 +1898,8 @@ def credential_question(config: dict) -> str:
 
 def consent_input(question: str) -> str:
     """Keep the complete prompt on the stderr TTY used by the availability gate."""
-    print(question, end="", file=sys.stderr, flush=True)
+    # Wrapped for display; the trailing space after [y/N] is where the answer goes.
+    print(consent_text(question.rstrip()) + " ", end="", file=sys.stderr, flush=True)
     # An attached `container run --interactive` exits with O_NONBLOCK left on
     # the shared terminal description (observed with apple/container 1.2.2);
     # an empty non-blocking read would surface as the default-No EOF before
@@ -1870,92 +1913,150 @@ def consent_input(question: str) -> str:
         return ""
 
 
-def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = None):
-    pid = hashlib.sha256(root).hexdigest()
-    store = read_store()
-    record = store["projects"].get(pid)
-    env_pin = os.environ.get("JMS_TRUST_FINGERPRINT")
-    if getattr(args, "trust", False):
+@dataclass(frozen=True)
+class TrustDecision:
+    """What approve() must do, decided from its inputs alone (no I/O).
+
+    step is one of:
+      "refused"   -- refusal: a pin or --fingerprint does not match
+      "granted"   -- nothing to ask; return (build_ok, auth_ok)
+      "record"    -- `jms trust --fingerprint`: record build/run and record_auth
+      "ask_build" -- ask the build/run question, then the credential question
+                     when ask_credentials, and record the answers
+      "ask_auth"  -- build/run is granted; ask only the credential question,
+                     recording an accepted grant when persist_auth
+    """
+    step: str
+    build_ok: bool
+    auth_ok: bool
+    no_auth: bool
+    refusal: tuple | None = None         # (message, exit code) before any output
+    notice: str | None = None            # why consent is being asked again
+    show_summary: bool = False           # print the capability summary
+    prompt_refusal: tuple | None = None  # (message, exit code) after the summary: no TTY to ask on
+    record_auth: bool = False            # "record": the credential grant to store
+    ask_credentials: bool = False        # "ask_build": follow with the credential question
+    persist_auth: bool = False           # "ask_auth": store an accepted credential grant
+
+
+def trust_decision(root: bytes, tf: str, record: dict | None, *, action: str, trust: bool,
+                   fingerprint: str | None, env_pin: str | None, wants_auth: bool, no_auth: bool,
+                   tty: bool) -> TrustDecision:
+    """The trust truth table: stored record, pins, flags and TTY -> what approve() does.
+
+    The boolean --trust is a one-shot build/run grant that drops the env pin;
+    it never grants credentials (SECURITY.md).  A one-shot credential grant
+    needs the exact JMS_TRUST_FINGERPRINT pin together with --auth.
+    """
+    if trust:
         env_pin = None
     if env_pin is not None and env_pin != tf:
-        fail("JMS_TRUST_FINGERPRINT does not match this project definition (pin " + quote(env_pin[:12])
-             + ", current " + tf[:12] + ") -- review the definition, then get the full "
-             "fingerprint with: jms inspect " + quote(root), 3)
+        return TrustDecision("refused", False, False, no_auth, refusal=(
+            "JMS_TRUST_FINGERPRINT does not match this project definition (pin " + quote(env_pin[:12])
+            + ", current " + tf[:12] + ") -- review the definition, then get the full "
+            "fingerprint with: jms inspect " + quote(root), 3))
+    if fingerprint and fingerprint != tf:
+        return TrustDecision("refused", False, False, no_auth, refusal=(
+            "--fingerprint does not match this project definition (given " + quote(fingerprint[:12])
+            + ", current " + tf[:12] + ") -- review the definition, then get the full "
+            "fingerprint with: jms inspect " + quote(root), 3))
     live = record if record and record.get("tf") == tf else None
-    one_shot = getattr(args, "trust", False) or env_pin == tf or getattr(args, "fingerprint", None) == tf
-    wants_auth = getattr(args, "auth", False)
-    no_auth = getattr(args, "no_auth", False)
-    if getattr(args, "fingerprint", None) and args.fingerprint != tf:
-        fail("--fingerprint does not match this project definition (given " + quote(args.fingerprint[:12])
-             + ", current " + tf[:12] + ") -- review the definition, then get the full "
-             "fingerprint with: jms inspect " + quote(root), 3)
-    interactive_replacement = action == "trust" and getattr(args, "fingerprint", None) is None
+    one_shot = trust or env_pin == tf or fingerprint == tf
     build_ok = bool(live and live.get("grants", {}).get("build_run")) or one_shot
     # A one-shot credential grant requires the audited exact pin; the boolean
     # --trust flag never satisfies it (SECURITY.md forbids that bypass).
     auth_ok = bool(live and live.get("grants", {}).get("auth")) or (wants_auth and env_pin == tf)
-    if interactive_replacement:
+    if action == "trust" and fingerprint is None:
         # `jms trust` always replaces the two decisions explicitly, even when
         # the stored fingerprint already matches.
         build_ok = False
         auth_ok = False
+    notice = None
     if record and record.get("tf") == BASE_CREDENTIAL_TF:
-        print("project definition added since the credential answer for this checkout was recorded",
-              file=sys.stderr)
+        notice = "project definition added since the credential answer for this checkout was recorded"
     elif record and record.get("tf") != tf:
-        print("project definition changed since it was last trusted (fingerprint " +
-              record["tf"][:12] + " -> " + tf[:12] + ")", file=sys.stderr)
-    if action == "trust" or getattr(args, "trust", False) or not build_ok or (wants_auth and not auth_ok):
-        print_capability_summary(root, config or default_config(),
-                                 git_writable_flag=getattr(args, "git_writable", False))
+        notice = ("project definition changed since it was last trusted (fingerprint " +
+                  record["tf"][:12] + " -> " + tf[:12] + ")")
+    show_summary = action == "trust" or trust or not build_ok or (wants_auth and not auth_ok)
+    common = dict(build_ok=build_ok, auth_ok=auth_ok, no_auth=no_auth, notice=notice,
+                  show_summary=show_summary)
+    if action == "trust" and fingerprint == tf:
+        # This is the explicitly non-interactive, durable trust path.
+        return TrustDecision("record", **common, record_auth=wants_auth and not no_auth)
+    if not build_ok:
+        no_tty_refusal = None
+        if not tty:
+            no_tty_refusal = ("project trust is required but prompting is unavailable -- approve it on a "
+                              "terminal with: jms trust " + quote(root) + "; or, after reviewing the "
+                              "capabilities above: jms trust " + quote(root) + " --fingerprint " + tf, 3)
+        return TrustDecision("ask_build", **common, ask_credentials=not no_auth,
+                             prompt_refusal=no_tty_refusal)
+    if wants_auth and not auth_ok:
+        # --trust is one-shot for both grants: an accepted escalation applies to
+        # this invocation only and leaves any existing record untouched.
+        return TrustDecision("ask_auth", **common, persist_auth=bool(live) and not trust,
+                             prompt_refusal=None if tty else (
+            "credential access is required but prompting is unavailable -- grant it on a "
+            "terminal with: jms trust " + quote(root) + "; or, for one invocation, "
+            + ("drop --trust and " if trust else "")
+            + "set JMS_TRUST_FINGERPRINT=" + tf + " and keep --auth", 3))
+    return TrustDecision("granted", **common)
+
+
+def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = None):
+    """Carry out trust_decision(): print, prompt and record; returns (build_ok, auth_ok)."""
+    config = config or default_config()
+    pid = hashlib.sha256(root).hexdigest()
+    decision = trust_decision(
+        root, tf, read_store()["projects"].get(pid), action=action,
+        trust=getattr(args, "trust", False), fingerprint=getattr(args, "fingerprint", None),
+        env_pin=os.environ.get("JMS_TRUST_FINGERPRINT"), wants_auth=getattr(args, "auth", False),
+        no_auth=getattr(args, "no_auth", False), tty=sys.stdin.isatty() and sys.stderr.isatty())
+    if decision.refusal:
+        fail(*decision.refusal)
+    if decision.notice:
+        print(consent_text(decision.notice), file=sys.stderr)
+    if decision.step == "ask_build" and not decision.prompt_refusal:
+        # The header names what is asking before the list it is asking about (UX-11).
+        print(consent_text(quote(root) + " defines a custom container (trust fingerprint " + tf[:12] + ")."),
+              file=sys.stderr)
+    if decision.show_summary:
+        print_capability_summary(root, config, git_writable_flag=getattr(args, "git_writable", False))
+    if decision.prompt_refusal:
+        fail(*decision.prompt_refusal)
     def record_approval(auth):
         new = make_trust_record(root, tf, auth)
         def replace(current):
             current["projects"][pid] = new
             return True
         update_store(replace)
-    if action == "trust" and getattr(args, "fingerprint", None) == tf:
-        # This is the explicitly non-interactive, durable trust path.
-        record_approval(wants_auth and not no_auth)
-        return True, wants_auth and not no_auth
-    if not build_ok:
-        if not (sys.stdin.isatty() and sys.stderr.isatty()):
-            fail("project trust is required but prompting is unavailable -- approve it on a "
-                 "terminal with: jms trust " + quote(root) + "; or, after reviewing the "
-                 "capabilities above: jms trust " + quote(root) + " --fingerprint " + tf, 3)
-        print(quote(root) + " defines a custom container (trust fingerprint " + tf[:12] + ").",
+    build_ok, auth_ok = decision.build_ok, decision.auth_ok
+    if decision.step == "record":
+        record_approval(decision.record_auth)
+        return True, decision.record_auth
+    if decision.step == "ask_build":
+        print(consent_text("Approving lets it run arbitrary commands at build and run time and mount the project "
+                           "read-write at " + ("its own host path " + quote(root) + " (run.preserve_host_path)."
+                                               if config["preserve_host_path"] else "/work.")),
               file=sys.stderr)
-        print("Approving lets it run arbitrary commands at build and run time and mount the project read-write at "
-              + ("its own host path " + quote(root) + " (run.preserve_host_path)."
-                 if (config or default_config())["preserve_host_path"] else "/work."),
-              file=sys.stderr)
-        if (config or default_config())["git_writable"]:
-            print("It also sets run.git_writable: " + GIT_WRITABLE_NOTE + ".", file=sys.stderr)
+        if config["git_writable"]:
+            print(consent_text("It also sets run.git_writable: " + GIT_WRITABLE_NOTE + "."), file=sys.stderr)
         if consent_input("Allow build & run? [y/N] ").strip().lower() not in ("y", "yes"):
             fail("project trust declined", 3)
         build_ok = True
-        if not no_auth:
-            if not (config or default_config())["mount_auth"]:
-                print("persistent agent state (credentials and configuration): not mounted by default (manifest mount_auth = false); --auth required",
-                      file=sys.stderr)
-            print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
-            print(credential_decline_note("jms trust " + quote(root)), file=sys.stderr)
-            auth_ok = consent_input(credential_question(config or default_config())).strip().lower() in ("y", "yes")
+        if decision.ask_credentials:
+            if not config["mount_auth"]:
+                print(consent_text("persistent agent state (credentials and configuration): not mounted by "
+                                   "default (manifest mount_auth = false); --auth required"), file=sys.stderr)
+            print_credential_notes(CREDENTIAL_SCOPE_NOTE, "jms trust " + quote(root))
+            auth_ok = consent_input(credential_question(config)).strip().lower() in ("y", "yes")
         record_approval(auth_ok)
-    elif wants_auth and not auth_ok:
-        if not (sys.stdin.isatty() and sys.stderr.isatty()):
-            fail("credential access is required but prompting is unavailable -- grant it on a "
-                 "terminal with: jms trust " + quote(root) + "; or, for one invocation, "
-                 + ("drop --trust and " if getattr(args, "trust", False) else "")
-                 + "set JMS_TRUST_FINGERPRINT=" + tf + " and keep --auth", 3)
-        print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
-        print(credential_decline_note("jms trust " + quote(root)), file=sys.stderr)
-        auth_ok = consent_input(credential_question(config or default_config())).strip().lower() in ("y", "yes")
-        # --trust is one-shot for both grants: an accepted escalation applies to
-        # this invocation only and leaves any existing record untouched.
-        if auth_ok and live and not getattr(args, "trust", False):
+    elif decision.step == "ask_auth":
+        print_credential_notes(CREDENTIAL_SCOPE_NOTE, "jms trust " + quote(root))
+        auth_ok = consent_input(credential_question(config)).strip().lower() in ("y", "yes")
+        if auth_ok and decision.persist_auth:
             record_approval(True)
-    return build_ok, auth_ok and not no_auth
+    return build_ok, auth_ok and not decision.no_auth
 
 
 # A launch with no definition records its credential answer in the ordinary
@@ -2028,9 +2129,9 @@ def base_launch_auth(workdir: bytes, args) -> bool:
               + quote(root) + " and no terminal to ask on; pass --auth to mount it for this launch",
               file=sys.stderr)
         return False
-    print(quote(root) + " has no project definition and no recorded credential answer.", file=sys.stderr)
-    print(BASE_CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
-    print(credential_decline_note("jms trust " + quote(root) + " --auth"), file=sys.stderr)
+    print(consent_text(quote(root) + " has no project definition and no recorded credential answer."),
+          file=sys.stderr)
+    print_credential_notes(BASE_CREDENTIAL_SCOPE_NOTE, "jms trust " + quote(root) + " --auth")
     answer = consent_input("Mount persistent agent state -- credentials and configuration for "
                            + agent_names_text("and") + " -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
     record_base_answer(root, answer)
@@ -2683,15 +2784,25 @@ def cmd_launch(args):
     runtime_run(runtime().run_argv(plan), replace=True)
 
 
-def cmd_trust(args):
-    if args.auth and args.no_auth:
-        fail("--auth and --no-auth cannot be combined", 2)
+def trust_verb(args) -> str | None:
+    """The trust verb, or None to approve; settles `trust [path]` in one place.
+
+    The historical grammar is `trust [path]`; reserve only the three verbs,
+    so an absolute path remains a valid first positional operand: any other
+    first operand is the path itself.
+    """
     action = getattr(args, "trust_action", None)
-    # The historical grammar is `trust [path]`; reserve only the three verbs,
-    # so an absolute path remains a valid first positional operand.
     if action not in (None, "list", "revoke", "prune"):
         if args.path: fail("trust accepts one project path", 2)
         args.path, action = action, None
+    return action
+
+
+def cmd_trust(args):
+    """`jms trust`: check the flags each verb accepts, then hand off to it."""
+    if args.auth and args.no_auth:
+        fail("--auth and --no-auth cannot be combined", 2)
+    action = trust_verb(args)
     if action in ("list", "revoke", "prune"):
         if getattr(args, "fingerprint", None):
             fail("--fingerprint is valid only when approving project trust", 2)
@@ -2699,83 +2810,94 @@ def cmd_trust(args):
             fail("--auth and --no-auth are valid only when approving project trust", 2)
     if args.purge_images and action != "revoke":
         fail("--purge-images is valid only with trust revoke", 2)
-    if action == "list":
-        if args.path: fail("trust list does not take a path", 2)
-        store = read_store()
-        for pid, record in sorted(store["projects"].items()):
-            state = "present" if os.path.isdir(record["root"]) else "missing"
-            # A remembered no-definition answer is a credential choice, not
-            # an approved definition; mark it so the two read differently.
-            kind = "  no-definition" if record["tf"] == BASE_CREDENTIAL_TF else ""
-            print("%s  %s  %s  auth=%s%s" % (pid[:12], quote(record["root"]), state,
-                                             "yes" if record["grants"]["auth"] else "no", kind))
-        return
-    if action == "prune":
-        if args.path: fail("trust prune does not take a path", 2)
-        removed = []
-        def prune(store):
-            for pid, record in list(store["projects"].items()):
-                if not os.path.isdir(record["root"]):
-                    removed.append((pid, record)); del store["projects"][pid]
-            return bool(removed)
-        update_store(prune)
-        for pid, record in removed: print("pruned trust record " + pid[:12] + " " + quote(record["root"]))
-        return
-    if action == "revoke":
-        if not args.path: fail("trust revoke requires a project path", 2)
-        workdir, _ = resolve_operand(args.path)
-        root, _ = discover(workdir, consume_spec=False)
-        base = None
-        if root is None:
-            # Every vanished definition's record on the way to the checkout
-            # root -- any one left would still govern launches here and
-            # regain its grants if its definition came back -- and otherwise
-            # the checkout's remembered no-definition answer.
-            base_root, base, vanished = base_credential_records(read_store(), workdir)
-            roots = [path for path, _ in vanished] or [base_root]
-        else:
-            roots = [root]
-        pids = [hashlib.sha256(root).hexdigest() for root in roots]
-        if args.purge_images:
-            runtime()  # select before mutating the store: a refusal leaves it untouched
-        revoked = []
-        def revoke(store):
-            revoked.extend(root for root, pid in zip(roots, pids) if pid in store["projects"])
-            if not revoked:
-                if args.purge_images:
-                    return False
-                fail("no trust record for " + quote(roots[0]))
-            for pid in pids:
-                store["projects"].pop(pid, None)
-            return True
-        update_store(revoke)
-        for root in revoked:
-            print("revoked trust for " + quote(root))
+    {"list": trust_list, "prune": trust_prune, "revoke": trust_revoke, None: trust_approve}[action](args)
+
+
+def trust_list(args):
+    """`jms trust list`: one line per record, marking missing roots and no-definition answers."""
+    if args.path: fail("trust list does not take a path", 2)
+    store = read_store()
+    for pid, record in sorted(store["projects"].items()):
+        state = "present" if os.path.isdir(record["root"]) else "missing"
+        # A remembered no-definition answer is a credential choice, not
+        # an approved definition; mark it so the two read differently.
+        kind = "  no-definition" if record["tf"] == BASE_CREDENTIAL_TF else ""
+        print("%s  %s  %s  auth=%s%s" % (pid[:12], quote(record["root"]), state,
+                                         "yes" if record["grants"]["auth"] else "no", kind))
+
+
+def trust_prune(args):
+    """`jms trust prune`: drop every record whose root directory is gone."""
+    if args.path: fail("trust prune does not take a path", 2)
+    removed = []
+    def prune(store):
+        for pid, record in list(store["projects"].items()):
+            if not os.path.isdir(record["root"]):
+                removed.append((pid, record)); del store["projects"][pid]
+        return bool(removed)
+    update_store(prune)
+    for pid, record in removed: print("pruned trust record " + pid[:12] + " " + quote(record["root"]))
+
+
+def trust_revoke(args):
+    """`jms trust revoke PATH [--purge-images]`: forget the records governing PATH."""
+    if not args.path: fail("trust revoke requires a project path", 2)
+    workdir, _ = resolve_operand(args.path)
+    root, _ = discover(workdir, consume_spec=False)
+    base = None
+    if root is None:
+        # Every vanished definition's record on the way to the checkout
+        # root -- any one left would still govern launches here and
+        # regain its grants if its definition came back -- and otherwise
+        # the checkout's remembered no-definition answer.
+        base_root, base, vanished = base_credential_records(read_store(), workdir)
+        roots = [path for path, _ in vanished] or [base_root]
+    else:
+        roots = [root]
+    pids = [hashlib.sha256(root).hexdigest() for root in roots]
+    if args.purge_images:
+        runtime()  # select before mutating the store: a refusal leaves it untouched
+    revoked = []
+    def revoke(store):
+        revoked.extend(root for root, pid in zip(roots, pids) if pid in store["projects"])
         if not revoked:
-            print("trust already revoked for " + quote(roots[0]))
-        if base and revoked and base["root"].encode("utf-8") not in revoked:
-            print("note: the remembered credential answer for " + quote(base["root"]) + " (auth=" +
-                  ("yes" if base["grants"]["auth"] else "no") + ") now applies here; revoke again "
-                  "to remove it", file=sys.stderr)
-        if args.purge_images:
-            # Revocation committed above, so every purge-path failure --
-            # readiness, enumeration, or removal -- keeps the "trust was
-            # revoked, but image purge failed" split (MIR-048).
-            try:
-                runtime_ready()
-                schedule = [step for root, pid in zip(roots, pids)
-                            for step in image_removal_schedule(pid, tag_prefix_for(root, pid), keep=0)]
-            except JMSException as exc:
-                fail("trust was revoked, but image purge failed: " + str(exc))
-            def report(ref, result):
-                if result.outcome == "removed":
-                    print("removed image " + quote(ref))
-            results = execute_removal_schedule(schedule, report)
-            failures = [(ref, result) for ref, result in results if result.outcome == "failed"]
-            if failures:
-                detail = "; ".join(quote(ref) + ": " + result.detail for ref, result in failures)
-                fail("trust was revoked, but image purge failed: " + detail)
-        return
+            if args.purge_images:
+                return False
+            fail("no trust record for " + quote(roots[0]))
+        for pid in pids:
+            store["projects"].pop(pid, None)
+        return True
+    update_store(revoke)
+    for root in revoked:
+        print("revoked trust for " + quote(root))
+    if not revoked:
+        print("trust already revoked for " + quote(roots[0]))
+    if base and revoked and base["root"].encode("utf-8") not in revoked:
+        print("note: the remembered credential answer for " + quote(base["root"]) + " (auth=" +
+              ("yes" if base["grants"]["auth"] else "no") + ") now applies here; revoke again "
+              "to remove it", file=sys.stderr)
+    if args.purge_images:
+        # Revocation committed above, so every purge-path failure --
+        # readiness, enumeration, or removal -- keeps the "trust was
+        # revoked, but image purge failed" split (MIR-048).
+        try:
+            runtime_ready()
+            schedule = [step for root, pid in zip(roots, pids)
+                        for step in image_removal_schedule(pid, tag_prefix_for(root, pid), keep=0)]
+        except JMSException as exc:
+            fail("trust was revoked, but image purge failed: " + str(exc))
+        def report(ref, result):
+            if result.outcome == "removed":
+                print("removed image " + quote(ref))
+        results = execute_removal_schedule(schedule, report)
+        failures = [(ref, result) for ref, result in results if result.outcome == "failed"]
+        if failures:
+            detail = "; ".join(quote(ref) + ": " + result.detail for ref, result in failures)
+            fail("trust was revoked, but image purge failed: " + detail)
+
+
+def trust_approve(args):
+    """`jms trust [PATH]`: approve a definition, or record a no-definition credential answer."""
     workdir, _ = resolve_operand(args.path)
     data = project_data(workdir)
     if not data:
@@ -2792,7 +2914,7 @@ def cmd_trust(args):
                  "longer present; run jms trust revoke " + quote(workdir) + " first")
         record_base_answer(root, args.auth)
         if args.auth:
-            print(BASE_CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
+            print(consent_text(BASE_CREDENTIAL_SCOPE_NOTE), file=sys.stderr)
         print("recorded credential answer for " + quote(root) + ": auth=" + ("yes" if args.auth else "no"))
         return
     approve(data["root"], data["tf"], args, action="trust", config=data["config"])
