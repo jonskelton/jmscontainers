@@ -1146,7 +1146,45 @@ def update_store(change) -> dict:
         return store
 
 
-AGENT_STATE_LEAVES = ("claude", "codex", "opencode", "opencode-config", "pi")
+@dataclass(frozen=True)
+class AgentState:
+    """One persistent agent-state leaf in the pool jms mounts under the credential grant."""
+    leaf: str                            # directory under agent_state_root()
+    target: str                          # HOME-relative container mount target, also
+                                         # listed among the host credential stores
+    agent: str                           # the agent's name, as consent text lists it
+    config_env: str | None = None        # variable a credential launch points at target
+
+
+# The agent roster: the single source for every agent-state site -- the pool
+# leaves and their mounts (agent_state_mounts), the targets a manifest mount
+# may not cover (reserved_mount_targets), the host sign-ins kept behind the
+# credential grant (CREDENTIAL_PATHS), the names the consent text lists
+# (agent_names_text), and the variables a credential launch injects
+# (build_launch_plan, run_argv).  Adding an agent is one row here; a site that
+# hard-codes an agent instead would let a manifest mount over its credentials
+# without the consent text showing anything amiss (MAINT-05).
+AGENT_ROSTER = (
+    AgentState("claude", ".claude", "claude", config_env="CLAUDE_CONFIG_DIR"),
+    AgentState("codex", ".codex", "codex"),
+    AgentState("opencode", ".local/share/opencode", "opencode"),
+    AgentState("opencode-config", ".config/opencode", "opencode"),
+    AgentState("pi", ".pi/agent", "pi"),
+)
+AGENT_STATE_LEAVES = tuple(entry.leaf for entry in AGENT_ROSTER)
+
+
+def agent_names_text(conjunction: str = "") -> str:
+    """The roster's agent names in order, once each: "claude, codex, opencode, and pi"."""
+    names = list(dict.fromkeys(entry.agent for entry in AGENT_ROSTER))
+    if conjunction and len(names) > 1:
+        names[-1] = conjunction + " " + names[-1]
+    return ", ".join(names)
+
+
+def agent_config_env(home: str) -> list[tuple[str, str]]:
+    """The (variable, path) pairs a credential launch injects, in roster order."""
+    return [(entry.config_env, home + "/" + entry.target) for entry in AGENT_ROSTER if entry.config_env]
 
 
 def checkout_root() -> bytes:
@@ -1294,14 +1332,14 @@ def refuse_socket_mounts(config: dict) -> None:
 # is kept only under the project's credential grant; see credential_sources().
 # Best-effort, not exhaustive: a store missing here rides build/run approval
 # like any other mount.  jms's own agent-state pool is not listed because
-# protected_sources() already refuses it outright.
+# protected_sources() already refuses it outright.  The host agents' own
+# sign-ins, which jms never mounts on its own, follow from AGENT_ROSTER's
+# targets in credential_sources().
 CREDENTIAL_PATHS = (
     ".ssh", ".gnupg", ".config/gh", ".aws", ".azure", ".config/gcloud", ".kube",
     ".docker", ".netrc", ".npmrc", ".pypirc", ".git-credentials",
     ".cargo/credentials.toml", ".vault-token", ".terraform.d", ".m2/settings.xml",
     ".gradle/gradle.properties", ".1password", "Library/Keychains",
-    # The host agents' own sign-ins, which jms never mounts on its own.
-    ".claude", ".codex", ".local/share/opencode", ".config/opencode", ".pi/agent",
 )
 # Variables that relocate a credential store; KUBECONFIG is a path list.
 CREDENTIAL_PATH_VARIABLES = ("GNUPGHOME", "DOCKER_CONFIG", "KUBECONFIG", "AWS_SHARED_CREDENTIALS_FILE")
@@ -1310,7 +1348,8 @@ CREDENTIAL_PATH_VARIABLES = ("GNUPGHOME", "DOCKER_CONFIG", "KUBECONFIG", "AWS_SH
 def credential_sources() -> list[bytes]:
     """Canonical credential-store paths, resolved as mount sources are."""
     home = home_path()
-    paths = [home + b"/" + relative.encode() for relative in CREDENTIAL_PATHS]
+    relatives = CREDENTIAL_PATHS + tuple(entry.target for entry in AGENT_ROSTER)
+    paths = [home + b"/" + relative.encode() for relative in relatives]
     for name in CREDENTIAL_PATH_VARIABLES:
         # A relative entry depends on the caller's cwd; only absolute ones are checked.
         paths += [item for item in os.environb.get(name.encode(), b"").split(b":")
@@ -1379,10 +1418,8 @@ def valid_target(value: str, home: str) -> bool:
 
 
 def reserved_mount_targets(home: str) -> frozenset[str]:
-    return frozenset({"/work", home + "/.claude", home + "/.codex",
-                      home + "/.local/share/opencode",
-                      home + "/.config/opencode", home + "/.pi/agent",
-                      home + "/.config/jms-shell"})
+    return frozenset({"/work", home + "/.config/jms-shell"}
+                     | {home + "/" + entry.target for entry in AGENT_ROSTER})
 
 
 def target_overlaps_reserved(value: str, home: str) -> bool:
@@ -1640,7 +1677,7 @@ def print_capability_summary(root: bytes, config: dict, git_writable_flag: bool 
     for key, value in sorted(config["env"].items()):
         print("- environment: " + quote(key + "=" + value), file=sys.stderr)
     print("- entry: " + " ".join(quote(value) for value in config["entry"]), file=sys.stderr)
-    print("- agent state (credentials and configuration for claude, codex, opencode, pi): " +
+    print("- agent state (credentials and configuration for " + agent_names_text() + "): " +
           ("read-write mount eligible with a separate grant" if config["mount_auth"] else
            "read-write mount suppressed by manifest"), file=sys.stderr)
 
@@ -1656,8 +1693,8 @@ CREDENTIAL_SCOPE_NOTE = ("note: a recorded credential grant is tied to this path
 def credential_question(config: dict) -> str:
     """The project credential question, naming every mount it also decides."""
     covered = [mount["source"] for mount in config["mounts"] if mount.get("credential")]
-    return ("Also mount persistent agent state -- credentials and configuration for claude, codex, "
-            "opencode, and pi -- with read-write access"
+    return ("Also mount persistent agent state -- credentials and configuration for "
+            + agent_names_text("and") + " -- with read-write access"
             + (", and keep the manifest's host credential mounts " + ", ".join(quote(item) for item in covered)
                if covered else "") + "? [y/N] ")
 
@@ -1828,7 +1865,8 @@ def base_launch_auth(workdir: bytes, args) -> bool:
         return False
     print(quote(root) + " has no project definition and no recorded credential answer.", file=sys.stderr)
     print(BASE_CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
-    answer = consent_input("Mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
+    answer = consent_input("Mount persistent agent state -- credentials and configuration for "
+                           + agent_names_text("and") + " -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
     record_base_answer(root, answer)
     return answer
 
@@ -2157,11 +2195,7 @@ def build_project(data, args):
 def agent_state_mounts(user="isolation"):
     root = agent_state_root()
     home = "/root" if user == "root" else "/home/" + user
-    return [(root / "claude", home + "/.claude"),
-            (root / "codex", home + "/.codex"),
-            (root / "opencode", home + "/.local/share/opencode"),
-            (root / "opencode-config", home + "/.config/opencode"),
-            (root / "pi", home + "/.pi/agent")]
+    return [(root / entry.leaf, home + "/" + entry.target) for entry in AGENT_ROSTER]
 
 
 def shell_state_mount(user="isolation"):
@@ -2311,7 +2345,7 @@ def launch_plan(workdir: bytes, data, args, image: str, auth: bool) -> LaunchPla
     mount_auth = auth and (config["mount_auth"] or args.auth)
     env = []
     if mount_auth:
-        env.append(("CLAUDE_CONFIG_DIR", effective_home + "/.claude"))
+        env += agent_config_env(effective_home)
     # The host's zone is merged into the manifest's own environment before
     # sorting, not appended beside it: a manifest that pins TZ must replace
     # the inherited value outright.  Emitting both and relying on a runtime's
