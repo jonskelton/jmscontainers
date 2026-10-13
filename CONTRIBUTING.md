@@ -15,6 +15,12 @@ no container runtime and no particular host: the apple/container and Podman
 surfaces are both exercised by fakes. PR CI runs exactly that, on Ubuntu
 (Python 3.11, 3.13, 3.14 and 3.15) and on macOS.
 
+Most tests in `tests/test_jms.py` replace the process seam (`runtime_run`)
+and agent-state creation with fakes. `tests/test_seams.py` runs both for
+real: `runtime_run` against a stub `podman` shell script that is the only
+executable on `PATH`, and `ensure_agent_state_directory` under a temporary
+`HOME`. A change to either function needs a test there.
+
 Real-runtime checks are opt-in and intentionally not part of PR CI. Run
 `make integration` — or `scripts/integration.sh a|b|all` for one tier — on
 either qualified host: a macOS host with the qualified apple/container
