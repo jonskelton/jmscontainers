@@ -34,6 +34,14 @@
   not a silently accepted behavior — and exercise the manual removal-race
   test (idempotent cleanup under a vanished-mid-removal resource); its
   exact steps are in the appendix below.
+- **2.0.0 only — record the macOS results for the 2.0 launch changes.** They
+  were run on apple/container 1.5.0 on 2026-10-12 and the docs already
+  reflect them: the read-only `.git` bind holds (tier A probe; writes to
+  hooks and `.git/config` fail with EROFS, renaming `.git` fails with
+  EBUSY), and ssh-agent forwarding with `allow_socket = true` cannot work
+  because apple/container binds only directories. Put both in the 2.0.0
+  CHANGELOG Qualification section, rerunning tier A if the candidate has
+  moved since, then remove this item.
 - Run both integration tiers (`scripts/integration.sh all`) green on a real
   Debian 13 amd64 host: a fresh user created with `adduser` (which
   provisions the 65536-id subordinate ranges), non-1000 UID and non-1000

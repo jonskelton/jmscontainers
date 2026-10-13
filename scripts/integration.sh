@@ -392,6 +392,28 @@ tier_a() {
         fail "shell-state mount was writable"
     fi
 
+    # Read-only .git: a .git directory at the project root is bound read-only
+    # inside the read-write project mount, so hooks and config cannot be
+    # planted for host git; --git-writable drops the bind.  This is the
+    # nested read-only bind apple/container must be qualified for: a launch
+    # error, or a writable .git, is a qualification failure.
+    mkdir -p "$proj/.git/hooks"
+    printf '[core]\n' > "$proj/.git/config"
+    if launch_out "$proj" --bin /bin/sh -- -c 'touch /work/.git/hooks/probe' 2>/dev/null; then
+        fail "project .git/hooks was writable without --git-writable"
+    fi
+    if launch_out "$proj" --bin /bin/sh -- -c 'echo x >> /work/.git/config' 2>/dev/null; then
+        fail "project .git/config was writable without --git-writable"
+    fi
+    [ ! -e "$proj/.git/hooks/probe" ] || fail "a hook planted in the container reached the host"
+    [ "$(cat "$proj/.git/config")" = "[core]" ] || fail "the container changed host .git/config"
+    launch_out "$proj" --bin /bin/sh -- -c 'cat /work/.git/config >/dev/null && touch /work/probe-git-ro' \
+        || fail "project .git was unreadable, or /work unwritable, beside the read-only bind"
+    launch_out "$proj" --git-writable --bin /bin/sh -- -c 'touch /work/.git/hooks/probe' \
+        || fail "--git-writable did not make .git writable"
+    [ -e "$proj/.git/hooks/probe" ] || fail "--git-writable write did not reach the host"
+    rm -rf "$proj/.git" "$proj/probe-git-ro"
+
     # Failed-run cleanup: a mid-run failure still cleans and sweeps (the
     # trap-driven sweep at exit proves no leak).
     status=0

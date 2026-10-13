@@ -143,9 +143,10 @@ allow_socket = true
 The container can then ask the agent to sign with any loaded key for as
 long as it runs, though it cannot copy the keys. The source expands from
 the host environment, so a launch without an agent fails with an unset
-variable. Whether a host socket is reachable from inside the container
-depends on the backend: on macOS, apple/container's file sharing may not
-carry it.
+variable. This does not work on macOS: apple/container (checked on 1.5.0)
+bind-mounts directories, not single files, so there the launch fails
+after the build with `path '...' is not a directory`. That applies to any
+`[[mounts]]` source that is a file there, not just a socket.
 
 ## Time zone
 
@@ -244,10 +245,6 @@ directory back writable under another target; a read-only one is fine. The key i
 author, so it is covered by the trust fingerprint, and the approval prompt
 says "container can write .git (hooks and config there run on your host)".
 Approve it only for a repository whose author you trust with your host.
-
-The read-only bind is verified on Podman. On macOS, apple/container's
-handling of a read-only bind nested in a read-write one is not yet
-qualified; do not rely on it there.
 
 ## Mount targets
 

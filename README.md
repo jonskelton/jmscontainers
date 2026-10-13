@@ -98,7 +98,7 @@ stay logged in. Without a terminal, pass `--auth` to mount them.
    when an agent reviews a pull request or other code you did not write.
 3. **Mounted data is not protected from the agent.** A container can change
    the project, including files your host tools later read or run (only the
-   top-level `.git` is read-only, and on macOS that is not yet qualified), and can read or change any agent credentials and configuration
+   top-level `.git` is read-only), and can read or change any agent credentials and configuration
    mounted into it. That agent state is one pool shared by every launch
    that mounts it. macOS uses a VM boundary; Linux uses the weaker rootless
    user-namespace boundary. See

@@ -167,8 +167,7 @@ launch; a definition can set
 approval prompt names. Only a real `.git` directory at the project mount
 root is covered: a `.git` file (linked worktree, submodule), a `.git`
 symlink, or a launch from a checkout's subdirectory with no definition gets
-no read-only bind. The bind is verified on Podman; on macOS it is not yet
-qualified.
+no read-only bind.
 
 `--bin` becomes the runtime entrypoint verbatim. The base image ships
 full-permission agent launchers — `yolo-claude`, `yolo-codex`,
