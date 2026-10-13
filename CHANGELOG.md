@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.0.0 — 2026-10-12
 
 - **Breaking: a launch mounts the project's top-level `.git` read-only.**
   A container can no longer plant `.git/hooks/*` or set config such as
@@ -79,6 +79,57 @@
   definition's record from PATH up to the checkout root**, not just the
   nearest, and names each one. If a remembered no-definition answer for
   the checkout then applies again, a note says so.
+
+### Qualification
+
+Linux matrix of the release-preparation host (2026-10-12). On it, `make
+test` passed (380 tests), and `podman image inspect` of an absent ref exited
+125 with `[]` on stdout and a stderr byte-identical to
+`tests/fixtures/podman-5.4.2-image-inspect-absent.stderr`.
+
+| Dimension | Tested value |
+| --- | --- |
+| Podman | 5.4.2 |
+| Architecture | amd64 (`x86_64`) |
+| Kernel | 6.12.107+deb13-amd64 |
+| Distribution | Debian GNU/Linux 13 (trixie) |
+| cgroup | v2, `systemd` manager |
+| OCI runtime | crun 1.21 |
+| Storage driver | `overlay` |
+| Network backend | netavark 1.14.0, aardvark-dns 1.14.0, pasta (passt 0.0~git20250503.587980c) |
+| Rootless | yes |
+| Python | 3.15.0 |
+
+The read-only `.git` bind and the socket-mount changes were run on macOS on
+2026-10-12 on apple/container 1.5.0 (macOS 27.0, Apple Silicon), before the
+non-directory mount preflight landed:
+
+- Integration tier A passed, including its read-only `.git` probe. By
+  hand, writes to `/work/.git/hooks` and `.git/config` fail with EROFS,
+  renaming `/work/.git` fails with EBUSY, `/work` stays writable, and
+  `git commit` fails with "Read-only file system"; with `--git-writable`
+  it succeeds and the commit reaches the host.
+- ssh-agent forwarding with `allow_socket = true` cannot work there:
+  apple/container binds only directories, so any single-file `[[mounts]]`
+  source failed after the build with "is not a directory". jms now refuses
+  such a source before consent and build.
+
+Integration tiers A and B, including tier A's read-only `.git` probe, passed on
+2026-10-12 on the release-preparation host above, on the developer's own
+account (UID 1000), without sudo; no integration-owned container or image
+remained afterwards.
+
+Integration tier A, including its read-only `.git` probe, passed again on
+2026-10-12 on this candidate (`c1827a3`) on apple/container 1.5.0 (macOS
+27.0, Apple Silicon), with `make test` passing (380 tests). A launch with the
+documented ssh-agent forwarding mount now stops before consent and build
+with "is not a directory; container mounts only directories", and no
+integration-owned container or image remained afterwards.
+
+The release checklist's fresh-account (non-1000 UID, ssh login) run and
+clean-VM install walkthrough were not performed: the project has one
+user, and the maintainer accepted own-account runs in their place for
+this release, as for 1.2.0.
 
 ## 1.2.0 — 2026-10-12
 
