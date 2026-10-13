@@ -292,6 +292,36 @@ class SignalForwardingTests(unittest.TestCase):
         exc = self.forward(signal.SIGHUP)
         self.assertEqual(exc.exit_code, 128 + signal.SIGHUP)
 
+    def test_signal_during_spawn_reaches_the_child(self):
+        # A signal between Popen starting the child and jms recording it
+        # must still be forwarded, not raised past an unsignalled child
+        # that Popen.__exit__ would then wait on for the whole build.
+        real_popen = subprocess.Popen
+
+        def popen_then_signal(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            wait_for(args[0][1] + ".ready")  # the stub's handler is installed
+            JMS.forward_termination(signal.SIGTERM)
+            return child
+
+        with sandbox(), preserved_signal_handlers(), \
+             stub_runtime(self.CHILD) as (exe, tmp), \
+             mock.patch.object(JMS.subprocess, "Popen", popen_then_signal):
+            marker = os.path.join(tmp, "child")
+            started = time.monotonic()
+            with self.assertRaises(JMS.Terminated):
+                JMS.runtime_run([exe, marker], capture=False, stdin=subprocess.DEVNULL)
+            self.assertLess(time.monotonic() - started, 30)
+            self.assertTrue(os.path.exists(marker + ".got"), "child was never signalled")
+
+    def test_ignored_hangup_stays_ignored_under_nohup(self):
+        # A handler resets to the default across exec; SIG_IGN survives it.
+        with preserved_signal_handlers():
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)
+            JMS.install_signal_forwarding()
+            self.assertIs(signal.getsignal(signal.SIGHUP), signal.SIG_IGN)
+            self.assertIs(signal.getsignal(signal.SIGTERM), JMS.forward_termination)
+
     def test_terminated_is_not_swallowed_as_a_jms_error(self):
         # run_build and friends catch JMSException; a termination must pass.
         self.assertFalse(issubclass(JMS.Terminated, Exception))

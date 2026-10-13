@@ -159,6 +159,9 @@ class Terminated(BaseException):
 # forwarded to it, if any.  Only runtime_run() sets _CHILD.
 _CHILD = None
 _TERMINATING = None
+# True from just before Popen until _CHILD is set: a signal landing in that
+# window is recorded and forwarded once the child exists.
+_SPAWNING = False
 
 
 def forward_termination(signum, frame=None):
@@ -170,20 +173,32 @@ def forward_termination(signum, frame=None):
     if child is not None and child.returncode is None:
         child.send_signal(signum)
         return
+    if _SPAWNING:
+        return
     raise Terminated(signum)
 
 
 def install_signal_forwarding() -> None:
     for signum in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(signum, forward_termination)
+        # An ignored signal stays ignored (nohup): a handler would reset to
+        # the default across exec, so the runtime child would lose it.
+        if signal.getsignal(signum) is not signal.SIG_IGN:
+            signal.signal(signum, forward_termination)
 
 
 def supervise(argv, *, stdin, stdout, stderr, timeout):
     """Run one runtime child to completion, bounded by timeout (or not)."""
-    global _CHILD
-    with subprocess.Popen(argv, stdin=stdin, stdout=stdout, stderr=stderr) as child:
+    global _CHILD, _SPAWNING
+    _SPAWNING = True
+    try:
+        child = subprocess.Popen(argv, stdin=stdin, stdout=stdout, stderr=stderr)
+        _CHILD = child
+    finally:
+        _SPAWNING = False
+    with child:
         try:
-            _CHILD = child
+            if _TERMINATING is not None:
+                child.send_signal(_TERMINATING)
             out, err = child.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             child.kill()
@@ -3159,7 +3174,10 @@ def main():
     except KeyboardInterrupt:
         return 130
     except Terminated as exc:
-        print("error: terminated by " + signal.Signals(exc.signum).name, file=sys.stderr)
+        try:
+            print("error: terminated by " + signal.Signals(exc.signum).name, file=sys.stderr)
+        except OSError:
+            pass  # stderr may be the terminal whose hangup this is
         return exc.exit_code
 
 
