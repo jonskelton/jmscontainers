@@ -215,7 +215,7 @@ class FakeRuntime:
         return self.result()
 
     def __call__(self, argv, capture=True, check=True, stdin=None,
-                 stdout=None, stderr=None, replace=False):
+                 stdout=None, stderr=None, replace=False, timeout=None):
         self.calls.append({"argv": list(argv), "replace": replace})
         if argv[0] != self.backend:
             raise AssertionError("fake %s runtime saw argv[0]=%s" % (self.backend, argv[0]))
@@ -1779,7 +1779,7 @@ class BuildTests(unittest.TestCase):
 
     def test_base_build_failure_has_no_context_note(self):
         stderr = io.StringIO()
-        with self.fake(build_error="command failed"), \
+        with sandbox(), self.fake(build_error="command failed"), \
              contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(stderr):
             with self.assertRaises(JMS.JMSException):
@@ -1787,7 +1787,12 @@ class BuildTests(unittest.TestCase):
         self.assertNotIn(".jmscontainer", stderr.getvalue())
 
     def test_base_build_uses_the_repo_as_context(self):
-        with self.fake() as runtime, contextlib.redirect_stdout(io.StringIO()):
+        # The real checkout is the context here, so keep the build lock in a
+        # scratch HOME and never read the checkout's commit.
+        with tempfile.TemporaryDirectory() as home, \
+             mock.patch.dict(os.environ, {"HOME": home}), \
+             mock.patch.object(JMS, "checkout_commit", lambda: None), \
+             self.fake() as runtime, contextlib.redirect_stdout(io.StringIO()):
             JMS.build_base(self.build_args("--base", "--pull", "--no-cache"))
         build = runtime.calls[-1]["argv"]
         repo = os.fsdecode(JMS.canon(os.fsencode(pathlib.Path(JMS.__file__).resolve().parent.parent)))
@@ -3550,7 +3555,9 @@ class BuildArgvGoldenTests(unittest.TestCase):
     def test_builds_stamp_the_neutral_provenance_label(self):
         # run_build owns the shared label assembly; the stamp overrides any
         # caller-supplied value (R5.8's build half).
-        with fake_runtime() as runtime, contextlib.redirect_stdout(io.StringIO()):
+        # Sandboxed: a base build now takes a lock under HOME and reads the
+        # checkout's commit, neither of which may touch the real ones.
+        with sandbox(), fake_runtime() as runtime, contextlib.redirect_stdout(io.StringIO()):
             JMS.build_base(JMS.parse_cli(["build", "--base"]))
         build = runtime.calls[-1]["argv"]
         self.assertIn("jms.container=image", build)
@@ -3563,6 +3570,7 @@ class SelectionTests(unittest.TestCase):
         with mock.patch.object(sys, "platform", platform), \
              mock.patch.object(os, "geteuid", lambda: euid), \
              mock.patch.object(subprocess, "run", forbid), \
+             mock.patch.object(subprocess, "Popen", forbid), \
              mock.patch.object(os, "uname", forbid):
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
@@ -3769,8 +3777,8 @@ class RuntimeRunFailureTests(unittest.TestCase):
     """UX-18: a failed command whose output was streamed has no `-- ""` tail."""
 
     def fail_with(self, output):
-        error = subprocess.CalledProcessError(1, ["container", "build"], output=output[0], stderr=output[1])
-        with mock.patch.object(JMS.subprocess, "run", side_effect=error), \
+        done = subprocess.CompletedProcess(["container", "build", "."], 1, output[0], output[1])
+        with mock.patch.object(JMS, "supervise", return_value=done), \
                 self.assertRaises(JMS.JMSException) as caught:
             JMS.runtime_run(["container", "build", "."], capture=output != (None, None))
         return str(caught.exception)
@@ -4687,6 +4695,7 @@ class SeamTests(unittest.TestCase):
             calls.append(list(argv))
             return proc_result(stdout=b"[]")
         with mock.patch.object(subprocess, "run", forbid), \
+             mock.patch.object(subprocess, "Popen", forbid), \
              mock.patch.object(os, "execvp", forbid):
             for backend in (JMS.ContainerBackend(), JMS.PodmanBackend()):
                 with mock.patch.object(JMS, "_RUNTIME", backend), \

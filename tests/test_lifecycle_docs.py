@@ -27,7 +27,7 @@ class MissingRuntimeHintTests(unittest.TestCase):
         def absent(*args, **kwargs):
             raise FileNotFoundError(2, "No such file or directory")
         with mock.patch.object(JMS, "_RUNTIME", backend), \
-             mock.patch.object(JMS.subprocess, "run", absent):
+             mock.patch.object(JMS.subprocess, "Popen", absent):
             with self.assertRaises(JMS.JMSException) as caught:
                 JMS.runtime_run([backend.exe, "--version"])
         return str(caught.exception)

@@ -127,6 +127,23 @@ is skipped for projects whose Containerfile does not name
 `jmscontainers-base` in a `FROM` line (including `ARG`-indirected bases);
 those rebuild only on a fingerprint change or `--no-cache`.
 
+Every image jms builds, base and project alike, also carries a `jms.version`
+label with the jms version that built it and, when the jms checkout is a git
+working tree, a `jms.commit` label with its `HEAD` commit (suffixed `-dirty`
+when tracked files have local changes). Read them with
+`podman image inspect --format '{{json .Labels}}' <image>` to compare what
+built the images on two machines. The commit is best effort: when git is
+missing or the checkout is not a repository the label is left off and the
+build goes ahead.
+
+Builds of one image are serialized: a second `jms build` (or an implicit
+build from `jms launch`) of the same project, or of the base, prints
+`waiting for another jms build of this image to finish...` and waits for the
+first to finish. It then rechecks, so it normally finds the image up to date
+and reuses it rather than building it twice. The lock files live in
+`~/.local/share/jmscontainers/locks/`; builds of different projects do not
+wait for each other.
+
 The runtime resolves every candidate `FROM` reference exactly. A qualified
 spelling such as `docker.io/library/jmscontainers-base:latest` counts as the
 shared base only when it resolves to the same image ID as the canonical local
@@ -321,8 +338,37 @@ images it does not own, under any scope (image untags on Podman pass
 parents). Run your runtime's own `image prune` yourself if you want a
 global sweep.
 
+## Timeouts and signals
+
+jms bounds the calls it makes to check or query the runtime: the version
+probe, `podman info`, `container system status`, image inspect, exists and
+list, and container listing. Each may run for 60 seconds (`container system
+start`, which may boot the VM, three times that) before jms kills it and
+exits 1 with `error: runtime command timed out after 60s: "<command>"`. A
+runtime that hits this is wedged (a stale storage lock, for example); check
+it by hand. `JMS_RUNTIME_TIMEOUT` changes the limit. Image builds, container
+stops and removals, and the container `launch` runs are never timed out.
+
+When jms receives SIGTERM or SIGHUP while a runtime command such as a build
+is running, it passes the signal on to that command and waits for it to
+exit, so stopping jms (a closed SSH session, a service manager) does not
+leave a build running on its own. jms then exits with 128 plus the signal
+number (143 for SIGTERM, 129 for SIGHUP) after printing
+`error: terminated by SIGTERM` (or `SIGHUP`). Ctrl-C is unchanged: the
+terminal delivers it to the runtime directly. `launch` replaces jms with the
+runtime, so a signal sent during a session goes to the runtime itself.
+
 ## Environment variables
 
+- `JMS_DEBUG`: set to `1` (any value except empty or `0`) to print every
+  runtime command to stderr as jms runs it, as `jms-debug: run: "podman"
+  "info" ...` (or `exec:` for the command `launch` replaces itself with),
+  followed by `jms-debug: exit <status> (<seconds>s)`. Use it to see which
+  runtime step failed or hung. The trace includes the full arguments,
+  including manifest `[env]` values passed as `--env`.
+- `JMS_RUNTIME_TIMEOUT`: seconds each runtime readiness or query call may run
+  before jms gives up (see Timeouts and signals). A whole number from 1 to
+  999999; the default is 60. Any other value is a usage error (exit 2).
 - `JMS_PROJECT_ROOTS`: colon-separated absolute directories (a leading `~` is
   expanded) searched for a bare-name operand that matches nothing in the
   current directory, first match wins. Unset by default. Set it to keep every
@@ -357,6 +403,7 @@ global sweep.
 | 2 | usage error: bad flags or operands, including a workdir that does not exist or a missing project definition where a command needs one |
 | 3 | trust error: consent declined, prompting unavailable, or a fingerprint mismatch |
 | 130 | interrupted (Ctrl-C) at any point before `launch` hands over to the runtime |
+| 129, 143 | terminated by SIGHUP or SIGTERM; jms forwards the signal to the running runtime command and waits for it first |
 
 When jms itself exits 1, 2 or 3, the last line it writes to stderr starts
 with `error: ` (`jms <command>: error: ` for a flag error caught by the
