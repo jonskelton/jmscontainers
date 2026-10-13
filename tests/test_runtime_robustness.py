@@ -246,6 +246,16 @@ def quiet():
     return contextlib.redirect_stderr(io.StringIO())
 
 
+class TimeoutValidationOrderTests(unittest.TestCase):
+    def test_bad_timeout_is_refused_at_runtime_selection(self):
+        # Before any consent prompt or trust-store write (review L3).
+        with sandbox(), mock.patch.object(JMS, "_RUNTIME", None), \
+             mock.patch.object(JMS, "select_runtime", side_effect=AssertionError("selected")):
+            os.environ["JMS_RUNTIME_TIMEOUT"] = "soon"
+            with self.assertRaises(JMS.UsageError):
+                JMS.runtime()
+
+
 class SignalForwardingTests(unittest.TestCase):
     """OPS-02: SIGTERM/SIGHUP reach the runtime child; jms waits for it."""
 

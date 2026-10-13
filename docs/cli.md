@@ -405,9 +405,10 @@ runtime, so a signal sent during a session goes to the runtime itself.
 | 130 | interrupted (Ctrl-C) at any point before `launch` hands over to the runtime |
 | 129, 143 | terminated by SIGHUP or SIGTERM; jms forwards the signal to the running runtime command and waits for it first |
 
-When jms itself exits 1, 2 or 3, the last line it writes to stderr starts
+When jms itself exits 1, 2 or 3, it writes a line to stderr that starts
 with `error: ` (`jms <command>: error: ` for a flag error caught by the
-argument parser). An interrupt prints nothing.
+argument parser). That line is the last one, or is followed only by a
+single `hint: ` line. An interrupt prints nothing.
 
 **`launch` passes the container's exit status through.** Once its checks
 pass, `launch` replaces itself with the runtime's `run` command, so from
