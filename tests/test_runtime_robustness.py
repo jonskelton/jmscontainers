@@ -401,6 +401,73 @@ def _is_dir_fd(fd):
     return stat.S_ISDIR(os.fstat(fd).st_mode)
 
 
+class BuildLockTests(unittest.TestCase):
+    """OPS-12: concurrent builds of one image serialize."""
+
+    def test_second_holder_waits_and_says_so(self):
+        entered = threading.Event()
+        stderr = io.StringIO()
+        with sandbox():
+            with JMS.build_lock("p" * 64):
+                def contender():
+                    with JMS.build_lock("p" * 64):
+                        entered.set()
+
+                with contextlib.redirect_stderr(stderr):
+                    thread = threading.Thread(target=contender)
+                    thread.start()
+                    self.assertFalse(entered.wait(0.3))
+            thread.join(10)
+            self.assertTrue(entered.is_set())
+            lock = JMS.build_lock_root() / ("p" * 64 + ".lock")
+            self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(JMS.build_lock_root().stat().st_mode & 0o777, 0o700)
+        self.assertIn("waiting for another jms build", stderr.getvalue())
+
+    def test_distinct_projects_do_not_contend(self):
+        with sandbox(), JMS.build_lock("a" * 64):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr), JMS.build_lock("b" * 64):
+                pass
+            self.assertEqual(stderr.getvalue(), "")
+
+    def held(self, key):
+        fd = os.open(JMS.build_lock_root() / (key + ".lock"), os.O_WRONLY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        finally:
+            os.close(fd)
+        return False
+
+    def test_build_project_holds_the_project_lock(self):
+        seen = []
+        data = {"pid": "c" * 64}
+        with sandbox(), mock.patch.object(
+                JMS, "_build_project",
+                lambda data, args: seen.append(self.held(data["pid"])) or ("t:1", True)):
+            self.assertEqual(JMS.build_project(data, None), ("t:1", True))
+            self.assertFalse(self.held("c" * 64))
+        self.assertEqual(seen, [True])
+
+    def test_ensure_base_rechecks_under_the_lock(self):
+        # A concurrent jms built the base while this one waited: no rebuild.
+        answers = iter([False, True])
+        built = []
+        with sandbox(), mock.patch.object(JMS, "image_exists", lambda image: next(answers)), \
+             mock.patch.object(JMS, "_build_base", built.append):
+            JMS.ensure_base(None)
+        self.assertEqual(built, [])
+
+    def test_base_build_holds_the_base_lock(self):
+        seen = []
+        with sandbox(), mock.patch.object(JMS, "_build_base",
+                                          lambda args: seen.append(self.held("base"))):
+            JMS.build_base(None)
+        self.assertEqual(seen, [True])
+
+
 class ProvenanceLabelTests(unittest.TestCase):
     """OPS-05/MAINT-17: builds record the jms version and checkout commit."""
 

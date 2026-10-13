@@ -125,6 +125,14 @@ built the images on two machines. The commit is best effort: when git is
 missing or the checkout is not a repository the label is left off and the
 build goes ahead.
 
+Builds of one image are serialized: a second `jms build` (or an implicit
+build from `jms launch`) of the same project, or of the base, prints
+`waiting for another jms build of this image to finish...` and waits for the
+first to finish. It then rechecks, so it normally finds the image up to date
+and reuses it rather than building it twice. The lock files live in
+`~/.local/share/jmscontainers/locks/`; builds of different projects do not
+wait for each other.
+
 The runtime resolves every candidate `FROM` reference exactly. A qualified
 spelling such as `docker.io/library/jmscontainers-base:latest` counts as the
 shared base only when it resolves to the same image ID as the canonical local

@@ -2033,6 +2033,29 @@ def run_build(context: bytes | str, tag: str, args, labels: dict[str, str] | Non
         raise
 
 
+def build_lock_root() -> Path:
+    return Path(os.fsdecode(home_path())) / ".local" / "share" / "jmscontainers" / "locks"
+
+
+@contextmanager
+def build_lock(key: str):
+    """Serialize builds of one image (OPS-12): a second `jms build` of the
+    same project waits for the first, then finds its image up to date."""
+    root = build_lock_root()
+    root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root.mkdir(mode=0o700, exist_ok=True)
+    fd = os.open(root / (key + ".lock"), os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("waiting for another jms build of this image to finish...", file=sys.stderr)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def checkout_commit() -> str | None:
     """Best-effort HEAD commit of the jms checkout, suffixed `-dirty` when
     tracked files differ; None when unknown.  Never fails a build (OPS-05)."""
@@ -2057,13 +2080,21 @@ def checkout_commit() -> str | None:
 
 
 def build_base(args):
+    with build_lock("base"):
+        _build_base(args)
+
+
+def _build_base(args):
     print("building " + quote(BASE), file=sys.stderr)
     run_build(checkout_root(), BASE, args, project=False)
 
 
 def ensure_base(args) -> None:
     if not image_exists(BASE):
-        build_base(args)
+        with build_lock("base"):
+            # Re-check under the lock: a concurrent jms may have just built it.
+            if not image_exists(BASE):
+                _build_base(args)
 
 
 def project_data(workdir: bytes):
@@ -2246,6 +2277,11 @@ def shared_base_dependency(spec: bytes) -> ResolvedImage | None:
 
 
 def build_project(data, args):
+    with build_lock(data["pid"]):
+        return _build_project(data, args)
+
+
+def _build_project(data, args):
     tag = data["tag_prefix"] + ":" + data["tf"][:12]
     # A base-derived project is stale when its recorded base id (stamped as
     # the jms.base label at build time) no longer matches the local base
