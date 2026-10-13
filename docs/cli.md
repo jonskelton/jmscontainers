@@ -311,8 +311,29 @@ global sweep.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | success (for `launch`, the container's own exit status, since jms `exec`s the runtime) |
+| 0 | success |
 | 1 | operational failure: the runtime, a build, host I/O, or an invalid manifest or trust store |
-| 2 | usage error: bad flags or operands, including a workdir that does not exist |
+| 2 | usage error: bad flags or operands, including a workdir that does not exist or a missing project definition where a command needs one |
 | 3 | trust error: consent declined, prompting unavailable, or a fingerprint mismatch |
-| 130 | interrupted at a prompt (Ctrl-C) |
+| 130 | interrupted (Ctrl-C) at any point before `launch` hands over to the runtime |
+
+When jms itself exits 1, 2 or 3, the last line it writes to stderr starts
+with `error: ` (`jms <command>: error: ` for a flag error caught by the
+argument parser). An interrupt prints nothing.
+
+**`launch` passes the container's exit status through.** Once its checks
+pass, `launch` replaces itself with the runtime's `run` command, so from
+then on the exit status is whatever the runtime returns. That is usually
+the launched program's own status, which can be any number, including 1, 2,
+3 or 130. A program that exits 3 is indistinguishable by status alone from
+a jms trust refusal. The runtime also uses codes of its own: Podman exits
+125 when `podman run` itself fails, 126 when the entry program cannot be
+executed, and 127 when it is not found. To tell jms's refusals apart in a
+script:
+
+- Look for the `error: ` line. It is only a strong signal: a program in
+  the container may print a line that looks the same.
+- Or split the gates off: `jms build` runs the same trust and build steps
+  without starting a container, and `jms inspect` reports the grants
+  `launch` would need. After those succeed, a nonzero `launch` status
+  almost always comes from the container.

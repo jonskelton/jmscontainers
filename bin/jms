@@ -2518,7 +2518,7 @@ def cmd_trust(args):
     if not data:
         if not (args.auth or args.no_auth):
             fail("no project container definition found -- pass --auth or --no-auth to record "
-                 "the credential answer for launches here without one")
+                 "the credential answer for launches here without one", 2)
         if args.fingerprint:
             fail("--fingerprint is valid only with a project definition", 2)
         root, _, vanished = base_credential_records(read_store(), workdir)
