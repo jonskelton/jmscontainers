@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.0.0 — 2026-10-12
 
 - **Breaking: a launch mounts the project's top-level `.git` read-only.**
   A container can no longer plant `.git/hooks/*` or set config such as
@@ -79,6 +79,44 @@
   definition's record from PATH up to the checkout root**, not just the
   nearest, and names each one. If a remembered no-definition answer for
   the checkout then applies again, a note says so.
+
+### Qualification
+
+Linux matrix of the release-preparation host (2026-10-12). On it, `make
+test` passed (380 tests), and `podman image inspect` of an absent ref exited
+125 with `[]` on stdout and a stderr byte-identical to
+`tests/fixtures/podman-5.4.2-image-inspect-absent.stderr`.
+
+| Dimension | Tested value |
+| --- | --- |
+| Podman | 5.4.2 |
+| Architecture | amd64 (`x86_64`) |
+| Kernel | 6.12.107+deb13-amd64 |
+| Distribution | Debian GNU/Linux 13 (trixie) |
+| cgroup | v2, `systemd` manager |
+| OCI runtime | crun 1.21 |
+| Storage driver | `overlay` |
+| Network backend | netavark 1.14.0, aardvark-dns 1.14.0, pasta (passt 0.0~git20250503.587980c) |
+| Rootless | yes |
+| Python | 3.15.0 |
+
+The read-only `.git` bind and the socket-mount changes were run on macOS on
+2026-10-12 on apple/container 1.5.0 (macOS 27.0, Apple Silicon), before the
+non-directory mount preflight landed:
+
+- Integration tier A passed, including its read-only `.git` probe. By
+  hand, writes to `/work/.git/hooks` and `.git/config` fail with EROFS,
+  renaming `/work/.git` fails with EBUSY, `/work` stays writable, and
+  `git commit` fails with "Read-only file system"; with `--git-writable`
+  it succeeds and the commit reaches the host.
+- ssh-agent forwarding with `allow_socket = true` cannot work there:
+  apple/container binds only directories, so any single-file `[[mounts]]`
+  source failed after the build with "is not a directory". jms now refuses
+  such a source before consent and build.
+
+TODO before merge: record integration tiers A and B on Linux, the macOS
+tier A rerun on this candidate, and how the fresh-account and clean-VM
+gates were handled.
 
 ## 1.2.0 — 2026-10-12
 
