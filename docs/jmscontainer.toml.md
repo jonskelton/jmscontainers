@@ -34,10 +34,11 @@ coercion is performed, and floats and datetimes are accepted nowhere.
 | `schema` | integer | `1` | Must be `1`; a newer integer version fails closed and asks for a newer `jms`. |
 | `name` | string | project-directory slug | Cosmetic slug for generated container names. Must match `^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`. It does not affect the project ID, but it is manifest content: changing it changes the trust fingerprint, and the image tag ends in that fingerprint. |
 | `env` | table | empty | Environment names match `^[A-Za-z_][A-Za-z0-9_]*$`; values are strings without NUL or newline. `TZ` is special only in that `launch` supplies a default from the host: see [Time zone](#time-zone). |
-| `mounts` | array of tables | empty | Each item has `source`, `target`, and optional `readonly` only. |
+| `mounts` | array of tables | empty | Each item has `source`, `target`, and optional `readonly` and `allow_socket` only. |
 | `mounts[].source` | string | — | Required, nonempty host path. `~`, `$VAR`, and `${VAR}` expand once from the host environment; unset or empty expansions fail. Relative paths resolve from the project root (not `.jmscontainer/` or the invoking working directory). The result must already exist: jms canonicalizes it (resolving symlinks) while parsing, so a missing source is a manifest error. |
 | `mounts[].target` | string | — | Required container path. Absolute paths use the allowlist in [Mount targets](#mount-targets); relative paths resolve from the container project path and may leave that allowlist, subject to the system-state and reserved-path checks below. Targets may not overlap each other or any reserved path. |
-| `mounts[].readonly` | boolean | `true` | Set `false` only when the container must write the host path. A writable host toolchain cache (such as `~/.cargo/registry`, `~/go/pkg/mod` or `~/.cache/pip`) is code host builds of every project will later run, so give a container its own cache directory instead. Read-only does not restrict a socket, FIFO or device node: the container can still connect to or write it, and the consent summary says so instead of `read-only`. |
+| `mounts[].readonly` | boolean | `true` | Set `false` only when the container must write the host path. A writable host toolchain cache (such as `~/.cargo/registry`, `~/go/pkg/mod` or `~/.cache/pip`) is code host builds of every project will later run, so give a container its own cache directory instead. Read-only does not restrict a socket, FIFO or device node: the container can still connect to or write it, which is why such sources need `allow_socket`. |
+| `mounts[].allow_socket` | boolean | `false` | Permit a source that is a socket, FIFO, or character/block device; without it such a source is refused. The consent summary then names the grant (`SOCKET (allow_socket = true)`) instead of `read-only`. An exact socket path is also exempt from the socket-directory refusal; a directory never is. See [Host sockets](#host-sockets). |
 | `run` | table | defaults below | Only `entry`, `mount_auth`, and `preserve_host_path`. |
 | `run.entry` | array of strings | `["/bin/bash", "-l"]` | Nonempty; first element nonempty; no element contains NUL. |
 | `run.mount_auth` | boolean | `true` | The key name is historical: it gates the agent-state mount (credentials and configuration). If false, mounting requires the user to type `--auth`; it does not change the approval record or prompts. |
@@ -59,6 +60,51 @@ so such a mount may resolve and pass approval on the host and still be
 unreadable or unwritable inside the container. jms performs no preflight
 detection of this; the failure surfaces in the container. The same rule
 applies to the project tree itself.
+
+## Host sockets
+
+A socket inside a mount still accepts connections whatever the mount flags,
+and a host socket is often a host command channel: the user systemd
+manager, D-Bus, a tmux server, a container engine. jms therefore refuses a
+mount whose canonical source:
+
+- is a socket, FIFO, or character/block device, unless the mount sets
+  `allow_socket = true`;
+- contains or sits inside a known socket directory: `$XDG_RUNTIME_DIR`
+  (when set), `/run/user/<uid>`, `/run`, `/var/run`, `/tmp/tmux-<uid>`, or
+  `/tmp/.X11-unix`. That refuses `/tmp` itself, but other `/tmp`
+  subtrees stay mountable;
+- is, or contains, the socket named by `$SSH_AUTH_SOCK` or by a `unix://`
+  `$DOCKER_HOST`. Only that path and its ancestors are refused, so
+  `SSH_AUTH_SOCK=~/.agent.sock` does not make the rest of `~` unmountable.
+
+A mount with `allow_socket = true` whose source is exactly a socket skips
+the two directory rules; a directory never does, because it would carry
+every socket created in it later.
+
+The list is **best-effort**, not a guarantee. Agent sockets elsewhere that
+no environment variable names (under `$HOME`, say) are not detected, so
+review every extra mount at consent as a grant of whatever it contains.
+
+To forward the host ssh-agent, mount the exact socket and point the
+container at it with `[env]`:
+
+```toml
+[env]
+SSH_AUTH_SOCK = "/opt/ssh-agent.sock"
+
+[[mounts]]
+source = "$SSH_AUTH_SOCK"
+target = "/opt/ssh-agent.sock"
+allow_socket = true
+```
+
+The container can then ask the agent to sign with any loaded key for as
+long as it runs, though it cannot copy the keys. The source expands from
+the host environment, so a launch without an agent fails with an unset
+variable. Whether a host socket is reachable from inside the container
+depends on the backend: on macOS, apple/container's file sharing may not
+carry it.
 
 ## Time zone
 
