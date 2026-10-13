@@ -25,9 +25,10 @@ test:
 	python3 -X pycache_prefix=$$(mktemp -d) -m py_compile bin/jms
 	python3 -B -m unittest discover -s tests
 	@if command -v shellcheck >/dev/null 2>&1; then \
-		shellcheck scripts/integration.sh completions/jms.bash; \
+		shellcheck scripts/integration.sh scripts/qualify-macos.sh completions/jms.bash; \
 	else \
 		sh -n scripts/integration.sh; \
+		sh -n scripts/qualify-macos.sh; \
 		bash -n completions/jms.bash; \
 	fi
 	@if command -v zsh >/dev/null 2>&1; then zsh -n completions/_jms; fi

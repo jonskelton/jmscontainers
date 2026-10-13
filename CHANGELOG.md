@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 — 2026-10-13
 
 - **A hung container runtime no longer hangs jms.** Readiness and query
   calls give up after 60 seconds (`JMS_RUNTIME_TIMEOUT` changes the
@@ -53,6 +53,55 @@
   Upgrading, uninstalling, disk usage, resource limits and proxies are
   documented, and `make uninstall` points to what it leaves behind.
   `docs/cli.md` lists every `inspect` field and every runtime refusal.
+
+### Qualification
+
+Linux, 2026-10-13, on the release-preparation host, whose matrix is
+unchanged from 2.0.2: `make test` passed (471 tests); integration tier A
+passed on `552914f` and tier B on `b999e4a`, which differs from it only
+in docs/macos.md; and `podman image inspect` of an absent ref exited 125
+with `[]` on stdout and a stderr byte-identical to
+`tests/fixtures/podman-5.4.2-image-inspect-absent.stderr`.
+
+| Dimension | Tested value |
+| --- | --- |
+| Podman | 5.4.2 |
+| Architecture | amd64 (`x86_64`) |
+| Kernel | 6.12.107+deb13-amd64 |
+| Distribution | Debian GNU/Linux 13 (trixie) |
+| cgroup | v2, `systemd` manager |
+| OCI runtime | crun 1.21 |
+| Storage driver | `overlay` |
+| Network backend | netavark 1.14.0, aardvark-dns 1.14.0, pasta (passt 0.0~git20250503.587980c) |
+| Rootless | yes |
+| Python | 3.15.0 |
+
+macOS, 2026-10-13, on this candidate (`a74f8c7`) with apple/container
+1.5.0 (macOS 27.0.1 build 26A434, Apple Silicon, Python 3.14.7), by
+`scripts/qualify-macos.sh` under expect(1) on an 80-column
+pseudo-terminal:
+
+- `make test` passed (471 tests). Integration tiers A and B passed,
+  including the shared-base identity collision case, and no
+  integration-owned container or image remained afterwards.
+- A cold `container system start` showed no first-run prompt; `jms build
+  --base` from a stopped runtime finished in 15 s.
+- The base image carries `jms.version` and `jms.commit`.
+- SIGTERM to a `jms build` running a slow step exited 143 and left no
+  `container build` running.
+- The consent header comes first and the preserved host path,
+  `--git-writable` and an extra mount are each marked `!`; notes wrap
+  without splitting a quoted path. `jms clean --images` answered no exits 1
+  and removes nothing, answered yes removes the image, and `--yes` asks
+  nothing. zsh completes subcommands, directories after `-w` and for
+  `trust`, the `trust` verbs, and nothing after `launch --`.
+- Observed for the docs: `container image prune` exists; replacing an
+  image's tag leaves no unnamed image; the host's `HTTPS_PROXY` reaches
+  neither a build nor a container. When jms forwards SIGTERM to `container
+  run`, apple/container prints `failed to send signal: ... "missing signal
+  in xpc message"`; the container is still removed.
+
+`ContainerBackend._version_qualified` stays 1.5.0, the version tested.
 
 ## 2.0.2 — 2026-10-13
 
