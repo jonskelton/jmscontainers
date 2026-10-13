@@ -34,6 +34,23 @@
   not a silently accepted behavior — and exercise the manual removal-race
   test (idempotent cleanup under a vanished-mid-removal resource); its
   exact steps are in the appendix below.
+- **2.0.0 only — macOS items still unqualified on apple/container.** The 2.0
+  launch changes were verified on Podman alone, and the docs say so. On the
+  macOS host, before tagging 2.0.0:
+  1. Run `make integration` (tier A includes the read-only `.git` probe:
+     hooks and `.git/config` unwritable without `--git-writable`, writable
+     with it, `/work` still writable). A launch error or a writable `.git`
+     is a qualification failure, not a known limitation to document.
+  2. Forward the host ssh-agent with the recipe in
+     [jmscontainer.toml.md § Host sockets](jmscontainer.toml.md#host-sockets)
+     (`allow_socket = true` on the exact `$SSH_AUTH_SOCK`), then run
+     `ssh-add -l` inside the container. A unix socket may not cross
+     apple/container's file sharing; if it fails, record that in the docs
+     as a macOS limitation instead of claiming forwarding works.
+  3. On a pass, delete the "not yet qualified" sentences for the read-only
+     bind from [jmscontainer.toml.md](jmscontainer.toml.md) (§ Read-only
+     .git) and [SECURITY.md](../SECURITY.md), and record both results in
+     the CHANGELOG Qualification section. Remove this item after 2.0.0.
 - Run both integration tiers (`scripts/integration.sh all`) green on a real
   Debian 13 amd64 host: a fresh user created with `adduser` (which
   provisions the 65536-id subordinate ranges), non-1000 UID and non-1000
