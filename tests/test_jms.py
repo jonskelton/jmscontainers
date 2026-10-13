@@ -517,7 +517,8 @@ class ManifestTests(unittest.TestCase):
             self.assertFalse(config["mount_auth"])
             self.assertEqual(config["mounts"],
                              [{"source": JMS.canon(os.fsencode(cache)),
-                               "target": "/home/isolation/.cache/demo", "readonly": True}])
+                               "target": "/home/isolation/.cache/demo", "readonly": True,
+                               "allow_socket": False}])
 
     def test_invalid_fields_are_reported_together(self):
         with self.assertRaisesRegex(JMS.JMSException, "invalid jmscontainer.toml fields"):
@@ -1122,6 +1123,149 @@ class ConsentTests(unittest.TestCase):
                                   answers=["y"])
             self.assertEqual(result, (True, True))
             self.assertEqual(JMS.read_store()["projects"][pid]["grants"]["auth"], True)
+
+
+class SocketMountTests(unittest.TestCase):
+    """Manifest mounts never reach a host socket unless the mount opts in."""
+
+    @contextlib.contextmanager
+    def socket_env(self, **values):
+        # Ambient agent variables would make the outcome depend on the host.
+        with sandbox() as home:
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ("SSH_AUTH_SOCK", "DOCKER_HOST", "XDG_RUNTIME_DIR")}
+            env.update({key: value.replace("~", str(home)) for key, value in values.items()})
+            with mock.patch.dict(os.environ, env, clear=True):
+                yield home
+
+    def listen(self, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        server = socket.socket(socket.AF_UNIX)
+        self.addCleanup(server.close)
+        server.bind(str(path))
+        return path
+
+    def project(self, home, *mounts, name="demo"):
+        manifest = "".join('[[mounts]]\nsource = "%s"\ntarget = "/opt/m%d"\n%s'
+                           % (source, index, extra) for index, (source, extra) in enumerate(mounts))
+        root = make_project(home, name=name, manifest=manifest.encode())
+        return JMS.canon(os.fsencode(root))
+
+    def test_special_file_sources_are_refused_with_their_kind_named(self):
+        with self.socket_env() as home:
+            sock = self.listen(home / "s.sock")
+            fifo = home / "fifo"; os.mkfifo(fifo)
+            (home / "plain").mkdir()
+            for index, (source, kind) in enumerate(((sock, "socket"), (fifo, "FIFO"))):
+                with self.subTest(kind=kind):
+                    root = self.project(home, (home / "plain", ""), (source, ""), name="p%d" % index)
+                    with self.assertRaisesRegex(JMS.JMSException,
+                                                r"mounts\[1\] source .* is a %s.*allow_socket" % kind):
+                        JMS.project_data(root)
+
+    def test_allow_socket_admits_the_exact_socket_and_consent_names_it(self):
+        # The exact socket is exempt from the socket-root list, so an agent
+        # socket inside $XDG_RUNTIME_DIR can be forwarded deliberately.
+        with self.socket_env(XDG_RUNTIME_DIR="~/run") as home:
+            sock = self.listen(home / "run" / "agent.sock")
+            root = self.project(home, (sock, "allow_socket = true\n"))
+            config = JMS.project_data(root)["config"]
+            self.assertTrue(config["mounts"][0]["allow_socket"])
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                JMS.print_capability_summary(root, config)
+            line = [item for item in stderr.getvalue().splitlines() if item.startswith("- extra mount:")][0]
+            self.assertIn("SOCKET (allow_socket = true)", line)
+            self.assertNotIn("read-only", line)
+
+    def test_allow_socket_never_exempts_a_directory_under_a_socket_root(self):
+        with self.socket_env(XDG_RUNTIME_DIR="~/run") as home:
+            self.listen(home / "run" / "agent.sock")
+            (home / "run" / "sub").mkdir()
+            (home / "elsewhere").mkdir()
+            for index, source in enumerate((home / "run", home / "run" / "sub")):
+                with self.subTest(source=source):
+                    root = self.project(home, (source, "allow_socket = true\n"), name="p%d" % index)
+                    with self.assertRaisesRegex(JMS.JMSException, "host socket directory"):
+                        JMS.project_data(root)
+            # A directory outside every socket root may carry the key harmlessly.
+            root = self.project(home, (home / "elsewhere", "allow_socket = true\n"), name="ok")
+            self.assertEqual(len(JMS.project_data(root)["config"]["mounts"]), 1)
+
+    def test_fixed_socket_roots_refuse_ancestors_and_descendants(self):
+        # Sources reach the check canonical, so they are canonicalised here
+        # too (/var/run is commonly a symlink to /run).  Descendants are
+        # named so they do not exist: a real host socket there would be
+        # refused for its kind before the directory rule is reached.
+        uid = os.getuid()
+        def config(path):
+            return {"mounts": [{"source": JMS.canon_lenient(os.fsencode(path)), "allow_socket": False}]}
+        with self.socket_env():
+            refused = ("/run/user/%d" % uid, "/run/user", "/run/user/%d/jms-test-absent" % uid,
+                       "/run", "/var/run", "/", "/tmp", "/tmp/tmux-%d" % uid,
+                       "/tmp/tmux-%d/jms-test-absent" % uid, "/tmp/.X11-unix/jms-test-absent")
+            for path in refused:
+                with self.subTest(path=path):
+                    with self.assertRaisesRegex(JMS.JMSException, "host socket directory"):
+                        JMS.refuse_socket_mounts(config(path))
+            for path in ("/tmp/tmux-%d-jms-test-absent" % uid, "/tmp/jms-test-absent", "/srv/data"):
+                with self.subTest(path=path):
+                    JMS.refuse_socket_mounts(config(path))
+
+    def test_ssh_auth_sock_refuses_its_ancestors_but_not_their_other_children(self):
+        with self.socket_env(SSH_AUTH_SOCK="~/agent/ssh.sock") as home:
+            self.listen(home / "agent" / "ssh.sock")
+            (home / "cache").mkdir()
+            root = self.project(home, (home / "agent", ""), name="parent")
+            with self.assertRaisesRegex(JMS.JMSException, "host socket directory"):
+                JMS.project_data(root)
+            # Its parent's parent is home, but a sibling subtree stays mountable.
+            root = self.project(home, (home / "cache", ""), name="sibling")
+            self.assertEqual(len(JMS.project_data(root)["config"]["mounts"]), 1)
+            root = self.project(home, (home / "agent" / "ssh.sock", "allow_socket = true\n"),
+                                name="exact")
+            self.assertEqual(len(JMS.project_data(root)["config"]["mounts"]), 1)
+
+    def test_docker_host_unix_path_is_refused_and_tcp_is_ignored(self):
+        with self.socket_env(DOCKER_HOST="unix://~/docker/docker.sock") as home:
+            self.listen(home / "docker" / "docker.sock")
+            root = self.project(home, (home / "docker", ""))
+            with self.assertRaisesRegex(JMS.JMSException, "host socket directory"):
+                JMS.project_data(root)
+        with self.socket_env(DOCKER_HOST="tcp://127.0.0.1:2375") as home:
+            (home / "docker").mkdir()
+            root = self.project(home, (home / "docker", ""))
+            self.assertEqual(len(JMS.project_data(root)["config"]["mounts"]), 1)
+
+    def test_allow_socket_must_be_a_boolean(self):
+        with self.socket_env() as home:
+            (home / "plain").mkdir()
+            for value in ('"true"', "1", "[]"):
+                with self.subTest(value=value):
+                    manifest = ('[[mounts]]\nsource = "%s"\ntarget = "/opt/a"\nallow_socket = %s\n'
+                                % (home / "plain", value)).encode()
+                    with self.assertRaisesRegex(JMS.JMSException, r"mounts\[0\]\.allow_socket"):
+                        JMS.parse_manifest(manifest)
+
+    def test_adding_allow_socket_changes_the_fingerprint_and_reprompts(self):
+        with self.socket_env() as home:
+            (home / "plain").mkdir()
+            root = self.project(home, (home / "plain", ""))
+            before = JMS.project_data(root)["tf"]
+            spec = os.fsdecode(root) + "/.jmscontainer/jmscontainer.toml"
+            with open(spec, "ab") as handle:
+                handle.write(b"allow_socket = true\n")
+            after = JMS.project_data(root)["tf"]
+            self.assertNotEqual(before, after)
+            replies = ["y", "y"]
+            with mock.patch.object(JMS, "consent_input", side_effect=lambda q: replies.pop(0)), \
+                 mock.patch.object(sys, "stdin", TTYIO(True)), \
+                 mock.patch.object(sys, "stderr", TTYIO(True)):
+                JMS.approve(root, before, JMS.parse_cli(["build"]), action="build")
+            with mock.patch.object(sys, "stdin", TTYIO(False)), \
+                 mock.patch.object(sys, "stderr", TTYIO(False)), \
+                 self.assertRaisesRegex(JMS.TrustError, "prompting is unavailable"):
+                JMS.approve(root, after, JMS.parse_cli(["build"]), action="build")
 
 
 class CliSurfaceTests(unittest.TestCase):
