@@ -1870,92 +1870,150 @@ def consent_input(question: str) -> str:
         return ""
 
 
-def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = None):
-    pid = hashlib.sha256(root).hexdigest()
-    store = read_store()
-    record = store["projects"].get(pid)
-    env_pin = os.environ.get("JMS_TRUST_FINGERPRINT")
-    if getattr(args, "trust", False):
+@dataclass(frozen=True)
+class TrustDecision:
+    """What approve() must do, decided from its inputs alone (no I/O).
+
+    step is one of:
+      "refused"   -- refusal: a pin or --fingerprint does not match
+      "granted"   -- nothing to ask; return (build_ok, auth_ok)
+      "record"    -- `jms trust --fingerprint`: record build/run and record_auth
+      "ask_build" -- ask the build/run question, then the credential question
+                     when ask_credentials, and record the answers
+      "ask_auth"  -- build/run is granted; ask only the credential question,
+                     recording an accepted grant when persist_auth
+    """
+    step: str
+    build_ok: bool
+    auth_ok: bool
+    no_auth: bool
+    refusal: tuple | None = None         # (message, exit code) before any output
+    notice: str | None = None            # why consent is being asked again
+    show_summary: bool = False           # print the capability summary
+    prompt_refusal: tuple | None = None  # (message, exit code) after the summary: no TTY to ask on
+    record_auth: bool = False            # "record": the credential grant to store
+    ask_credentials: bool = False        # "ask_build": follow with the credential question
+    persist_auth: bool = False           # "ask_auth": store an accepted credential grant
+
+
+def trust_decision(root: bytes, tf: str, record: dict | None, *, action: str, trust: bool,
+                   fingerprint: str | None, env_pin: str | None, wants_auth: bool, no_auth: bool,
+                   tty: bool) -> TrustDecision:
+    """The trust truth table: stored record, pins, flags and TTY -> what approve() does.
+
+    The boolean --trust is a one-shot build/run grant that drops the env pin;
+    it never grants credentials (SECURITY.md).  A one-shot credential grant
+    needs the exact JMS_TRUST_FINGERPRINT pin together with --auth.
+    """
+    if trust:
         env_pin = None
     if env_pin is not None and env_pin != tf:
-        fail("JMS_TRUST_FINGERPRINT does not match this project definition (pin " + quote(env_pin[:12])
-             + ", current " + tf[:12] + ") -- review the definition, then get the full "
-             "fingerprint with: jms inspect " + quote(root), 3)
+        return TrustDecision("refused", False, False, no_auth, refusal=(
+            "JMS_TRUST_FINGERPRINT does not match this project definition (pin " + quote(env_pin[:12])
+            + ", current " + tf[:12] + ") -- review the definition, then get the full "
+            "fingerprint with: jms inspect " + quote(root), 3))
+    if fingerprint and fingerprint != tf:
+        return TrustDecision("refused", False, False, no_auth, refusal=(
+            "--fingerprint does not match this project definition (given " + quote(fingerprint[:12])
+            + ", current " + tf[:12] + ") -- review the definition, then get the full "
+            "fingerprint with: jms inspect " + quote(root), 3))
     live = record if record and record.get("tf") == tf else None
-    one_shot = getattr(args, "trust", False) or env_pin == tf or getattr(args, "fingerprint", None) == tf
-    wants_auth = getattr(args, "auth", False)
-    no_auth = getattr(args, "no_auth", False)
-    if getattr(args, "fingerprint", None) and args.fingerprint != tf:
-        fail("--fingerprint does not match this project definition (given " + quote(args.fingerprint[:12])
-             + ", current " + tf[:12] + ") -- review the definition, then get the full "
-             "fingerprint with: jms inspect " + quote(root), 3)
-    interactive_replacement = action == "trust" and getattr(args, "fingerprint", None) is None
+    one_shot = trust or env_pin == tf or fingerprint == tf
     build_ok = bool(live and live.get("grants", {}).get("build_run")) or one_shot
     # A one-shot credential grant requires the audited exact pin; the boolean
     # --trust flag never satisfies it (SECURITY.md forbids that bypass).
     auth_ok = bool(live and live.get("grants", {}).get("auth")) or (wants_auth and env_pin == tf)
-    if interactive_replacement:
+    if action == "trust" and fingerprint is None:
         # `jms trust` always replaces the two decisions explicitly, even when
         # the stored fingerprint already matches.
         build_ok = False
         auth_ok = False
+    notice = None
     if record and record.get("tf") == BASE_CREDENTIAL_TF:
-        print("project definition added since the credential answer for this checkout was recorded",
-              file=sys.stderr)
+        notice = "project definition added since the credential answer for this checkout was recorded"
     elif record and record.get("tf") != tf:
-        print("project definition changed since it was last trusted (fingerprint " +
-              record["tf"][:12] + " -> " + tf[:12] + ")", file=sys.stderr)
-    if action == "trust" or getattr(args, "trust", False) or not build_ok or (wants_auth and not auth_ok):
-        print_capability_summary(root, config or default_config(),
-                                 git_writable_flag=getattr(args, "git_writable", False))
+        notice = ("project definition changed since it was last trusted (fingerprint " +
+                  record["tf"][:12] + " -> " + tf[:12] + ")")
+    show_summary = action == "trust" or trust or not build_ok or (wants_auth and not auth_ok)
+    common = dict(build_ok=build_ok, auth_ok=auth_ok, no_auth=no_auth, notice=notice,
+                  show_summary=show_summary)
+    if action == "trust" and fingerprint == tf:
+        # This is the explicitly non-interactive, durable trust path.
+        return TrustDecision("record", **common, record_auth=wants_auth and not no_auth)
+    if not build_ok:
+        no_tty_refusal = None
+        if not tty:
+            no_tty_refusal = ("project trust is required but prompting is unavailable -- approve it on a "
+                              "terminal with: jms trust " + quote(root) + "; or, after reviewing the "
+                              "capabilities above: jms trust " + quote(root) + " --fingerprint " + tf, 3)
+        return TrustDecision("ask_build", **common, ask_credentials=not no_auth,
+                             prompt_refusal=no_tty_refusal)
+    if wants_auth and not auth_ok:
+        # --trust is one-shot for both grants: an accepted escalation applies to
+        # this invocation only and leaves any existing record untouched.
+        return TrustDecision("ask_auth", **common, persist_auth=bool(live) and not trust,
+                             prompt_refusal=None if tty else (
+            "credential access is required but prompting is unavailable -- grant it on a "
+            "terminal with: jms trust " + quote(root) + "; or, for one invocation, "
+            + ("drop --trust and " if trust else "")
+            + "set JMS_TRUST_FINGERPRINT=" + tf + " and keep --auth", 3))
+    return TrustDecision("granted", **common)
+
+
+def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = None):
+    """Carry out trust_decision(): print, prompt and record; returns (build_ok, auth_ok)."""
+    config = config or default_config()
+    pid = hashlib.sha256(root).hexdigest()
+    decision = trust_decision(
+        root, tf, read_store()["projects"].get(pid), action=action,
+        trust=getattr(args, "trust", False), fingerprint=getattr(args, "fingerprint", None),
+        env_pin=os.environ.get("JMS_TRUST_FINGERPRINT"), wants_auth=getattr(args, "auth", False),
+        no_auth=getattr(args, "no_auth", False), tty=sys.stdin.isatty() and sys.stderr.isatty())
+    if decision.refusal:
+        fail(*decision.refusal)
+    if decision.notice:
+        print(decision.notice, file=sys.stderr)
+    if decision.show_summary:
+        print_capability_summary(root, config, git_writable_flag=getattr(args, "git_writable", False))
+    if decision.prompt_refusal:
+        fail(*decision.prompt_refusal)
     def record_approval(auth):
         new = make_trust_record(root, tf, auth)
         def replace(current):
             current["projects"][pid] = new
             return True
         update_store(replace)
-    if action == "trust" and getattr(args, "fingerprint", None) == tf:
-        # This is the explicitly non-interactive, durable trust path.
-        record_approval(wants_auth and not no_auth)
-        return True, wants_auth and not no_auth
-    if not build_ok:
-        if not (sys.stdin.isatty() and sys.stderr.isatty()):
-            fail("project trust is required but prompting is unavailable -- approve it on a "
-                 "terminal with: jms trust " + quote(root) + "; or, after reviewing the "
-                 "capabilities above: jms trust " + quote(root) + " --fingerprint " + tf, 3)
+    build_ok, auth_ok = decision.build_ok, decision.auth_ok
+    if decision.step == "record":
+        record_approval(decision.record_auth)
+        return True, decision.record_auth
+    if decision.step == "ask_build":
         print(quote(root) + " defines a custom container (trust fingerprint " + tf[:12] + ").",
               file=sys.stderr)
         print("Approving lets it run arbitrary commands at build and run time and mount the project read-write at "
               + ("its own host path " + quote(root) + " (run.preserve_host_path)."
-                 if (config or default_config())["preserve_host_path"] else "/work."),
+                 if config["preserve_host_path"] else "/work."),
               file=sys.stderr)
-        if (config or default_config())["git_writable"]:
+        if config["git_writable"]:
             print("It also sets run.git_writable: " + GIT_WRITABLE_NOTE + ".", file=sys.stderr)
         if consent_input("Allow build & run? [y/N] ").strip().lower() not in ("y", "yes"):
             fail("project trust declined", 3)
         build_ok = True
-        if not no_auth:
-            if not (config or default_config())["mount_auth"]:
+        if decision.ask_credentials:
+            if not config["mount_auth"]:
                 print("persistent agent state (credentials and configuration): not mounted by default (manifest mount_auth = false); --auth required",
                       file=sys.stderr)
             print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
             print(credential_decline_note("jms trust " + quote(root)), file=sys.stderr)
-            auth_ok = consent_input(credential_question(config or default_config())).strip().lower() in ("y", "yes")
+            auth_ok = consent_input(credential_question(config)).strip().lower() in ("y", "yes")
         record_approval(auth_ok)
-    elif wants_auth and not auth_ok:
-        if not (sys.stdin.isatty() and sys.stderr.isatty()):
-            fail("credential access is required but prompting is unavailable -- grant it on a "
-                 "terminal with: jms trust " + quote(root) + "; or, for one invocation, "
-                 + ("drop --trust and " if getattr(args, "trust", False) else "")
-                 + "set JMS_TRUST_FINGERPRINT=" + tf + " and keep --auth", 3)
+    elif decision.step == "ask_auth":
         print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
         print(credential_decline_note("jms trust " + quote(root)), file=sys.stderr)
-        auth_ok = consent_input(credential_question(config or default_config())).strip().lower() in ("y", "yes")
-        # --trust is one-shot for both grants: an accepted escalation applies to
-        # this invocation only and leaves any existing record untouched.
-        if auth_ok and live and not getattr(args, "trust", False):
+        auth_ok = consent_input(credential_question(config)).strip().lower() in ("y", "yes")
+        if auth_ok and decision.persist_auth:
             record_approval(True)
-    return build_ok, auth_ok and not no_auth
+    return build_ok, auth_ok and not decision.no_auth
 
 
 # A launch with no definition records its credential answer in the ordinary

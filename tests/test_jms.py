@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 import hashlib
 import io
+import itertools
 import json
 import os
 import pathlib
@@ -962,6 +963,57 @@ class DiscoveryTests(unittest.TestCase):
             self.assertTrue(JMS.reserved_root(JMS.canon(os.fsencode(agents))))
             self.assertTrue(JMS.reserved_root(JMS.canon(os.fsencode(agents.parent))))
             self.assertFalse(JMS.reserved_root(JMS.canon(os.fsencode(home / "git"))))
+
+
+class TrustDecisionTableTests(unittest.TestCase):
+    """trust_decision() is pure, so its security rules hold over every input."""
+
+    TF = "a" * 64
+
+    def table(self):
+        def rec(tf, build, auth):
+            return {"tf": tf, "grants": {"build_run": build, "auth": auth}}
+        records = (None, rec(self.TF, True, False), rec(self.TF, True, True), rec(self.TF, False, True),
+                   rec("b" * 64, True, True), rec(JMS.BASE_CREDENTIAL_TF, True, True))
+        for record, action, trust, wants_auth, no_auth, fingerprint, env_pin, tty in itertools.product(
+                records, ("build", "launch", "trust"), (False, True), (False, True), (False, True),
+                (None, "", self.TF, "c" * 64), (None, self.TF, "c" * 64), (False, True)):
+            inputs = dict(action=action, trust=trust, fingerprint=fingerprint, env_pin=env_pin,
+                          wants_auth=wants_auth, no_auth=no_auth, tty=tty)
+            yield record, inputs, JMS.trust_decision(b"/p", self.TF, record, **inputs)
+
+    def test_boolean_trust_never_grants_credentials(self):
+        for record, inputs, decision in self.table():
+            if inputs["trust"] and decision.step != "record":
+                granted = bool(record and record["tf"] == self.TF and record["grants"]["auth"])
+                # It may withhold a recorded grant (`jms trust` re-asks), never add one.
+                self.assertLessEqual(decision.auth_ok, granted, inputs)
+                self.assertFalse(decision.persist_auth, inputs)
+
+    def test_nothing_is_granted_without_a_record_pin_or_flag(self):
+        for record, inputs, decision in self.table():
+            if (record is None and not inputs["trust"] and inputs["env_pin"] is None
+                    and not inputs["fingerprint"]):
+                self.assertIn(decision.step, ("ask_build",), inputs)
+                self.assertFalse(decision.build_ok or decision.auth_ok, inputs)
+
+    def test_a_question_without_a_terminal_is_a_refusal(self):
+        for _, inputs, decision in self.table():
+            if decision.step in ("ask_build", "ask_auth"):
+                self.assertEqual(decision.prompt_refusal is not None, not inputs["tty"], inputs)
+                if decision.prompt_refusal:
+                    self.assertEqual(decision.prompt_refusal[1], 3)
+            else:
+                self.assertIsNone(decision.prompt_refusal, inputs)
+
+    def test_a_mismatched_pin_or_fingerprint_refuses_before_output(self):
+        for _, inputs, decision in self.table():
+            bad_pin = not inputs["trust"] and inputs["env_pin"] not in (None, self.TF)
+            bad_fingerprint = inputs["fingerprint"] not in (None, "", self.TF)
+            self.assertEqual(decision.step == "refused", bad_pin or bad_fingerprint, inputs)
+            if decision.refusal:
+                self.assertEqual(decision.refusal[1], 3)
+                self.assertIsNone(decision.notice)
 
 
 class ConsentTests(unittest.TestCase):
