@@ -2582,6 +2582,21 @@ class LaunchTests(unittest.TestCase):
                 self.assert_credential_mount(argv, ssh, cache, True)
             self.assertEqual(JMS.read_store()["projects"], {})
 
+    def test_a_file_mount_source_is_refused_before_build_where_only_directories_mount(self):
+        with sandbox() as home:
+            note = home / "notes.txt"
+            note.write_text("x")
+            manifest = ('[[mounts]]\nsource = "%s"\ntarget = "/opt/notes"\n' % note).encode()
+            canonical = os.fsdecode(JMS.canon(os.fsencode(note)))
+            if self.BACKEND == "container":
+                # Refused before consent and before the missing image is built.
+                with self.assertRaisesRegex(JMS.JMSException, "is not a directory; container mounts only"):
+                    self.launch_argv(home, ["launch", "--trust", "--no-auth", "-w",
+                                            str(make_project(home, manifest=manifest))])
+            else:
+                _, argv = self.project_launch(home, manifest)
+                self.assertTrue([arg for arg in argv if arg.startswith(self.MOUNT + canonical + ",")])
+
 class LaunchTestsPodman(LaunchTests):
     BACKEND = "podman"
     EXE = "podman"
@@ -4535,7 +4550,7 @@ class SeamTests(unittest.TestCase):
     PROTOCOL_SURFACE = frozenset({
         "name", "exe", "install_hint", "version_min", "version_max",
         "version_argv", "parse_version", "local_name", "mount_argument",
-        "build_argv", "run_argv",
+        "build_argv", "run_argv", "mounts_directories_only",
         "validate_version", "ensure_started", "image_exists", "resolve_image", "image_facts",
         "ps", "stop_container", "remove_container", "remove_image",
     })

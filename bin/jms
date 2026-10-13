@@ -239,6 +239,9 @@ class ContainerBackend:
     # Backend-private policy datum, as on PodmanBackend: the newest
     # apple/container the macOS qualification ran green on.
     _version_qualified = (1, 5, 0)
+    # apple/container (checked on 1.5.0) bind-mounts directories only: a file
+    # or socket source fails at run with "is not a directory".
+    mounts_directories_only = True
 
     # -- Class A: pure serializers and parsers (no I/O of any kind) --
 
@@ -496,6 +499,7 @@ class PodmanBackend:
     # surface (§2): the newest podman the integration tiers ran green on.
     # Bump it with the release that qualifies a new series.
     _version_qualified = (5, 4, 2)
+    mounts_directories_only = False
 
     # -- Class A: pure serializers and parsers (no I/O of any kind) --
 
@@ -1444,6 +1448,20 @@ def project_mount_target(root: bytes, config: dict, home: str) -> str:
     return target
 
 
+def validate_mount_sources_for_runtime(config: dict) -> None:
+    """Refuse manifest mount sources the selected runtime cannot bind.
+
+    Run before consent and before any build, so an unmountable source does
+    not cost a build that the launch then fails on.
+    """
+    if not runtime().mounts_directories_only:
+        return
+    for index, mount in enumerate(config["mounts"]):
+        if not os.path.isdir(mount["source"]):
+            fail("mounts[%d] source %s is not a directory; %s mounts only directories"
+                 % (index, quote(mount["source"]), runtime().exe))
+
+
 def validate_mount_layout(root: bytes, config: dict, as_root: bool) -> str:
     """Resolve the project mount target and refuse a layout that cannot mount.
 
@@ -2382,6 +2400,7 @@ def cmd_launch(args):
         # consent prompt offers a host path jms will not mount, and a networked
         # build runs to produce an image the refusal immediately strands.
         validate_mount_layout(data["root"], data["config"], args.root)
+        validate_mount_sources_for_runtime(data["config"])
         _, auth = approve(data["root"], data["tf"], args, action="launch", config=data["config"])
         runtime_ready()
         image, _ = build_project(data, args)
