@@ -1125,6 +1125,66 @@ class ConsentTests(unittest.TestCase):
             self.assertEqual(JMS.read_store()["projects"][pid]["grants"]["auth"], True)
 
 
+    def credential_flags(self, home, *sources):
+        manifest = b"".join(('[[mounts]]\nsource = "%s"\ntarget = "/opt/m%d"\n' % (source, index)).encode()
+                            for index, source in enumerate(sources))
+        root = make_project(home, manifest=manifest)
+        return [mount["credential"] for mount in JMS.project_data(JMS.canon(os.fsencode(root)))["config"]["mounts"]]
+
+    def test_credential_paths_match_ancestors_and_descendants(self):
+        with sandbox() as home:
+            (home / ".ssh").mkdir()
+            (home / ".ssh" / "config").write_text("")
+            (home / ".cargo" / "registry").mkdir(parents=True)
+            (home / "Library" / "Keychains").mkdir(parents=True)
+            (home / ".cache" / "tool").mkdir(parents=True)
+            # ~/.cargo is a cache, but it holds credentials.toml: it costs a
+            # prompt.  ~/.cargo/registry overlaps no listed path and does not.
+            self.assertEqual(self.credential_flags(home, "~/.ssh/config", "~/.cargo", "~/Library",
+                                                   "~/.cargo/registry", "~/.cache/tool"),
+                             [True, True, True, False, False])
+
+    def test_credential_paths_follow_symlinks_and_relocation_variables(self):
+        with sandbox() as home:
+            dotfiles = home.parent / "dotfiles"
+            (dotfiles / "ssh").mkdir(parents=True)
+            (home / ".ssh").symlink_to(dotfiles / "ssh")
+            gnupg = home.parent / "vault" / "gnupg"
+            gnupg.mkdir(parents=True)
+            kube = home.parent / "kube"
+            kube.mkdir()
+            (kube / "config").write_text("")
+            with mock.patch.dict(os.environ, {"GNUPGHOME": str(gnupg),
+                                              "KUBECONFIG": "relative:%s" % (kube / "config")}):
+                self.assertEqual(self.credential_flags(home, str(dotfiles / "ssh"), str(gnupg.parent),
+                                                       str(kube)), [True, True, True])
+            # Unset, the variable relocates nothing.
+            self.assertFalse(JMS.overlaps_any(JMS.canon(os.fsencode(gnupg.parent)),
+                                              JMS.credential_sources()))
+
+    def test_consent_lists_credential_mounts_in_the_credential_question(self):
+        with sandbox() as home:
+            (home / ".ssh").mkdir()
+            (home / ".cache" / "tool").mkdir(parents=True)
+            manifest = (b'[[mounts]]\nsource = "~/.ssh"\ntarget = "/home/isolation/.ssh"\nreadonly = true\n'
+                        b'[[mounts]]\nsource = "~/.cache/tool"\ntarget = "/home/isolation/.cache/tool"\n')
+            root = make_project(home, manifest=manifest)
+            data = JMS.project_data(JMS.canon(os.fsencode(root)))
+            ssh = JMS.quote(JMS.canon(os.fsencode(home / ".ssh")))
+            self.approve(data["root"], data["tf"], ["build"], config=data["config"],
+                         answers=["y", ""])
+            self.assertIn(ssh, self.questions[1])
+            self.assertIn("host credential mounts", self.questions[1])
+            self.assertNotIn("tool", self.questions[1])
+            stderr = io.StringIO()
+            with mock.patch.object(sys, "stderr", stderr):
+                JMS.print_capability_summary(data["root"], data["config"])
+            summary = [line for line in stderr.getvalue().splitlines() if "extra mount" in line]
+            self.assertEqual(["HOST CREDENTIAL PATH" in line for line in summary], [True, False])
+            # Without credential mounts the question is unchanged.
+            self.assertNotIn("host credential", JMS.credential_question(JMS.default_config()))
+
+
 class SocketMountTests(unittest.TestCase):
     """Manifest mounts never reach a host socket unless the mount opts in."""
 
@@ -2311,6 +2371,92 @@ class LaunchTests(unittest.TestCase):
                                         images={JMS.BASE: image_record(JMS.BASE)})
             self.assertFalse([value for value in argv if value.startswith("TZ=")])
 
+
+    # Manifest mounts of host credential stores follow the credential grant.
+
+    def credential_project(self, home, run=b""):
+        """A project mounting ~/.ssh and an ordinary cache; returns its mount args."""
+        (home / ".ssh").mkdir()
+        (home / ".cache" / "tool").mkdir(parents=True)
+        manifest = (b'[[mounts]]\nsource = "~/.ssh"\ntarget = "/home/isolation/.ssh"\nreadonly = true\n'
+                    b'[[mounts]]\nsource = "~/.cache/tool"\ntarget = "/home/isolation/.cache/tool"\n'
+                    + run)
+        root = make_project(home, manifest=manifest)
+        data = JMS.project_data(JMS.canon(os.fsencode(root)))
+        self.credential_images = {data["tag_prefix"] + ":" + data["tf"][:12]:
+                                  image_record(data["tag_prefix"] + ":" + data["tf"][:12])}
+        ssh = os.fsdecode(JMS.canon(os.fsencode(home / ".ssh")))
+        cache = os.fsdecode(JMS.canon(os.fsencode(home / ".cache" / "tool")))
+        return (root, data, self.MOUNT + ssh + ",target=/home/isolation/.ssh",
+                self.MOUNT + cache + ",target=/home/isolation/.cache/tool")
+
+    def record_grant(self, root, data, auth):
+        canonical = JMS.canon(os.fsencode(root))
+        def add(store):
+            store["projects"][hashlib.sha256(canonical).hexdigest()] = {
+                "root": canonical.decode(), "tf": data["tf"],
+                "grants": {"build_run": True, "auth": auth},
+                "granted_at": "2026-01-01T00:00:00Z", "jms_version": JMS.__version__}
+            return True
+        JMS.update_store(add)
+
+    def assert_credential_mount(self, argv, ssh, cache, kept):
+        joined = " ".join(argv)
+        (self.assertIn if kept else self.assertNotIn)(ssh, joined)
+        self.assertIn(cache, joined)
+        notices = [line for line in self.stderr.getvalue().splitlines()
+                   if line.startswith("note: not mounting host credential path")]
+        if kept:
+            self.assertEqual(notices, [])
+        else:
+            self.assertEqual(len(notices), 1)
+            self.assertIn(os.fsdecode(JMS.canon(os.fsencode(pathlib.Path(os.environ["HOME"]) / ".ssh"))),
+                          notices[0])
+            self.assertIn("/home/isolation/.ssh", notices[0])
+
+    def test_recorded_grant_keeps_credential_mounts_despite_mount_auth_false(self):
+        with sandbox() as home:
+            root, data, ssh, cache = self.credential_project(home, b"[run]\nmount_auth = false\n")
+            self.record_grant(root, data, True)
+            argv = self.launch_argv(home, ["launch", "-w", str(root)], images=self.credential_images)
+            self.assert_credential_mount(argv, ssh, cache, True)
+            # mount_auth = false still keeps the shared agent-state pool off.
+            self.assert_agent_state(argv, False)
+
+    def test_declined_grant_drops_credential_mounts_with_a_note(self):
+        with sandbox() as home:
+            root, data, ssh, cache = self.credential_project(home)
+            self.record_grant(root, data, False)
+            argv = self.launch_argv(home, ["launch", "-w", str(root)], images=self.credential_images)
+            self.assert_credential_mount(argv, ssh, cache, False)
+
+    def test_no_auth_drops_credential_mounts_despite_a_recorded_grant(self):
+        with sandbox() as home:
+            root, data, ssh, cache = self.credential_project(home)
+            self.record_grant(root, data, True)
+            argv = self.launch_argv(home, ["launch", "--no-auth", "-w", str(root)],
+                                    images=self.credential_images)
+            self.assert_credential_mount(argv, ssh, cache, False)
+
+    def test_one_shot_trust_drops_credential_mounts(self):
+        with sandbox() as home:
+            root, _, ssh, cache = self.credential_project(home)
+            argv = self.launch_argv(home, ["launch", "--trust", "-w", str(root)],
+                                    images=self.credential_images)
+            self.assert_credential_mount(argv, ssh, cache, False)
+            self.assertEqual(JMS.read_store()["projects"], {})
+
+    def test_pin_keeps_credential_mounts_only_with_auth(self):
+        with sandbox() as home:
+            root, data, ssh, cache = self.credential_project(home)
+            with mock.patch.dict(os.environ, {"JMS_TRUST_FINGERPRINT": data["tf"]}):
+                argv = self.launch_argv(home, ["launch", "-w", str(root)],
+                                        images=self.credential_images)
+                self.assert_credential_mount(argv, ssh, cache, False)
+                argv = self.launch_argv(home, ["launch", "--auth", "-w", str(root)],
+                                        images=self.credential_images)
+                self.assert_credential_mount(argv, ssh, cache, True)
+            self.assertEqual(JMS.read_store()["projects"], {})
 
 class LaunchTestsPodman(LaunchTests):
     BACKEND = "podman"

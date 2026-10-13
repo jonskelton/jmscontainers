@@ -1188,13 +1188,17 @@ def protected_sources() -> list[bytes]:
     return [checkout_root(), config, data]
 
 
+def overlaps_any(path: bytes, sources: list[bytes]) -> bool:
+    """Whether path is an ancestor or a descendant of any canonical source."""
+    return any(ancestor(path, source) or ancestor(source, path) for source in sources)
+
+
 def reserved_root(root: bytes, sources: list[bytes] | None = None) -> bool:
     """A project mount must never expose jms's agent-state, code, or trust roots.
 
     `sources` swaps in another list matched the same way (socket_roots()).
     """
-    return any(ancestor(root, source) or ancestor(source, root)
-               for source in (protected_sources() if sources is None else sources))
+    return overlaps_any(root, protected_sources() if sources is None else sources)
 
 
 def socket_roots() -> list[bytes]:
@@ -1261,6 +1265,42 @@ def refuse_socket_mounts(config: dict) -> None:
         if reserved_root(source, roots) or any(ancestor(source, path) for path in named):
             fail(where + " overlaps a host socket directory"
                  " -- mount the exact socket with allow_socket = true instead")
+
+
+# Host credential stores, relative to HOME.  A manifest mount that overlaps
+# one (ancestor or descendant, so ~/.cargo is caught for its credentials.toml)
+# is kept only under the project's credential grant; see credential_sources().
+# Best-effort, not exhaustive: a store missing here rides build/run approval
+# like any other mount.  jms's own agent-state pool is not listed because
+# protected_sources() already refuses it outright.
+CREDENTIAL_PATHS = (
+    ".ssh", ".gnupg", ".config/gh", ".aws", ".azure", ".config/gcloud", ".kube",
+    ".docker", ".netrc", ".npmrc", ".pypirc", ".git-credentials",
+    ".cargo/credentials.toml", ".vault-token", ".terraform.d", ".m2/settings.xml",
+    ".gradle/gradle.properties", ".1password", "Library/Keychains",
+    # The host agents' own sign-ins, which jms never mounts on its own.
+    ".claude", ".codex", ".local/share/opencode", ".config/opencode", ".pi/agent",
+)
+# Variables that relocate a credential store; KUBECONFIG is a path list.
+CREDENTIAL_PATH_VARIABLES = ("GNUPGHOME", "DOCKER_CONFIG", "KUBECONFIG", "AWS_SHARED_CREDENTIALS_FILE")
+
+
+def credential_sources() -> list[bytes]:
+    """Canonical credential-store paths, resolved as mount sources are."""
+    home = home_path()
+    paths = [home + b"/" + relative.encode() for relative in CREDENTIAL_PATHS]
+    for name in CREDENTIAL_PATH_VARIABLES:
+        # A relative entry depends on the caller's cwd; only absolute ones are checked.
+        paths += [item for item in os.environb.get(name.encode(), b"").split(b":")
+                  if item.startswith(b"/")]
+    return [canon_lenient(path) for path in paths]
+
+
+def mark_credential_mounts(config: dict) -> None:
+    """Flag each manifest mount whose source overlaps a host credential store."""
+    sources = credential_sources() if config["mounts"] else []
+    for mount in config["mounts"]:
+        mount["credential"] = overlaps_any(mount["source"], sources)
 
 
 def expand_mount_source(expression: str, root: bytes | None = None) -> bytes:
@@ -1541,8 +1581,9 @@ def print_capability_summary(root: bytes, config: dict) -> None:
           + " read-write", file=sys.stderr)
     for mount in config["mounts"]:
         mode = extra_mount_mode(mount)
-        print("- extra mount: " + quote(mount["source"]) + " -> " + quote(mount["target"]) + " " + mode,
-              file=sys.stderr)
+        print("- extra mount: " + quote(mount["source"]) + " -> " + quote(mount["target"]) + " " + mode
+              + ("; HOST CREDENTIAL PATH: mounted only with the credential grant"
+                 if mount.get("credential") else ""), file=sys.stderr)
     for key, value in sorted(config["env"].items()):
         print("- environment: " + quote(key + "=" + value), file=sys.stderr)
     print("- entry: " + " ".join(quote(value) for value in config["entry"]), file=sys.stderr)
@@ -1557,6 +1598,15 @@ CREDENTIAL_SCOPE_NOTE = ("note: a recorded credential grant is tied to this path
                          "contents, not to the code -- any branch or pull request later checked "
                          "out here with the same definition gets it without asking; launch with "
                          "--no-auth to review code you did not write")
+
+
+def credential_question(config: dict) -> str:
+    """The project credential question, naming every mount it also decides."""
+    covered = [mount["source"] for mount in config["mounts"] if mount.get("credential")]
+    return ("Also mount persistent agent state -- credentials and configuration for claude, codex, "
+            "opencode, and pi -- with read-write access"
+            + (", and keep the manifest's host credential mounts " + ", ".join(quote(item) for item in covered)
+               if covered else "") + "? [y/N] ")
 
 
 def consent_input(question: str) -> str:
@@ -1636,13 +1686,13 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
                 print("persistent agent state (credentials and configuration): not mounted by default (manifest mount_auth = false); --auth required",
                       file=sys.stderr)
             print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
-            auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
+            auth_ok = consent_input(credential_question(config or default_config())).strip().lower() in ("y", "yes")
         record_approval(auth_ok)
     elif wants_auth and not auth_ok:
         if not (sys.stdin.isatty() and sys.stderr.isatty()):
             fail("credential access is required but prompting is unavailable", 3)
         print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
-        auth_ok = consent_input("Also mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
+        auth_ok = consent_input(credential_question(config or default_config())).strip().lower() in ("y", "yes")
         # --trust is one-shot for both grants: an accepted escalation applies to
         # this invocation only and leaves any existing record untouched.
         if auth_ok and live and not getattr(args, "trust", False):
@@ -1853,6 +1903,7 @@ def project_data(workdir: bytes):
         runtime_path(mount["source"])
     refuse_socket_mounts(config)
     tf = trust_fingerprint(entries)
+    mark_credential_mounts(config)
     pid = hashlib.sha256(root).hexdigest()
     # Manifest `name` is cosmetic runtime configuration.  Keeping it out of
     # the repository name makes a name-only edit leave the image tag driven
@@ -2218,6 +2269,13 @@ def launch_plan(workdir: bytes, data, args, image: str, auth: bool) -> LaunchPla
     env += sorted(inherited.items())
     mounts = [(mount, project_target, False)]
     for extra_mount in config["mounts"]:
+        # Keyed on the grant itself, not on mount_auth: a manifest that keeps
+        # the agent-state pool off by default still holds its own credentials.
+        if extra_mount.get("credential") and not auth:
+            print("note: not mounting host credential path " + quote(extra_mount["source"]) + " -> "
+                  + quote(extra_mount["target"]) + ": no credential grant applies to this launch",
+                  file=sys.stderr)
+            continue
         mounts.append((extra_mount["source"], extra_mount["target"], extra_mount["readonly"]))
     shell_source, shell_target = shell_state_mount(user)
     ensure_shell_state_directory()
