@@ -56,11 +56,25 @@
 
 ### Qualification
 
-LINUX RESULTS PENDING: Debian 13 `make test`, integration tiers A and B,
-the absent-ref `podman image inspect` comparison against
-`tests/fixtures/podman-5.4.2-image-inspect-absent.stderr`, and the matrix
-table (Podman, architecture, kernel, distribution, cgroup, OCI runtime,
-storage driver, network backend, rootless, Python).
+Linux, 2026-10-13, on the release-preparation host, whose matrix is
+unchanged from 2.0.2: `make test` passed (471 tests); integration tier A
+passed on `552914f` and tier B on `b999e4a`, which differs from it only
+in docs/macos.md; and `podman image inspect` of an absent ref exited 125
+with `[]` on stdout and a stderr byte-identical to
+`tests/fixtures/podman-5.4.2-image-inspect-absent.stderr`.
+
+| Dimension | Tested value |
+| --- | --- |
+| Podman | 5.4.2 |
+| Architecture | amd64 (`x86_64`) |
+| Kernel | 6.12.107+deb13-amd64 |
+| Distribution | Debian GNU/Linux 13 (trixie) |
+| cgroup | v2, `systemd` manager |
+| OCI runtime | crun 1.21 |
+| Storage driver | `overlay` |
+| Network backend | netavark 1.14.0, aardvark-dns 1.14.0, pasta (passt 0.0~git20250503.587980c) |
+| Rootless | yes |
+| Python | 3.15.0 |
 
 macOS, 2026-10-13, on this candidate (`a74f8c7`) with apple/container
 1.5.0 (macOS 27.0.1 build 26A434, Apple Silicon, Python 3.14.7), by
