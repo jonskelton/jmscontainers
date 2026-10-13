@@ -22,6 +22,9 @@
 - **The credential question says what "no" costs.** Declining means
   agents keep no login between launches; the prompt now says so and
   names the `jms trust` command that changes the answer.
+- **Podman readiness hints print on their own line.** The four
+  "rootless podman is not usable" errors showed a literal `\x0a` where
+  the `hint:` line should start; the hint is now a separate stderr line.
 - **Smaller wording fixes.** `-b ''` names `--bin`; a failed build no
   longer ends in an empty `-- ""`.
 - **Docs.** The CLI reference documents `jms trust PATH --fingerprint

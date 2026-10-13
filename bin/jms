@@ -53,6 +53,7 @@ MISSING_BASE_NOTE = ("note: the shared base image " + BASE + " is not present; "
 
 class JMSException(Exception):
     exit_code = 1
+    hint = None
 
 
 class UsageError(JMSException):
@@ -85,8 +86,9 @@ def terminal_safe_text(value: bytes | str) -> str:
     return "".join(chr(byte) if 32 <= byte <= 126 else "\\x%02x" % byte for byte in raw)
 
 
-def fail(message: str, code: int = 1) -> None:
+def fail(message: str, code: int = 1, hint: str | None = None) -> None:
     exc = UsageError(message) if code == 2 else TrustError(message) if code == 3 else JMSException(message)
+    exc.hint = hint
     raise exc
 
 
@@ -610,13 +612,13 @@ class PodmanBackend:
         if not isinstance(host, dict) or not isinstance(store, dict):
             fail("podman info returned malformed output: expected host and store objects")
         if host.get("serviceIsRemote") is not False:
-            fail("rootless podman is not usable: a remote podman service is configured\n"
-                 "hint: jms supports a local rootless engine only; unset CONTAINER_HOST and "
+            fail("rootless podman is not usable: a remote podman service is configured",
+                 hint="jms supports a local rootless engine only; unset CONTAINER_HOST and "
                  "CONTAINER_CONNECTION and remove any containers.conf remote connection")
         security = host.get("security")
         if not isinstance(security, dict) or security.get("rootless") is not True:
-            fail("rootless podman is not usable: podman is not running rootless\n"
-                 "hint: jms supports rootless podman only; run as a regular user")
+            fail("rootless podman is not usable: podman is not running rootless",
+                 hint="jms supports rootless podman only; run as a regular user")
         mappings = host.get("idMappings")
         if not isinstance(mappings, dict):
             fail("podman info returned malformed idMappings output")
@@ -643,8 +645,8 @@ class PodmanBackend:
                     break
                 covered = max(covered, end)
             if covered < 65536:
-                fail("rootless podman is not usable: the " + key + " does not cover container ids 0-65535\n"
-                     "hint: rootless podman needs an entry of at least 65536 ids for your user in "
+                fail("rootless podman is not usable: the " + key + " does not cover container ids 0-65535",
+                     hint="rootless podman needs an entry of at least 65536 ids for your user in "
                      "/etc/subuid and /etc/subgid; on Debian the uidmap package provides "
                      "newuidmap/newgidmap and adduser provisions ranges for new users; see podman(1)")
         driver = store.get("graphDriverName")
@@ -652,8 +654,8 @@ class PodmanBackend:
             # Proves only that podman initialized and reported its storage
             # configuration; storage-operation failures surface at the first
             # build or launch with podman's own stderr (MIR-050).
-            fail("rootless podman is not usable: podman info reported no storage graph driver\n"
-                 "hint: podman storage failed to initialize; check ~/.local/share/containers "
+            fail("rootless podman is not usable: podman info reported no storage graph driver",
+                 hint="podman storage failed to initialize; check ~/.local/share/containers "
                  "and any storage.conf override")
 
     def image_exists(self, image):
@@ -2822,6 +2824,8 @@ def main():
         args.func(args)
     except JMSException as exc:
         print("error: " + terminal_safe_text(str(exc)), file=sys.stderr)
+        if exc.hint:
+            print("hint: " + terminal_safe_text(exc.hint), file=sys.stderr)
         return exc.exit_code
     except OSError as exc:
         # Host files and directories can disappear or change between any two

@@ -3803,8 +3803,9 @@ class PodmanReadinessTests(unittest.TestCase):
                                   {"container_id": 1, "host_id": 100000, "size": size}]
         self.ensure(self.info(lambda p: self.maps(p).update(uidmap=singleton(65535))))
         for key in ("uidmap", "gidmap"):
-            with self.assertRaisesRegex(JMS.JMSException, key + r"[\s\S]*/etc/subuid"):
+            with self.assertRaisesRegex(JMS.JMSException, key + " does not cover") as caught:
                 self.ensure(self.info(lambda p: self.maps(p).update({key: singleton(65534)})))
+            self.assertIn("/etc/subuid", caught.exception.hint)
         # A gap below 65536 fails even when the total size is sufficient.
         gapped = [{"container_id": 0, "host_id": 1000, "size": 1},
                   {"container_id": 2, "host_id": 100000, "size": 65536}]
@@ -3895,9 +3896,22 @@ class PodmanReadinessTests(unittest.TestCase):
         singleton = [{"container_id": 0, "host_id": 1000, "size": 1}]
         with self.assertRaises(JMS.JMSException) as caught:
             self.ensure(self.info(lambda p: self.maps(p).update(uidmap=singleton)))
-        message = str(caught.exception)
         for expected in ("uidmap package", "/etc/subuid", "/etc/subgid", "adduser"):
-            self.assertIn(expected, message)
+            self.assertIn(expected, caught.exception.hint)
+
+    def test_readiness_hint_prints_on_its_own_line(self):
+        # The hint used to be joined to the message with a newline, which
+        # main() escapes, so users saw a literal \x0a instead of a line break.
+        singleton = [{"container_id": 0, "host_id": 1000, "size": 1}]
+        info = self.info(lambda p: self.maps(p).update(uidmap=singleton))
+        with mock.patch.object(JMS, "parse_cli", side_effect=lambda: self.ensure(info)), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(JMS.main(), 1)
+        lines = err.getvalue().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith("error: rootless podman is not usable: the uidmap"))
+        self.assertTrue(lines[1].startswith("hint: rootless podman needs"))
+        self.assertNotIn("\\x0a", err.getvalue())
 
     def test_podman_image_exists_tristate(self):
         def fake(code, stderr=b""):
