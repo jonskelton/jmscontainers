@@ -38,6 +38,13 @@
   `~/.local/share/zsh/site-functions` (override with
   `ZSH_COMPLETIONDIR`).
 - **Errors say "definition" instead of "project spec".**
+- **The consent prompt says what is asking first.** The "PATH defines a
+  custom container" header now comes before the capability list, and
+  lines granting more than the default (a preserved host path, a
+  writable `.git`, every extra mount) are marked `!`.
+- **Consent notes and questions fit an 80-column terminal.** They wrap
+  at 76 columns without splitting a quoted path or a command to copy.
+  The wording, the questions and the default No are unchanged.
 - **The missing-Podman hint is distro-neutral**; the Debian package set
   follows, labelled.
 - **Docs.** The exit-code table is corrected (130 for any Ctrl-C, 129
