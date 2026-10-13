@@ -1,5 +1,9 @@
 # Role-based audit, consolidated — jmscontainers 2.0.1 (2026-10-12)
 
+Status: a snapshot of 2.0.1, kept as written. Its P1 batch shipped in
+2.0.2 and most of the 2.1 plan in 2.1.0; [CHANGELOG.md](../../../CHANGELOG.md)
+says what changed. Line references point at 2.0.1 (`90255df`).
+
 ## Verdict
 
 **2.0.1 is sound at the core and rough at the edges. Five independent
