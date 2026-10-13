@@ -12,9 +12,9 @@
 - Reconcile the docs with the behavior actually shipping: `README.md`,
   [SECURITY.md](../SECURITY.md), [docs/cli.md](cli.md),
   [docs/jmscontainer.toml.md](jmscontainer.toml.md),
-  [CONTRIBUTING.md](../CONTRIBUTING.md), and
-  `completions/jms.bash`. CONTRIBUTING.md is easy to miss because it
-  describes the development workflow rather than the CLI: re-read its
+  [CONTRIBUTING.md](../CONTRIBUTING.md), `completions/jms.bash`, and
+  `completions/_jms`. CONTRIBUTING.md is easy to miss because it describes
+  the development workflow rather than the CLI: re-read its
   development-checks and scope sections whenever the test or integration
   invocation, the CI matrix, or the backend seam changes. Any design
   document under `docs/` that this release implements needs its `Status:`

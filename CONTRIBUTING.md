@@ -34,7 +34,9 @@ approval, fingerprinting, and runtime argv derived from the same validated
 data. New CLI or manifest behavior needs adversarial tests, and changes to
 `jmscontainer.toml` require updating its versioned reference. Changes to the
 command grammar, flags, environment variables, or defaults belong in
-[docs/cli.md](docs/cli.md) and `completions/jms.bash` in the same commit. Do
+[docs/cli.md](docs/cli.md) and both completions (`completions/jms.bash`,
+`completions/_jms`) in the same commit; `tests/test_help_and_completion.py`
+checks that every parser flag appears in all three. Do
 not add broad trust bypasses, implicit credential mounts, or build-time secret
 channels.
 

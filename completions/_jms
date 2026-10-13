@@ -1,0 +1,101 @@
+#compdef jms
+# zsh completion for a checkout installation of jms.
+#
+# Mirrors completions/jms.bash: directories only where a PATH is accepted,
+# no candidates for option values that are names or fingerprints, and
+# nothing after `--` on a launch line, which belongs to the launched program.
+
+_jms() {
+  local curcontext=$curcontext state line ret=1
+  typeset -A opt_args
+
+  _arguments -C \
+    '(- :)'{-h,--help}'[show help and exit]' \
+    '(- :)--version[show the version and exit]' \
+    '1:command:->command' \
+    '*::argument:->argument' && ret=0
+
+  case $state in
+    command)
+      local -a commands
+      commands=(
+        'build:build the project image, or the shared base image'
+        'launch:run an agent or a shell in a container for a project'
+        'inspect:report discovery, fingerprint, and trust status'
+        'trust:approve a definition, or list/revoke/prune durable grants'
+        'init:create a project definition (.jmscontainer/Containerfile)'
+        'clean:remove the project containers'
+      )
+      _describe -t commands 'jms command' commands && ret=0
+      ;;
+    argument)
+      curcontext=${curcontext%:*:*}:jms-$words[1]:
+      case $words[1] in
+        build)
+          _arguments -s : \
+            '(-w --workdir --pull)--base[build the shared base image]' \
+            '(--base)'{-w,--workdir}'[project directory]:project directory:_directories' \
+            '--trust[one-shot build/run approval; never grants credentials]' '--no-auth[do not mount agent state]' '--no-cache[build without reusable layers]' \
+            '--pull[refresh FROM references (with --base only)]' && ret=0
+          ;;
+        launch)
+          # Everything after `--` goes to the launched program.
+          if (( ${words[(I)--]} && ${words[(I)--]} < CURRENT )); then
+            _message 'arguments for the launched program'
+            return 0
+          fi
+          _arguments -s : \
+            '(1 -w --workdir)'{-w,--workdir}'[project directory]:project directory:_directories' \
+            '--trust[one-shot build/run approval; never grants credentials]' \
+            '(--no-auth)--auth[mount agent state]' \
+            '(--auth)--no-auth[do not mount agent state]' '--no-cache[build without reusable layers]' \
+            '--no-network[run the container with no network]' \
+            '--git-writable[mount the project .git read-write]' \
+            '(-r --root)'{-r,--root}'[run as root instead of the isolation user]' \
+            '(-b --bin)'{-b,--bin}'[entry program]:entry program: ' \
+            '(-n --name)'{-n,--name}'[container name]:container name: ' \
+            '(-w --workdir)1:project directory:_directories' && ret=0
+          ;;
+        inspect)
+          _arguments -s : \
+            '(1 -w --workdir)'{-w,--workdir}'[project directory]:project directory:_directories' \
+            '(-w --workdir)1:project directory:_directories' && ret=0
+          ;;
+        trust)
+          _arguments -s : \
+            '--fingerprint[record durable trust when this matches the current fingerprint]:fingerprint (HEX64): ' \
+            '(--no-auth)--auth[also record the credential grant]' \
+            '(--auth)--no-auth[record the credential grant as declined]' \
+            '--purge-images[with revoke: also delete the project images]' \
+            '1: :->trust_operand' \
+            '2: :->trust_revoke_path' && ret=0
+          case $state in
+            trust_operand)
+              _alternative \
+                'verbs:trust verb:(list revoke prune)' \
+                'directories:project directory:_directories' && ret=0
+              ;;
+            trust_revoke_path)
+              [[ $line[1] == revoke ]] && _directories && ret=0
+              ;;
+          esac
+          ;;
+        init)
+          _arguments -s : \
+            {-w,--workdir}'[project directory]:project directory:_directories' \
+            '--with-manifest[also scaffold jmscontainer.toml]' && ret=0
+          ;;
+        clean)
+          _arguments -s : \
+            '(--all)'{-w,--workdir}'[project directory]:project directory:_directories' \
+            '(-w --workdir)--all[select all jms containers]' \
+            '--images[also remove the selection images]' \
+            '--dry-run[report the selection without mutating]' && ret=0
+          ;;
+      esac
+      ;;
+  esac
+  return ret
+}
+
+_jms "$@"

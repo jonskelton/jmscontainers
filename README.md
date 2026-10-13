@@ -55,6 +55,19 @@ normally receive the required subordinate ID ranges in `/etc/subuid` and
 **unqualified but allowed**. See the [Linux guide](docs/linux.md) for the
 support boundary, prerequisite checks, and known limitations.
 
+### Shell completion
+
+`make install` also links a bash completion into
+`~/.local/share/bash-completion/completions` and a zsh completion into
+`~/.local/share/zsh/site-functions`. bash-completion finds the first on its
+own. zsh, the macOS default shell, reads only directories on its `fpath`, so
+add the second to `~/.zshrc` before `compinit` runs:
+
+```sh
+fpath=(~/.local/share/zsh/site-functions $fpath)
+autoload -Uz compinit && compinit
+```
+
 ## Use
 
 From any checkout:
@@ -184,7 +197,7 @@ the directory layout and safe setup.
 ```sh
 jms build --base --pull --no-cache   # rebuild the shared base from upstream
 jms build                            # rebuild this project's image onto it
-make uninstall                       # remove the jms command and completion
+make uninstall                       # remove the jms command and completions
 ```
 
 Already-running containers keep their original image; exit and relaunch after

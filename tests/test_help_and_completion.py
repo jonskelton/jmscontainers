@@ -52,7 +52,7 @@ class ParityTests(unittest.TestCase):
                                   if not isinstance(a, argparse._HelpAction)]
 
     def test_every_option_is_completed_and_documented(self):
-        targets = ("completions/jms.bash", "docs/cli.md")
+        targets = ("completions/jms.bash", "completions/_jms", "docs/cli.md")
         texts = {path: (ROOT / path).read_text() for path in targets}
         for command, words in self.surface():
             for word in words:
