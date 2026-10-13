@@ -1599,15 +1599,15 @@ def base_credential_records(store: dict, workdir: bytes):
     """Return (root, base_record, vanished) for a no-definition workdir.
 
     base_record is the remembered answer at base_credential_root(), if any.
-    vanished is the nearest (root, record) for a definition that was trusted
-    at the workdir or an ancestor inside the checkout but is gone now.
+    vanished lists, nearest first, each (root, record) for a definition that
+    was trusted at the workdir or an ancestor inside the checkout but is gone.
     """
     root = base_credential_root(workdir)
-    base, vanished, current = None, None, workdir
+    base, vanished, current = None, [], workdir
     while True:
         record = store["projects"].get(hashlib.sha256(current).hexdigest())
         if record and record["tf"] != BASE_CREDENTIAL_TF:
-            vanished = vanished or (current, record)
+            vanished.append((current, record))
         elif record and current == root:
             base = record
         if current == root or current == b"/":
@@ -1629,7 +1629,7 @@ def base_launch_auth(workdir: bytes, args) -> bool:
     root, base, vanished = base_credential_records(read_store(), workdir)
     if vanished:
         # Re-asking would hand whoever deleted the definition a reflexive yes.
-        print("warning: " + quote(vanished[0]) + " has a trust record for a project definition that "
+        print("warning: " + quote(vanished[0][0]) + " has a trust record for a project definition that "
               "is no longer present; " + ("mounting agent state for this launch only (--auth)"
                                           if args.auth else "not mounting agent state (pass --auth "
                                           "to mount it for this launch)"), file=sys.stderr)
@@ -2254,32 +2254,46 @@ def cmd_trust(args):
         if not args.path: fail("trust revoke requires a project path", 2)
         workdir, _ = resolve_operand(args.path)
         root, _ = discover(workdir, consume_spec=False)
+        base = None
         if root is None:
-            # A vanished definition's record first, so revoking it is possible;
-            # otherwise the checkout's remembered no-definition answer.
-            base_root, _, vanished = base_credential_records(read_store(), workdir)
-            root = vanished[0] if vanished else base_root
-        pid = hashlib.sha256(root).hexdigest()
+            # Every vanished definition's record on the way to the checkout
+            # root -- any one left would still govern launches here and
+            # regain its grants if its definition came back -- and otherwise
+            # the checkout's remembered no-definition answer.
+            base_root, base, vanished = base_credential_records(read_store(), workdir)
+            roots = [path for path, _ in vanished] or [base_root]
+        else:
+            roots = [root]
+        pids = [hashlib.sha256(root).hexdigest() for root in roots]
         if args.purge_images:
             runtime()  # select before mutating the store: a refusal leaves it untouched
         revoked = []
         def revoke(store):
-            if pid not in store["projects"]:
+            revoked.extend(root for root, pid in zip(roots, pids) if pid in store["projects"])
+            if not revoked:
                 if args.purge_images:
                     return False
-                fail("no trust record for " + quote(root))
-            revoked.append(True)
-            del store["projects"][pid]
+                fail("no trust record for " + quote(roots[0]))
+            for pid in pids:
+                store["projects"].pop(pid, None)
             return True
         update_store(revoke)
-        print(("revoked trust for " if revoked else "trust already revoked for ") + quote(root))
+        for root in revoked:
+            print("revoked trust for " + quote(root))
+        if not revoked:
+            print("trust already revoked for " + quote(roots[0]))
+        if base and revoked and base["root"].encode("utf-8") not in revoked:
+            print("note: the remembered credential answer for " + quote(base["root"]) + " (auth=" +
+                  ("yes" if base["grants"]["auth"] else "no") + ") now applies here; revoke again "
+                  "to remove it", file=sys.stderr)
         if args.purge_images:
             # Revocation committed above, so every purge-path failure --
             # readiness, enumeration, or removal -- keeps the "trust was
             # revoked, but image purge failed" split (MIR-048).
             try:
                 runtime_ready()
-                schedule = image_removal_schedule(pid, tag_prefix_for(root, pid), keep=0)
+                schedule = [step for root, pid in zip(roots, pids)
+                            for step in image_removal_schedule(pid, tag_prefix_for(root, pid), keep=0)]
             except JMSException as exc:
                 fail("trust was revoked, but image purge failed: " + str(exc))
             def report(ref, result):
@@ -2303,7 +2317,7 @@ def cmd_trust(args):
         if vanished:
             # Launches here ignore a recorded answer while this record exists,
             # and overwriting it would discard a definition's grants unseen.
-            fail(quote(vanished[0]) + " has a trust record for a project definition that is no "
+            fail(quote(vanished[0][0]) + " has a trust record for a project definition that is no "
                  "longer present; run jms trust revoke " + quote(workdir) + " first")
         record_base_answer(root, args.auth)
         if args.auth:
@@ -2331,7 +2345,7 @@ def cmd_inspect(args):
             return
         print("trust_store: readable")
         print("credential_root: " + quote(credential_root))
-        if vanished: grant = "declined (definition at " + quote(vanished[0]) + " vanished)"
+        if vanished: grant = "declined (definition at " + quote(vanished[0][0]) + " vanished)"
         elif base: grant = "held" if base["grants"]["auth"] else "declined"
         else: grant = "unrecorded"
         print("credential_grant: " + grant)

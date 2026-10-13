@@ -2463,6 +2463,64 @@ class TrustCommandTests(unittest.TestCase):
             self.run_trust(["trust", "revoke", str(root)])
             self.assertEqual(JMS.read_store()["projects"], {})
 
+    def stacked_vanished(self, home):
+        """Trusted definitions at a checkout root and a subdirectory, both gone."""
+        outer, outer_canonical, _ = self.seed(home, "outer")
+        inner = outer / "service"
+        (inner / ".jmscontainer").mkdir(parents=True)
+        (inner / ".jmscontainer" / "Containerfile").write_bytes(DEFAULT_CONTAINERFILE)
+        self.run_trust(["trust", str(inner), "--fingerprint", fingerprint_of(inner)])
+        shutil.rmtree(inner / ".jmscontainer")
+        shutil.rmtree(outer / ".jmscontainer")
+        return inner, JMS.canon(os.fsencode(inner)), outer_canonical
+
+    def test_revoke_removes_every_stacked_vanished_record(self):
+        with sandbox() as home:
+            inner, inner_canonical, outer_canonical = self.stacked_vanished(home)
+            output = self.run_trust(["trust", "revoke", str(inner)])
+            self.assertEqual(output.splitlines(),
+                             ["revoked trust for " + JMS.quote(inner_canonical),
+                              "revoked trust for " + JMS.quote(outer_canonical)])
+            self.assertEqual(JMS.read_store()["projects"], {})
+
+    def test_revoke_purges_images_of_every_stacked_vanished_record(self):
+        with sandbox() as home:
+            inner, inner_canonical, outer_canonical = self.stacked_vanished(home)
+            images, mine = {}, []
+            for canonical in (inner_canonical, outer_canonical):
+                pid = hashlib.sha256(canonical).hexdigest()
+                ref = JMS.tag_prefix_for(canonical, pid) + ":aaaaaaaaaaaa"
+                images[ref] = image_record(ref, labels={"jms.project": pid})
+                mine.append(ref)
+            with fake_runtime(images=images) as runtime:
+                self.run_trust(["trust", "revoke", str(inner), "--purge-images"])
+            self.assertEqual(sorted(runtime.deleted), sorted(mine))
+            self.assertEqual(JMS.read_store()["projects"], {})
+
+    def test_revoke_of_a_vanished_record_notes_the_remaining_answer(self):
+        with sandbox() as home:
+            plain = home / "git" / "plain"
+            inner = plain / "service"
+            (plain / ".git").mkdir(parents=True)
+            (inner / ".jmscontainer").mkdir(parents=True)
+            (inner / ".jmscontainer" / "Containerfile").write_bytes(DEFAULT_CONTAINERFILE)
+            self.run_trust(["trust", str(inner), "--fingerprint", fingerprint_of(inner)])
+            shutil.rmtree(inner / ".jmscontainer")
+            canonical = JMS.canon(os.fsencode(plain))
+            remember_base_answer(canonical, True)
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()) as stdout, \
+                 contextlib.redirect_stderr(stderr):
+                JMS.cmd_trust(JMS.parse_cli(["trust", "revoke", str(inner)]))
+            self.assertEqual(stdout.getvalue(), "revoked trust for "
+                             + JMS.quote(JMS.canon(os.fsencode(inner))) + "\n")
+            self.assertIn("remembered credential answer for " + JMS.quote(canonical)
+                          + " (auth=yes) now applies", stderr.getvalue())
+            self.assertEqual(list(JMS.read_store()["projects"]),
+                             [hashlib.sha256(canonical).hexdigest()])
+            self.run_trust(["trust", "revoke", str(inner)])
+            self.assertEqual(JMS.read_store()["projects"], {})
+
     def test_trust_requires_a_project_definition(self):
         with sandbox() as home:
             (home / "git" / "plain").mkdir()
