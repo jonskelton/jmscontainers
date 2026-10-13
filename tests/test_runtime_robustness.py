@@ -361,5 +361,45 @@ class DebugTraceTests(unittest.TestCase):
                          'jms-debug: exec: %s "run" "--rm" "img"\n' % JMS.quote(exe))
 
 
+class TrustStoreDurabilityTests(unittest.TestCase):
+    """OPS-11: the store's data and its rename are fsynced."""
+
+    def test_update_store_fsyncs_file_before_rename_then_directory(self):
+        events = []
+        real_fsync, real_replace = os.fsync, os.replace
+
+        def fsync(fd):
+            kind = "dir" if _is_dir_fd(fd) else "file"
+            events.append("fsync-" + kind)
+            return real_fsync(fd)
+
+        def replace(src, dst):
+            events.append("replace")
+            return real_replace(src, dst)
+
+        with sandbox() as home, mock.patch.object(os, "fsync", fsync), \
+             mock.patch.object(os, "replace", replace):
+            JMS.update_store(lambda store: True)
+            stored = json.loads((home / ".config" / "jmscontainers" / "store.json").read_text())
+        self.assertEqual(stored, {"schema": 2, "projects": {}})
+        self.assertEqual(events, ["fsync-file", "replace", "fsync-dir"])
+
+    def test_failed_fsync_leaves_no_temporary_file(self):
+        def broken(fd):
+            raise OSError(5, "I/O error")
+
+        with sandbox() as home, mock.patch.object(os, "fsync", broken):
+            with self.assertRaises(OSError):
+                JMS.update_store(lambda store: True)
+            directory = home / ".config" / "jmscontainers"
+            self.assertFalse(list(directory.glob("store.json.tmp-*")))
+            self.assertFalse((directory / "store.json").exists())
+
+
+def _is_dir_fd(fd):
+    import stat
+    return stat.S_ISDIR(os.fstat(fd).st_mode)
+
+
 if __name__ == "__main__":
     unittest.main()

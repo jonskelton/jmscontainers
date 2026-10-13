@@ -243,6 +243,11 @@ editing the trust store or the jms code the host will run next. To hack on
 jms itself inside a container, work from a scratch clone of the checkout
 rather than the live one.
 
+Every trust-store change is written to a temporary file, flushed to disk,
+renamed over `store.json`, and the directory is flushed in turn. A crash or
+power loss leaves either the old store or the new one, never a partial
+file, and a grant or revocation jms has reported is already on disk.
+
 Host sockets are refused too, because a read-only mount does not stop a
 container connecting to one. A manifest mount whose source is a socket,
 FIFO, or device node needs its own `allow_socket = true`, and a mount that

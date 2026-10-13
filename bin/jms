@@ -1221,6 +1221,14 @@ def store_lock():
         os.close(fd)
 
 
+def fsync_directory(directory: Path) -> None:
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def update_store(change) -> dict:
     """Run one read/mutate/rename transaction while holding the store lock."""
     directory = store_directory()
@@ -1231,8 +1239,13 @@ def update_store(change) -> dict:
             try:
                 with os.fdopen(os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w") as handle:
                     handle.write(json.dumps(store, sort_keys=True) + "\n")
+                    # Durable, not only atomic (OPS-11): the data reaches disk
+                    # before the rename, and the rename before jms reports.
+                    handle.flush()
+                    os.fsync(handle.fileno())
                 os.replace(tmp, directory / "store.json")
-            except Exception:
+                fsync_directory(directory)
+            except BaseException:
                 try: os.unlink(tmp)
                 except FileNotFoundError: pass
                 raise
