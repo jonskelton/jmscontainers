@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased
+
+- **A hung container runtime no longer hangs jms.** Readiness and query
+  calls give up after 60 seconds (`JMS_RUNTIME_TIMEOUT` changes the
+  limit) with an error naming the command. Builds and launched
+  containers are never timed out.
+- **Stopping jms stops its runtime command.** SIGTERM and SIGHUP are
+  passed to the running runtime command, and jms waits for it to exit
+  (exit status 143 or 129), so a closed SSH session no longer leaves a
+  build running on its own.
+- **`JMS_DEBUG=1` traces runtime calls.** Each runtime command, its exit
+  status and duration go to stderr. It prints `[env]` values too.
+- **Images record what built them.** Base and project images carry a
+  `jms.version` label and, from a git checkout, `jms.commit`.
+- **Concurrent builds of one project wait for each other.** The second
+  waits for the first, then reuses the image it built.
+- **Trust-store writes are durable.** Each write is fsynced before jms
+  reports it.
+- **`clean` asks before it removes anything on a terminal.** It lists
+  the selection and asks `Remove these? [y/N]`; declining removes
+  nothing and exits 1. `-y`/`--yes` skips the question. Off a terminal
+  it behaves as before. With nothing to remove it now says so.
+- **`jms trust` exits 2, not 1, when no project definition is found**
+  and neither `--auth` nor `--no-auth` is given, matching `clean` and
+  the documented usage-error code.
+- **`jms --help` explains itself.** It names the AI agents, defines
+  definition, fingerprint and grant, and shows examples, the
+  `launch -- ARGS` tail, the environment variables and the exit codes.
+  The project operand shows as `PATH`.
+- **A mistyped option shows its subcommand's usage**, with the nearest
+  real option (`did you mean --git-writable?`).
+- **`init --with-manifest` reports both files it creates** and suggests
+  the next step on stderr.
+- **Completion follows the argument position** in bash, and a zsh
+  completion ships: `make install` links `_jms` into
+  `~/.local/share/zsh/site-functions` (override with
+  `ZSH_COMPLETIONDIR`).
+- **Errors say "definition" instead of "project spec".**
+- **The missing-Podman hint is distro-neutral**; the Debian package set
+  follows, labelled.
+- **Docs.** The exit-code table is corrected (130 for any Ctrl-C, 129
+  and 143, Podman's 125/126/127, and the fact that `launch` passes the
+  container's status through). Docker is ruled out explicitly.
+  Upgrading, uninstalling, disk usage, resource limits and proxies are
+  documented, and `make uninstall` points to what it leaves behind.
+  `docs/cli.md` lists every `inspect` field and every runtime refusal.
+
 ## 2.0.2 — 2026-10-13
 
 - **stdout belongs to the launched program on macOS too.** The
