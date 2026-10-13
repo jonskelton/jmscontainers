@@ -12,8 +12,8 @@
   directory containing it is refused. Only a real
   `.git` directory at the mount root is covered: linked worktrees,
   submodules, a `.git` symlink and subdirectory launches without a
-  definition get no bind. Verified on Podman; macOS qualification is
-  pending.
+  definition get no bind. Verified on Podman 5.4.2 and apple/container
+  1.5.0.
 
 - **Breaking: manifest mounts of host sockets are refused unless the
   mount sets `allow_socket = true`.** A source that is a socket, FIFO or
@@ -23,7 +23,8 @@
   `/tmp/.X11-unix` is refused outright, as is the socket named by
   `$SSH_AUTH_SOCK` or a `unix://` `$DOCKER_HOST`, or any directory above
   it. Only an exact opted-in socket is exempt, so ssh-agent forwarding
-  means mounting `$SSH_AUTH_SOCK` itself. An older jms rejects the new
+  means mounting `$SSH_AUTH_SOCK` itself; that is not possible on macOS,
+  where apple/container binds only directories. An older jms rejects the new
   key. The list is best-effort; see docs/jmscontainer.toml.md.
 
 - **Breaking: manifest mounts of host credential stores need the

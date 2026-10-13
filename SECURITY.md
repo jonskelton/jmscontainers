@@ -77,9 +77,7 @@ to know:
     with no definition from a checkout's subdirectory;
   - the container creates a nested repository anywhere under the mount,
     including in the directory a launch started from; host git run there
-    uses it;
-  - the platform is macOS, where apple/container's handling of a read-only
-    bind nested in a read-write one is not yet qualified.
+    uses it.
 - **Editor and agent configuration:** `.vscode/`, `.claude/`, `.mcp.json`,
   `CLAUDE.md` and `AGENTS.md`, which an IDE or a host-side agent loads when
   it opens the checkout. Some of these name commands to run.
@@ -252,7 +250,8 @@ contains or sits inside a known socket directory (`$XDG_RUNTIME_DIR`,
 `/run/user/<uid>`, `/run`, `/var/run`, `/tmp/tmux-<uid>`, `/tmp/.X11-unix`)
 or contains the socket named by `$SSH_AUTH_SOCK` or a `unix://`
 `$DOCKER_HOST` is refused outright; only an exact opted-in socket path is
-exempt, which is how ssh-agent forwarding works. This list is
+exempt, which is how ssh-agent forwarding works (not on macOS, where
+apple/container binds only directories). This list is
 **best-effort**: a socket no environment variable names, such as an agent
 under `$HOME`, is not detected. See
 [Host sockets](docs/jmscontainer.toml.md#host-sockets).
