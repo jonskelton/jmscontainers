@@ -89,5 +89,21 @@ class HelpTests(unittest.TestCase):
                 self.assertIn("JMS_PROJECT_ROOTS", help_text(command))
 
 
+    def test_a_mistyped_option_reports_the_subcommand_usage_and_a_suggestion(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as caught:
+            JMS.parse_cli(["launch", "--git-writeable"])
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("usage: jms launch", stderr.getvalue())
+        self.assertIn("did you mean --git-writable?", stderr.getvalue())
+
+    def test_a_stray_operand_gets_no_suggestion(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
+            JMS.parse_cli(["build", "somewhere"])
+        self.assertIn("usage: jms build", stderr.getvalue())
+        self.assertIn("unrecognized arguments: somewhere\n", stderr.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

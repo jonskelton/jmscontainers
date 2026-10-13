@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import difflib
 import errno
 import fcntl
 import hashlib
@@ -2849,7 +2850,23 @@ def parse_cli(argv=None):
         separator = values.index("--")
         extra = values[separator + 1:]
         values = values[:separator]
-    args = parser().parse_args(values)
+    top = parser()
+    args, unknown = top.parse_known_args(values)
+    if unknown:
+        # Report a mistyped option against the subcommand it was meant for,
+        # with its usage and the nearest real option, instead of the
+        # top-level usage argparse would print.
+        owner = top
+        if values and values[0] == args.command:
+            owner = next(a for a in top._actions
+                         if isinstance(a, argparse._SubParsersAction)).choices[args.command]
+        message = "unrecognized arguments: " + " ".join(unknown)
+        options = [o for a in owner._actions for o in a.option_strings]
+        close = unknown[0].startswith("-") and difflib.get_close_matches(
+            unknown[0].split("=", 1)[0], options, n=1)
+        if close:
+            message += " (did you mean " + close[0] + "?)"
+        owner.error(message)
     if args.command == "launch":
         args.extra = extra
     return args
