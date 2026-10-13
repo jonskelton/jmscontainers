@@ -10,15 +10,18 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import difflib
 import errno
 import fcntl
 import hashlib
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
+import textwrap
 import time
 if sys.version_info < (3, 11):
     raise SystemExit("jms requires Python 3.11+")
@@ -27,13 +30,14 @@ import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 # A `.dev` suffix marks a working tree that is not a release.  The first
 # runtime-affecting commit after a tag carries the next patch version plus
 # the marker, and the release commit strips it (docs/release-checklist.md),
 # so `jms --version` and the `jms_version` stamped into trust records can
 # never claim to be a tagged release they are not.
-__version__ = "2.0.3.dev"
+__version__ = "2.1.0.dev"
 BASE_REPOSITORY = "jmscontainers-base"
 BASE = BASE_REPOSITORY + ":latest"
 UTC_SECONDS = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
@@ -86,7 +90,7 @@ def terminal_safe_text(value: bytes | str) -> str:
     return "".join(chr(byte) if 32 <= byte <= 126 else "\\x%02x" % byte for byte in raw)
 
 
-def fail(message: str, code: int = 1, hint: str | None = None) -> None:
+def fail(message: str, code: int = 1, hint: str | None = None) -> NoReturn:
     exc = UsageError(message) if code == 2 else TrustError(message) if code == 3 else JMSException(message)
     exc.hint = hint
     raise exc
@@ -111,11 +115,115 @@ def select_runtime():
 def runtime():
     global _RUNTIME
     if _RUNTIME is None:
+        # Selection precedes every consent prompt; so does refusing a bad
+        # JMS_RUNTIME_TIMEOUT, which is otherwise first read at readiness.
+        query_timeout()
         _RUNTIME = select_runtime()
     return _RUNTIME
 
 
-def runtime_run(argv, *, capture=True, check=True, stdin=None, stdout=None, stderr=None, replace=False):
+# Readiness and query calls (version probe, `system status`, `info`, image
+# inspect/list, ps) are bounded so a wedged engine cannot hang jms forever
+# (OPS-01); `build`, removals and the exec'd `run` stay unbounded on purpose.
+DEFAULT_RUNTIME_TIMEOUT = 60
+# apple/container's `system start` may boot the VM and fetch a kernel.
+SYSTEM_START_TIMEOUT_FACTOR = 3
+
+
+def query_timeout() -> int:
+    """Seconds a runtime readiness/query call may run (JMS_RUNTIME_TIMEOUT)."""
+    raw = os.environ.get("JMS_RUNTIME_TIMEOUT")
+    if raw is None or raw == "":
+        return DEFAULT_RUNTIME_TIMEOUT
+    if not re.fullmatch(r"[1-9][0-9]{0,5}", raw):
+        fail("JMS_RUNTIME_TIMEOUT must be a whole number of seconds from 1 to 999999, "
+             "not " + quote(raw), 2)
+    return int(raw)
+
+
+def debug_enabled() -> bool:
+    return os.environ.get("JMS_DEBUG", "") not in ("", "0")
+
+
+def debug(message: str) -> None:
+    if debug_enabled():
+        print("jms-debug: " + terminal_safe_text(message), file=sys.stderr)
+
+
+class Terminated(BaseException):
+    """SIGTERM/SIGHUP reached jms; unwinds like KeyboardInterrupt (OPS-02)."""
+
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
+        self.exit_code = 128 + signum
+
+
+# The runtime child currently being waited on, and the termination signal
+# forwarded to it, if any.  Only runtime_run() sets _CHILD.
+_CHILD = None
+_TERMINATING = None
+# True from just before Popen until _CHILD is set: a signal landing in that
+# window is recorded and forwarded once the child exists.
+_SPAWNING = False
+
+
+def forward_termination(signum, frame=None):
+    """SIGTERM/SIGHUP handler: hand the signal to the runtime child and keep
+    waiting for it, so a killed jms never orphans a build under PID 1."""
+    global _TERMINATING
+    _TERMINATING = signum
+    child = _CHILD
+    if child is not None and child.returncode is None:
+        child.send_signal(signum)
+        return
+    if _SPAWNING:
+        return
+    raise Terminated(signum)
+
+
+def install_signal_forwarding() -> None:
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        # An ignored signal stays ignored (nohup): a handler would reset to
+        # the default across exec, so the runtime child would lose it.
+        if signal.getsignal(signum) is not signal.SIG_IGN:
+            signal.signal(signum, forward_termination)
+
+
+def supervise(argv, *, stdin, stdout, stderr, timeout):
+    """Run one runtime child to completion, bounded by timeout (or not)."""
+    global _CHILD, _SPAWNING
+    _SPAWNING = True
+    try:
+        child = subprocess.Popen(argv, stdin=stdin, stdout=stdout, stderr=stderr)
+        _CHILD = child
+    finally:
+        _SPAWNING = False
+    with child:
+        try:
+            if _TERMINATING is not None:
+                child.send_signal(_TERMINATING)
+            out, err = child.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.communicate()
+            debug("timed out after %ds" % timeout)
+            fail("runtime command timed out after %ds: %s" % (timeout, quote(" ".join(argv))),
+                 hint="the container runtime is not responding; check it by hand, "
+                 "or raise JMS_RUNTIME_TIMEOUT")
+        except BaseException:
+            child.kill()
+            raise
+        finally:
+            _CHILD = None
+    if _TERMINATING is not None:
+        debug("exit %d after forwarded signal %d" % (child.returncode, _TERMINATING))
+        raise Terminated(_TERMINATING)
+    return subprocess.CompletedProcess(argv, child.returncode, out, err)
+
+
+def runtime_run(argv, *, capture=True, check=True, stdin=None, stdout=None, stderr=None, replace=False,
+                timeout=None):
     """The sole process boundary for invoking the container runtime executable."""
     if not argv or argv[0] != runtime().exe:
         raise AssertionError("runtime argv must begin with " + runtime().exe)
@@ -126,22 +234,27 @@ def runtime_run(argv, *, capture=True, check=True, stdin=None, stdout=None, stde
         stdout = subprocess.PIPE if capture else None
     if stderr is None:
         stderr = subprocess.PIPE if capture else None
+    debug(("exec: " if replace else "run: ") + " ".join(map(quote, argv))
+          + ("" if timeout is None else " (timeout %ds)" % timeout))
     try:
         if replace:
             os.execvp(argv[0], argv)
             raise AssertionError("runtime exec unexpectedly returned")
-        return subprocess.run(argv, stdin=stdin, stdout=stdout, stderr=stderr, check=check)
+        started = time.monotonic()
+        proc = supervise(argv, stdin=stdin, stdout=stdout, stderr=stderr, timeout=timeout)
     except FileNotFoundError:
         fail(runtime().exe + " CLI not found; " + runtime().install_hint)
-    except subprocess.CalledProcessError as exc:
+    debug("exit %d (%.2fs)" % (proc.returncode, time.monotonic() - started))
+    if check and proc.returncode:
         # Streamed (uncaptured) output is already on the terminal; an empty
         # `-- ""` suffix would only suggest the runtime said nothing.
-        detail = exc.stderr or exc.stdout
+        detail = proc.stderr or proc.stdout
         fail("command failed: " + quote(" ".join(map(str, argv))) + (" -- " + quote(detail) if detail else ""))
+    return proc
 
 
 def runtime_json(argv) -> object:
-    proc = runtime_run(argv)
+    proc = runtime_run(argv, timeout=query_timeout())
     try:
         return json.loads(proc.stdout.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
@@ -232,6 +345,53 @@ class LaunchPlan:
             raise AssertionError("launch plan user must be isolation or root")
 
 
+def _launch_argv(exe, plan, user, mount_argument, runtime_flags=()):
+    """The run argv both backends share, so its security-relevant flags are written once (MAINT-03).
+
+    A backend supplies only what differs: its --user value, its mount
+    serializer, and flags that sit between the labels and the environment.
+    The order is part of the contract the golden argv tests pin: the roster's
+    config variables (CLAUDE_CONFIG_DIR) precede the project mount, then the
+    remaining environment, the other mounts, and --network none.
+    """
+    cmd = [exe, "run", "--rm", "--interactive"]
+    if plan.tty:
+        cmd.append("--tty")
+    cmd += ["--name", plan.name, "--user", user, "--workdir", plan.workdir,
+            "--entrypoint", plan.entrypoint]
+    for key, value in plan.labels:
+        cmd += ["--label", key + "=" + value]
+    cmd += list(runtime_flags)
+    env = list(plan.env)
+    for config_env in (entry.config_env for entry in AGENT_ROSTER if entry.config_env):
+        if env and env[0][0] == config_env:
+            key, value = env.pop(0)
+            cmd += ["--env", key + "=" + value]
+    mounts = list(plan.mounts)
+    source, target, readonly = mounts.pop(0)
+    cmd += ["--mount", mount_argument(source, target, readonly)]
+    for key, value in env:
+        cmd += ["--env", key + "=" + value]
+    for source, target, readonly in mounts:
+        cmd += ["--mount", mount_argument(source, target, readonly)]
+    if not plan.network:
+        cmd += ["--network", "none"]
+    cmd.append(plan.image)
+    cmd += list(plan.command)
+    return cmd
+
+
+def _mount_spec(prefix, source, target, readonly):
+    """One --mount value; the target checks are shared by both backends' mount_argument."""
+    source_text = runtime_path(os.fsencode(source))
+    if "," in target or "=" in target:
+        fail("mount paths cannot contain ',' or '=': " + quote(target))
+    if CONTROL_CHARACTER.search(target):
+        fail("mount paths cannot contain control characters: " + quote(target))
+    result = prefix + "source=" + source_text + ",target=" + target
+    return result + ",readonly" if readonly else result
+
+
 class ContainerBackend:
     """apple/container on macOS (Apple Silicon)."""
 
@@ -262,13 +422,7 @@ class ContainerBackend:
         return ref[len(prefix):] if ref.startswith(prefix) else ref
 
     def mount_argument(self, source, target, readonly=False):
-        source_text = runtime_path(os.fsencode(source))
-        if "," in target or "=" in target:
-            fail("mount paths cannot contain ',' or '=': " + quote(target))
-        if CONTROL_CHARACTER.search(target):
-            fail("mount paths cannot contain control characters: " + quote(target))
-        result = "source=" + source_text + ",target=" + target
-        return result + ",readonly" if readonly else result
+        return _mount_spec("", source, target, readonly)
 
     def build_argv(self, context, tag, labels, *, no_cache, pull, project):
         cmd = [self.exe, "build", "--tag", tag, "--file", context + "/Containerfile"]
@@ -282,29 +436,7 @@ class ContainerBackend:
         return cmd
 
     def run_argv(self, plan):
-        cmd = [self.exe, "run", "--rm", "--interactive"]
-        if plan.tty:
-            cmd.append("--tty")
-        cmd += ["--name", plan.name, "--user", plan.user, "--workdir", plan.workdir,
-                "--entrypoint", plan.entrypoint]
-        for key, value in plan.labels:
-            cmd += ["--label", key + "=" + value]
-        env = list(plan.env)
-        if env and env[0][0] == "CLAUDE_CONFIG_DIR":
-            key, value = env.pop(0)
-            cmd += ["--env", key + "=" + value]
-        mounts = list(plan.mounts)
-        source, target, readonly = mounts.pop(0)
-        cmd += ["--mount", self.mount_argument(source, target, readonly)]
-        for key, value in env:
-            cmd += ["--env", key + "=" + value]
-        for source, target, readonly in mounts:
-            cmd += ["--mount", self.mount_argument(source, target, readonly)]
-        if not plan.network:
-            cmd += ["--network", "none"]
-        cmd.append(plan.image)
-        cmd += list(plan.command)
-        return cmd
+        return _launch_argv(self.exe, plan, plan.user, self.mount_argument)
 
     # -- Class B: executing queries and policy (every process crosses the
     #    module-level runtime_run/runtime_json, looked up at call time) --
@@ -325,18 +457,19 @@ class ContainerBackend:
                      ".".join(map(str, self._version_qualified))), file=sys.stderr)
 
     def ensure_started(self):
-        probe = runtime_run([self.exe, "system", "status"], check=False)
+        probe = runtime_run([self.exe, "system", "status"], check=False, timeout=query_timeout())
         if probe.returncode:
             print("starting container runtime...", file=sys.stderr)
-            started = runtime_run([self.exe, "system", "start"], capture=True, check=False)
-            recheck = runtime_run([self.exe, "system", "status"], check=False)
+            started = runtime_run([self.exe, "system", "start"], capture=True, check=False,
+                                  timeout=query_timeout() * SYSTEM_START_TIMEOUT_FACTOR)
+            recheck = runtime_run([self.exe, "system", "status"], check=False, timeout=query_timeout())
             if recheck.returncode:
                 detail = recheck.stderr or recheck.stdout or started.stderr or started.stdout or b""
                 fail("container runtime did not start: " + quote(detail))
 
     def resolve_image(self, ref):
         source = self.exe + " image inspect"
-        proc = runtime_run([self.exe, "image", "inspect", ref], check=False)
+        proc = runtime_run([self.exe, "image", "inspect", ref], check=False, timeout=query_timeout())
         if proc.returncode == 0:
             try:
                 records = json.loads(proc.stdout.decode("utf-8"))
@@ -495,7 +628,10 @@ class PodmanBackend:
 
     name = "podman"
     exe = "podman"
-    install_hint = ("install the qualified package set: sudo apt install "
+    # Distro-neutral first: the apt line is the qualified Debian contract
+    # (R4.7), not a command every Linux host can run (ADOPT-14).
+    install_hint = ("install Podman 5.4 or newer with your distribution's package manager; "
+                    "on Debian the qualified package set is: sudo apt install "
                     "podman uidmap passt dbus-user-session fuse-overlayfs coreutils")
     version_min = (5, 4, 0)              # Debian 13's packaged podman
     version_max = None                   # no ceiling: a newer podman warns, never refuses
@@ -526,13 +662,7 @@ class PodmanBackend:
         return ref[len(prefix):] if ref.startswith(prefix) else ref
 
     def mount_argument(self, source, target, readonly=False):
-        source_text = runtime_path(os.fsencode(source))
-        if "," in target or "=" in target:
-            fail("mount paths cannot contain ',' or '=': " + quote(target))
-        if CONTROL_CHARACTER.search(target):
-            fail("mount paths cannot contain control characters: " + quote(target))
-        result = "type=bind,source=" + source_text + ",target=" + target
-        return result + ",readonly" if readonly else result
+        return _mount_spec("type=bind,", source, target, readonly)
 
     def build_argv(self, context, tag, labels, *, no_cache, pull, project):
         cmd = [self.exe, "build", "--tag", tag, "--file", context + "/Containerfile"]
@@ -550,9 +680,6 @@ class PodmanBackend:
         return cmd
 
     def run_argv(self, plan):
-        cmd = [self.exe, "run", "--rm", "--interactive"]
-        if plan.tty:
-            cmd.append("--tty")
         # --user is numeric so the image's /etc/passwd can never choose the
         # runtime UID; --userns is explicit so ambient PODMAN_USERNS or
         # containers.conf values cannot alter the mapping (MIR-034/040).
@@ -562,27 +689,8 @@ class PodmanBackend:
         else:
             user = "0:0"
             userns = "--userns=host"
-        cmd += ["--name", plan.name, "--user", user, "--workdir", plan.workdir,
-                "--entrypoint", plan.entrypoint]
-        for key, value in plan.labels:
-            cmd += ["--label", key + "=" + value]
-        cmd += ["--hostname", "container", "--security-opt", "label=disable", userns]
-        env = list(plan.env)
-        if env and env[0][0] == "CLAUDE_CONFIG_DIR":
-            key, value = env.pop(0)
-            cmd += ["--env", key + "=" + value]
-        mounts = list(plan.mounts)
-        source, target, readonly = mounts.pop(0)
-        cmd += ["--mount", self.mount_argument(source, target, readonly)]
-        for key, value in env:
-            cmd += ["--env", key + "=" + value]
-        for source, target, readonly in mounts:
-            cmd += ["--mount", self.mount_argument(source, target, readonly)]
-        if not plan.network:
-            cmd += ["--network", "none"]
-        cmd.append(plan.image)
-        cmd += list(plan.command)
-        return cmd
+        return _launch_argv(self.exe, plan, user, self.mount_argument,
+                            ["--hostname", "container", "--security-opt", "label=disable", userns])
 
     # -- Class B: executing queries and policy --
 
@@ -659,7 +767,7 @@ class PodmanBackend:
                  "and any storage.conf override")
 
     def image_exists(self, image):
-        proc = runtime_run([self.exe, "image", "exists", image], check=False)
+        proc = runtime_run([self.exe, "image", "exists", image], check=False, timeout=query_timeout())
         if proc.returncode == 0:
             return True
         if proc.returncode == 1:
@@ -679,7 +787,7 @@ class PodmanBackend:
         if not self.image_exists(ref):
             return None
         source = self.exe + " image inspect"
-        proc = runtime_run([self.exe, "image", "inspect", ref], check=False)
+        proc = runtime_run([self.exe, "image", "inspect", ref], check=False, timeout=query_timeout())
         if proc.returncode != 0:
             fail(source + " failed for " + quote(ref) + " (exit " + str(proc.returncode)
                  + "): " + quote(proc.stderr or proc.stdout or b""))
@@ -1027,7 +1135,7 @@ def discover(workdir: bytes, *, consume_spec: bool = True):
         try:
             mode = os.lstat(containerfile).st_mode
         except FileNotFoundError:
-            fail("project spec requires a regular Containerfile: " + quote(containerfile))
+            fail("project definition requires a regular Containerfile: " + quote(containerfile))
         if not stat.S_ISREG(mode):
             fail("Containerfile must be a regular file: " + quote(containerfile))
         return current, marker
@@ -1047,7 +1155,7 @@ def count(n: int) -> bytes:
 
 def spec_entries(spec: bytes) -> list[tuple[bytes, bytes, bytes, bytes]]:
     """Canonical (type, relpath, exec, content) entries for a definition."""
-    def raise_error(error): raise error
+    def raise_error(error) -> NoReturn: raise error
     entries = []
     for directory, dirnames, filenames in os.walk(spec, onerror=raise_error):
         for name in dirnames + filenames:
@@ -1084,16 +1192,29 @@ def store_directory() -> Path:
     return Path(os.fsdecode(home_path())) / ".config" / "jmscontainers"
 
 
+# The schema-2 trust-store record.  make_trust_record() is the only writer and
+# valid_store() the only reader of its shape, so a schema change touches both
+# here and nowhere else (MAINT-08).
+TRUST_RECORD_FIELDS = frozenset({"root", "tf", "grants", "granted_at", "jms_version"})
+TRUST_GRANT_FIELDS = frozenset({"build_run", "auth"})
+
+
+def make_trust_record(root: bytes, tf: str, auth: bool) -> dict:
+    """A fresh store record for a canonical root: build/run granted, auth as answered, stamped now."""
+    return {"root": root.decode("utf-8"), "tf": tf, "grants": {"build_run": True, "auth": auth},
+            "granted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "jms_version": __version__}
+
+
 def valid_store(data) -> bool:
     if type(data) is not dict or set(data) != {"schema", "projects"} or data["schema"] != 2 or not isinstance(data["projects"], dict):
         return False
     for pid, record in data["projects"].items():
         if (not isinstance(pid, str) or not re.fullmatch(r"[0-9a-f]{64}", pid) or not isinstance(record, dict)
-                or set(record) != {"root", "tf", "grants", "granted_at", "jms_version"}
+                or set(record) != TRUST_RECORD_FIELDS
                 or not isinstance(record["root"], str) or not isinstance(record["tf"], str)
                 or not re.fullmatch(r"[0-9a-f]{64}", record["tf"])
                 or hashlib.sha256(record["root"].encode()).hexdigest() != pid
-                or not isinstance(record["grants"], dict) or set(record["grants"]) != {"build_run", "auth"}
+                or not isinstance(record["grants"], dict) or set(record["grants"]) != TRUST_GRANT_FIELDS
                 or record["grants"].get("build_run") is not True or not isinstance(record["grants"].get("auth"), bool)
                 or not isinstance(record["granted_at"], str) or not re.fullmatch(UTC_SECONDS, record["granted_at"])
                 or not isinstance(record["jms_version"], str)):
@@ -1132,6 +1253,14 @@ def store_lock():
         os.close(fd)
 
 
+def fsync_directory(directory: Path) -> None:
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def update_store(change) -> dict:
     """Run one read/mutate/rename transaction while holding the store lock."""
     directory = store_directory()
@@ -1142,15 +1271,58 @@ def update_store(change) -> dict:
             try:
                 with os.fdopen(os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w") as handle:
                     handle.write(json.dumps(store, sort_keys=True) + "\n")
+                    # Durable, not only atomic (OPS-11): the data reaches disk
+                    # before the rename, and the rename before jms reports.
+                    handle.flush()
+                    os.fsync(handle.fileno())
                 os.replace(tmp, directory / "store.json")
-            except Exception:
+                fsync_directory(directory)
+            except BaseException:
                 try: os.unlink(tmp)
                 except FileNotFoundError: pass
                 raise
         return store
 
 
-AGENT_STATE_LEAVES = ("claude", "codex", "opencode", "opencode-config", "pi")
+@dataclass(frozen=True)
+class AgentState:
+    """One persistent agent-state leaf in the pool jms mounts under the credential grant."""
+    leaf: str                            # directory under agent_state_root()
+    target: str                          # HOME-relative container mount target, also
+                                         # listed among the host credential stores
+    agent: str                           # the agent's name, as consent text lists it
+    config_env: str | None = None        # variable a credential launch points at target
+
+
+# The agent roster: the single source for every agent-state site -- the pool
+# leaves and their mounts (agent_state_mounts), the targets a manifest mount
+# may not cover (reserved_mount_targets), the host sign-ins kept behind the
+# credential grant (CREDENTIAL_PATHS), the names the consent text lists
+# (agent_names_text), and the variables a credential launch injects
+# (build_launch_plan, run_argv).  Adding an agent is one row here; a site that
+# hard-codes an agent instead would let a manifest mount over its credentials
+# without the consent text showing anything amiss (MAINT-05).
+AGENT_ROSTER = (
+    AgentState("claude", ".claude", "claude", config_env="CLAUDE_CONFIG_DIR"),
+    AgentState("codex", ".codex", "codex"),
+    AgentState("opencode", ".local/share/opencode", "opencode"),
+    AgentState("opencode-config", ".config/opencode", "opencode"),
+    AgentState("pi", ".pi/agent", "pi"),
+)
+AGENT_STATE_LEAVES = tuple(entry.leaf for entry in AGENT_ROSTER)
+
+
+def agent_names_text(conjunction: str = "") -> str:
+    """The roster's agent names in order, once each: "claude, codex, opencode, and pi"."""
+    names = list(dict.fromkeys(entry.agent for entry in AGENT_ROSTER))
+    if conjunction and len(names) > 1:
+        names[-1] = conjunction + " " + names[-1]
+    return ", ".join(names)
+
+
+def agent_config_env(home: str) -> list[tuple[str, str]]:
+    """The (variable, path) pairs a credential launch injects, in roster order."""
+    return [(entry.config_env, home + "/" + entry.target) for entry in AGENT_ROSTER if entry.config_env]
 
 
 def checkout_root() -> bytes:
@@ -1298,14 +1470,14 @@ def refuse_socket_mounts(config: dict) -> None:
 # is kept only under the project's credential grant; see credential_sources().
 # Best-effort, not exhaustive: a store missing here rides build/run approval
 # like any other mount.  jms's own agent-state pool is not listed because
-# protected_sources() already refuses it outright.
+# protected_sources() already refuses it outright.  The host agents' own
+# sign-ins, which jms never mounts on its own, follow from AGENT_ROSTER's
+# targets in credential_sources().
 CREDENTIAL_PATHS = (
     ".ssh", ".gnupg", ".config/gh", ".aws", ".azure", ".config/gcloud", ".kube",
     ".docker", ".netrc", ".npmrc", ".pypirc", ".git-credentials",
     ".cargo/credentials.toml", ".vault-token", ".terraform.d", ".m2/settings.xml",
     ".gradle/gradle.properties", ".1password", "Library/Keychains",
-    # The host agents' own sign-ins, which jms never mounts on its own.
-    ".claude", ".codex", ".local/share/opencode", ".config/opencode", ".pi/agent",
 )
 # Variables that relocate a credential store; KUBECONFIG is a path list.
 CREDENTIAL_PATH_VARIABLES = ("GNUPGHOME", "DOCKER_CONFIG", "KUBECONFIG", "AWS_SHARED_CREDENTIALS_FILE")
@@ -1314,7 +1486,8 @@ CREDENTIAL_PATH_VARIABLES = ("GNUPGHOME", "DOCKER_CONFIG", "KUBECONFIG", "AWS_SH
 def credential_sources() -> list[bytes]:
     """Canonical credential-store paths, resolved as mount sources are."""
     home = home_path()
-    paths = [home + b"/" + relative.encode() for relative in CREDENTIAL_PATHS]
+    relatives = CREDENTIAL_PATHS + tuple(entry.target for entry in AGENT_ROSTER)
+    paths = [home + b"/" + relative.encode() for relative in relatives]
     for name in CREDENTIAL_PATH_VARIABLES:
         # A relative entry depends on the caller's cwd; only absolute ones are checked.
         paths += [item for item in os.environb.get(name.encode(), b"").split(b":")
@@ -1384,10 +1557,8 @@ def valid_target(value: str, home: str) -> bool:
 
 
 def reserved_mount_targets(home: str) -> frozenset[str]:
-    return frozenset({"/work", home + "/.claude", home + "/.codex",
-                      home + "/.local/share/opencode",
-                      home + "/.config/opencode", home + "/.pi/agent",
-                      home + "/.config/jms-shell"})
+    return frozenset({"/work", home + "/.config/jms-shell"}
+                     | {home + "/" + entry.target for entry in AGENT_ROSTER})
 
 
 def target_overlaps_reserved(value: str, home: str) -> bool:
@@ -1630,32 +1801,67 @@ def extra_mount_mode(mount: dict) -> str:
 GIT_WRITABLE_NOTE = "container can write .git (hooks and config there run on your host)"
 
 
+# Every capability line beyond what a definition with no manifest gets --
+# the host path kept, a writable .git, any extra host mount -- carries this
+# one marker, so escalations read alike whatever their wording (UX-11).
+ESCALATION_MARK = "!"
+
+
+def capability_bullet(escalation) -> str:
+    """The list bullet: ESCALATION_MARK when escalation is truthy, else "-"."""
+    return (ESCALATION_MARK if escalation else "-") + " "
+
+
+# Consent prose is read on an 80-column terminal (UX-12).
+CONSENT_WIDTH = 76
+QUOTED = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def consent_text(text: str, keep: tuple = ()) -> str:
+    """Wrap one consent sentence, note or question at CONSENT_WIDTH columns.
+
+    Continuation lines are indented two spaces.  A quoted path and every
+    string in keep (a command to copy) are never split across lines; quote()
+    output is ASCII, so a no-break space cannot occur in it.
+    """
+    def glue(span):
+        return span.replace(" ", "\xa0")
+    for item in keep:
+        text = text.replace(item, glue(item))
+    text = QUOTED.sub(lambda match: glue(match.group(0)), text)
+    return textwrap.fill(text, CONSENT_WIDTH, subsequent_indent="  ", break_long_words=False,
+                         break_on_hyphens=False).replace("\xa0", " ")
+
+
 def print_capability_summary(root: bytes, config: dict, git_writable_flag: bool = False) -> None:
     """Describe every project-controlled runtime capability before consent.
 
     git_writable_flag is launch --git-writable, which drops the read-only
     .git bind just as run.git_writable does, so the summary must say so.
     """
-    print("Project container capabilities:", file=sys.stderr)
+    print("Project container capabilities (" + ESCALATION_MARK + " marks access beyond the default):",
+          file=sys.stderr)
     print("- build and run: arbitrary commands with unrestricted network and root via passwordless sudo",
           file=sys.stderr)
-    print("- project mount: " + quote(root) + " -> "
+    print(capability_bullet(config["preserve_host_path"]) + "project mount: " + quote(root) + " -> "
           + (quote(root) + " (host path preserved)" if config["preserve_host_path"] else "\"/work\"")
           + " read-write", file=sys.stderr)
     sources = [name for name, on in (("run.git_writable", config["git_writable"]),
                                      ("--git-writable", git_writable_flag)) if on]
-    print("- project .git: " + (GIT_WRITABLE_NOTE + " (" + ", ".join(sources) + ")" if sources
-                                else "read-only when it is a directory at the project root"),
+    print(capability_bullet(sources) + "project .git: "
+          + (GIT_WRITABLE_NOTE + " (" + ", ".join(sources) + ")" if sources
+             else "read-only when it is a directory at the project root"),
           file=sys.stderr)
     for mount in config["mounts"]:
         mode = extra_mount_mode(mount)
-        print("- extra mount: " + quote(mount["source"]) + " -> " + quote(mount["target"]) + " " + mode
+        print(capability_bullet(True) + "extra mount: " + quote(mount["source"]) + " -> "
+              + quote(mount["target"]) + " " + mode
               + ("; HOST CREDENTIAL PATH: mounted only with the credential grant"
                  if mount.get("credential") else ""), file=sys.stderr)
     for key, value in sorted(config["env"].items()):
         print("- environment: " + quote(key + "=" + value), file=sys.stderr)
     print("- entry: " + " ".join(quote(value) for value in config["entry"]), file=sys.stderr)
-    print("- agent state (credentials and configuration for claude, codex, opencode, pi): " +
+    print("- agent state (credentials and configuration for " + agent_names_text() + "): " +
           ("read-write mount eligible with a separate grant" if config["mount_auth"] else
            "read-write mount suppressed by manifest"), file=sys.stderr)
 
@@ -1675,18 +1881,25 @@ def credential_decline_note(command: str) -> str:
             "to change the answer later: " + command)
 
 
+def print_credential_notes(scope_note: str, command: str) -> None:
+    """The notes that precede every credential question."""
+    print(consent_text(scope_note), file=sys.stderr)
+    print(consent_text(credential_decline_note(command), keep=(command,)), file=sys.stderr)
+
+
 def credential_question(config: dict) -> str:
     """The project credential question, naming every mount it also decides."""
     covered = [mount["source"] for mount in config["mounts"] if mount.get("credential")]
-    return ("Also mount persistent agent state -- credentials and configuration for claude, codex, "
-            "opencode, and pi -- with read-write access"
+    return ("Also mount persistent agent state -- credentials and configuration for "
+            + agent_names_text("and") + " -- with read-write access"
             + (", and keep the manifest's host credential mounts " + ", ".join(quote(item) for item in covered)
                if covered else "") + "? [y/N] ")
 
 
 def consent_input(question: str) -> str:
     """Keep the complete prompt on the stderr TTY used by the availability gate."""
-    print(question, end="", file=sys.stderr, flush=True)
+    # Wrapped for display; the trailing space after [y/N] is where the answer goes.
+    print(consent_text(question.rstrip()) + " ", end="", file=sys.stderr, flush=True)
     # An attached `container run --interactive` exits with O_NONBLOCK left on
     # the shared terminal description (observed with apple/container 1.2.2);
     # an empty non-blocking read would surface as the default-No EOF before
@@ -1700,93 +1913,150 @@ def consent_input(question: str) -> str:
         return ""
 
 
-def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = None):
-    pid = hashlib.sha256(root).hexdigest()
-    store = read_store()
-    record = store["projects"].get(pid)
-    env_pin = os.environ.get("JMS_TRUST_FINGERPRINT")
-    if getattr(args, "trust", False):
+@dataclass(frozen=True)
+class TrustDecision:
+    """What approve() must do, decided from its inputs alone (no I/O).
+
+    step is one of:
+      "refused"   -- refusal: a pin or --fingerprint does not match
+      "granted"   -- nothing to ask; return (build_ok, auth_ok)
+      "record"    -- `jms trust --fingerprint`: record build/run and record_auth
+      "ask_build" -- ask the build/run question, then the credential question
+                     when ask_credentials, and record the answers
+      "ask_auth"  -- build/run is granted; ask only the credential question,
+                     recording an accepted grant when persist_auth
+    """
+    step: str
+    build_ok: bool
+    auth_ok: bool
+    no_auth: bool
+    refusal: tuple | None = None         # (message, exit code) before any output
+    notice: str | None = None            # why consent is being asked again
+    show_summary: bool = False           # print the capability summary
+    prompt_refusal: tuple | None = None  # (message, exit code) after the summary: no TTY to ask on
+    record_auth: bool = False            # "record": the credential grant to store
+    ask_credentials: bool = False        # "ask_build": follow with the credential question
+    persist_auth: bool = False           # "ask_auth": store an accepted credential grant
+
+
+def trust_decision(root: bytes, tf: str, record: dict | None, *, action: str, trust: bool,
+                   fingerprint: str | None, env_pin: str | None, wants_auth: bool, no_auth: bool,
+                   tty: bool) -> TrustDecision:
+    """The trust truth table: stored record, pins, flags and TTY -> what approve() does.
+
+    The boolean --trust is a one-shot build/run grant that drops the env pin;
+    it never grants credentials (SECURITY.md).  A one-shot credential grant
+    needs the exact JMS_TRUST_FINGERPRINT pin together with --auth.
+    """
+    if trust:
         env_pin = None
     if env_pin is not None and env_pin != tf:
-        fail("JMS_TRUST_FINGERPRINT does not match this project spec (pin " + quote(env_pin[:12])
-             + ", current " + tf[:12] + ") -- review the definition, then get the full "
-             "fingerprint with: jms inspect " + quote(root), 3)
+        return TrustDecision("refused", False, False, no_auth, refusal=(
+            "JMS_TRUST_FINGERPRINT does not match this project definition (pin " + quote(env_pin[:12])
+            + ", current " + tf[:12] + ") -- review the definition, then get the full "
+            "fingerprint with: jms inspect " + quote(root), 3))
+    if fingerprint and fingerprint != tf:
+        return TrustDecision("refused", False, False, no_auth, refusal=(
+            "--fingerprint does not match this project definition (given " + quote(fingerprint[:12])
+            + ", current " + tf[:12] + ") -- review the definition, then get the full "
+            "fingerprint with: jms inspect " + quote(root), 3))
     live = record if record and record.get("tf") == tf else None
-    one_shot = getattr(args, "trust", False) or env_pin == tf or getattr(args, "fingerprint", None) == tf
-    wants_auth = getattr(args, "auth", False)
-    no_auth = getattr(args, "no_auth", False)
-    if getattr(args, "fingerprint", None) and args.fingerprint != tf:
-        fail("--fingerprint does not match this project spec (given " + quote(args.fingerprint[:12])
-             + ", current " + tf[:12] + ") -- review the definition, then get the full "
-             "fingerprint with: jms inspect " + quote(root), 3)
-    interactive_replacement = action == "trust" and getattr(args, "fingerprint", None) is None
+    one_shot = trust or env_pin == tf or fingerprint == tf
     build_ok = bool(live and live.get("grants", {}).get("build_run")) or one_shot
     # A one-shot credential grant requires the audited exact pin; the boolean
     # --trust flag never satisfies it (SECURITY.md forbids that bypass).
     auth_ok = bool(live and live.get("grants", {}).get("auth")) or (wants_auth and env_pin == tf)
-    if interactive_replacement:
+    if action == "trust" and fingerprint is None:
         # `jms trust` always replaces the two decisions explicitly, even when
         # the stored fingerprint already matches.
         build_ok = False
         auth_ok = False
+    notice = None
     if record and record.get("tf") == BASE_CREDENTIAL_TF:
-        print("project definition added since the credential answer for this checkout was recorded",
-              file=sys.stderr)
+        notice = "project definition added since the credential answer for this checkout was recorded"
     elif record and record.get("tf") != tf:
-        print("project definition changed since it was last trusted (fingerprint " +
-              record["tf"][:12] + " -> " + tf[:12] + ")", file=sys.stderr)
-    if action == "trust" or getattr(args, "trust", False) or not build_ok or (wants_auth and not auth_ok):
-        print_capability_summary(root, config or default_config(),
-                                 git_writable_flag=getattr(args, "git_writable", False))
+        notice = ("project definition changed since it was last trusted (fingerprint " +
+                  record["tf"][:12] + " -> " + tf[:12] + ")")
+    show_summary = action == "trust" or trust or not build_ok or (wants_auth and not auth_ok)
+    common = dict(build_ok=build_ok, auth_ok=auth_ok, no_auth=no_auth, notice=notice,
+                  show_summary=show_summary)
+    if action == "trust" and fingerprint == tf:
+        # This is the explicitly non-interactive, durable trust path.
+        return TrustDecision("record", **common, record_auth=wants_auth and not no_auth)
+    if not build_ok:
+        no_tty_refusal = None
+        if not tty:
+            no_tty_refusal = ("project trust is required but prompting is unavailable -- approve it on a "
+                              "terminal with: jms trust " + quote(root) + "; or, after reviewing the "
+                              "capabilities above: jms trust " + quote(root) + " --fingerprint " + tf, 3)
+        return TrustDecision("ask_build", **common, ask_credentials=not no_auth,
+                             prompt_refusal=no_tty_refusal)
+    if wants_auth and not auth_ok:
+        # --trust is one-shot for both grants: an accepted escalation applies to
+        # this invocation only and leaves any existing record untouched.
+        return TrustDecision("ask_auth", **common, persist_auth=bool(live) and not trust,
+                             prompt_refusal=None if tty else (
+            "credential access is required but prompting is unavailable -- grant it on a "
+            "terminal with: jms trust " + quote(root) + "; or, for one invocation, "
+            + ("drop --trust and " if trust else "")
+            + "set JMS_TRUST_FINGERPRINT=" + tf + " and keep --auth", 3))
+    return TrustDecision("granted", **common)
+
+
+def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = None):
+    """Carry out trust_decision(): print, prompt and record; returns (build_ok, auth_ok)."""
+    config = config or default_config()
+    pid = hashlib.sha256(root).hexdigest()
+    decision = trust_decision(
+        root, tf, read_store()["projects"].get(pid), action=action,
+        trust=getattr(args, "trust", False), fingerprint=getattr(args, "fingerprint", None),
+        env_pin=os.environ.get("JMS_TRUST_FINGERPRINT"), wants_auth=getattr(args, "auth", False),
+        no_auth=getattr(args, "no_auth", False), tty=sys.stdin.isatty() and sys.stderr.isatty())
+    if decision.refusal:
+        fail(*decision.refusal)
+    if decision.notice:
+        print(consent_text(decision.notice), file=sys.stderr)
+    if decision.step == "ask_build" and not decision.prompt_refusal:
+        # The header names what is asking before the list it is asking about (UX-11).
+        print(consent_text(quote(root) + " defines a custom container (trust fingerprint " + tf[:12] + ")."),
+              file=sys.stderr)
+    if decision.show_summary:
+        print_capability_summary(root, config, git_writable_flag=getattr(args, "git_writable", False))
+    if decision.prompt_refusal:
+        fail(*decision.prompt_refusal)
     def record_approval(auth):
-        new = {"root": root.decode("utf-8"), "tf": tf, "grants": {"build_run": True, "auth": auth},
-               "granted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "jms_version": __version__}
+        new = make_trust_record(root, tf, auth)
         def replace(current):
             current["projects"][pid] = new
             return True
         update_store(replace)
-    if action == "trust" and getattr(args, "fingerprint", None) == tf:
-        # This is the explicitly non-interactive, durable trust path.
-        record_approval(wants_auth and not no_auth)
-        return True, wants_auth and not no_auth
-    if not build_ok:
-        if not (sys.stdin.isatty() and sys.stderr.isatty()):
-            fail("project trust is required but prompting is unavailable -- approve it on a "
-                 "terminal with: jms trust " + quote(root) + "; or, after reviewing the "
-                 "capabilities above: jms trust " + quote(root) + " --fingerprint " + tf, 3)
-        print(quote(root) + " defines a custom container (trust fingerprint " + tf[:12] + ").",
+    build_ok, auth_ok = decision.build_ok, decision.auth_ok
+    if decision.step == "record":
+        record_approval(decision.record_auth)
+        return True, decision.record_auth
+    if decision.step == "ask_build":
+        print(consent_text("Approving lets it run arbitrary commands at build and run time and mount the project "
+                           "read-write at " + ("its own host path " + quote(root) + " (run.preserve_host_path)."
+                                               if config["preserve_host_path"] else "/work.")),
               file=sys.stderr)
-        print("Approving lets it run arbitrary commands at build and run time and mount the project read-write at "
-              + ("its own host path " + quote(root) + " (run.preserve_host_path)."
-                 if (config or default_config())["preserve_host_path"] else "/work."),
-              file=sys.stderr)
-        if (config or default_config())["git_writable"]:
-            print("It also sets run.git_writable: " + GIT_WRITABLE_NOTE + ".", file=sys.stderr)
+        if config["git_writable"]:
+            print(consent_text("It also sets run.git_writable: " + GIT_WRITABLE_NOTE + "."), file=sys.stderr)
         if consent_input("Allow build & run? [y/N] ").strip().lower() not in ("y", "yes"):
             fail("project trust declined", 3)
         build_ok = True
-        if not no_auth:
-            if not (config or default_config())["mount_auth"]:
-                print("persistent agent state (credentials and configuration): not mounted by default (manifest mount_auth = false); --auth required",
-                      file=sys.stderr)
-            print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
-            print(credential_decline_note("jms trust " + quote(root)), file=sys.stderr)
-            auth_ok = consent_input(credential_question(config or default_config())).strip().lower() in ("y", "yes")
+        if decision.ask_credentials:
+            if not config["mount_auth"]:
+                print(consent_text("persistent agent state (credentials and configuration): not mounted by "
+                                   "default (manifest mount_auth = false); --auth required"), file=sys.stderr)
+            print_credential_notes(CREDENTIAL_SCOPE_NOTE, "jms trust " + quote(root))
+            auth_ok = consent_input(credential_question(config)).strip().lower() in ("y", "yes")
         record_approval(auth_ok)
-    elif wants_auth and not auth_ok:
-        if not (sys.stdin.isatty() and sys.stderr.isatty()):
-            fail("credential access is required but prompting is unavailable -- grant it on a "
-                 "terminal with: jms trust " + quote(root) + "; or, for one invocation, "
-                 + ("drop --trust and " if getattr(args, "trust", False) else "")
-                 + "set JMS_TRUST_FINGERPRINT=" + tf + " and keep --auth", 3)
-        print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
-        print(credential_decline_note("jms trust " + quote(root)), file=sys.stderr)
-        auth_ok = consent_input(credential_question(config or default_config())).strip().lower() in ("y", "yes")
-        # --trust is one-shot for both grants: an accepted escalation applies to
-        # this invocation only and leaves any existing record untouched.
-        if auth_ok and live and not getattr(args, "trust", False):
+    elif decision.step == "ask_auth":
+        print_credential_notes(CREDENTIAL_SCOPE_NOTE, "jms trust " + quote(root))
+        auth_ok = consent_input(credential_question(config)).strip().lower() in ("y", "yes")
+        if auth_ok and decision.persist_auth:
             record_approval(True)
-    return build_ok, auth_ok and not no_auth
+    return build_ok, auth_ok and not decision.no_auth
 
 
 # A launch with no definition records its credential answer in the ordinary
@@ -1859,10 +2129,11 @@ def base_launch_auth(workdir: bytes, args) -> bool:
               + quote(root) + " and no terminal to ask on; pass --auth to mount it for this launch",
               file=sys.stderr)
         return False
-    print(quote(root) + " has no project definition and no recorded credential answer.", file=sys.stderr)
-    print(BASE_CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
-    print(credential_decline_note("jms trust " + quote(root) + " --auth"), file=sys.stderr)
-    answer = consent_input("Mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
+    print(consent_text(quote(root) + " has no project definition and no recorded credential answer."),
+          file=sys.stderr)
+    print_credential_notes(BASE_CREDENTIAL_SCOPE_NOTE, "jms trust " + quote(root) + " --auth")
+    answer = consent_input("Mount persistent agent state -- credentials and configuration for "
+                           + agent_names_text("and") + " -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
     record_base_answer(root, answer)
     return answer
 
@@ -1870,9 +2141,7 @@ def base_launch_auth(workdir: bytes, args) -> bool:
 def record_base_answer(root: bytes, answer: bool):
     """Remember a no-definition credential answer for a base_credential_root()."""
     pid = hashlib.sha256(root).hexdigest()
-    new = {"root": root.decode("utf-8"), "tf": BASE_CREDENTIAL_TF,
-           "grants": {"build_run": True, "auth": answer},
-           "granted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "jms_version": __version__}
+    new = make_trust_record(root, BASE_CREDENTIAL_TF, answer)
     def remember(store):
         store["projects"][pid] = new
         return True
@@ -1881,7 +2150,7 @@ def record_base_answer(root: bytes, answer: bool):
 
 def runtime_ready():
     backend = runtime()
-    version = runtime_run(backend.version_argv(), check=False)
+    version = runtime_run(backend.version_argv(), check=False, timeout=query_timeout())
     output = version.stdout
     try:
         first_line = output.decode("utf-8").split("\n", 1)[0]
@@ -1932,6 +2201,11 @@ def run_build(context: bytes | str, tag: str, args, labels: dict[str, str] | Non
     # LABEL, so no image can preseed the launch marker (§5 provenance).
     labels = dict(labels or {})
     labels["jms.container"] = "image"
+    # Build provenance (OPS-05): which jms, and which checkout, built this.
+    labels["jms.version"] = __version__
+    commit = checkout_commit()
+    if commit is not None:
+        labels["jms.commit"] = commit
     cmd = backend.build_argv(context_text, tag, labels,
                              no_cache=getattr(args, "no_cache", False),
                              pull=getattr(args, "pull", False), project=project)
@@ -1956,14 +2230,68 @@ def run_build(context: bytes | str, tag: str, args, labels: dict[str, str] | Non
         raise
 
 
+def build_lock_root() -> Path:
+    return Path(os.fsdecode(home_path())) / ".local" / "share" / "jmscontainers" / "locks"
+
+
+@contextmanager
+def build_lock(key: str):
+    """Serialize builds of one image (OPS-12): a second `jms build` of the
+    same project waits for the first, then finds its image up to date."""
+    root = build_lock_root()
+    root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root.mkdir(mode=0o700, exist_ok=True)
+    fd = os.open(root / (key + ".lock"), os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("waiting for another jms build of this image to finish...", file=sys.stderr)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def checkout_commit() -> str | None:
+    """Best-effort HEAD commit of the jms checkout, suffixed `-dirty` when
+    tracked files differ; None when unknown.  Never fails a build (OPS-05)."""
+    root = os.fsdecode(checkout_root())
+    if not os.path.exists(os.path.join(root, ".git")):
+        return None
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    vcs = "git"
+    try:
+        head = subprocess.run([vcs, "-C", root, "rev-parse", "--verify", "HEAD"], env=env,
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+        if head.returncode or not re.fullmatch(rb"[0-9a-f]{40}([0-9a-f]{24})?\n", head.stdout):
+            return None
+        dirty = subprocess.run([vcs, "--no-optional-locks", "-C", root, "status", "--porcelain", "--untracked-files=no"],
+                               env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = head.stdout.decode("ascii").strip()
+    if dirty.returncode == 0 and dirty.stdout.strip():
+        return commit + "-dirty"
+    return commit
+
+
 def build_base(args):
+    with build_lock("base"):
+        _build_base(args)
+
+
+def _build_base(args):
     print("building " + quote(BASE), file=sys.stderr)
     run_build(checkout_root(), BASE, args, project=False)
 
 
 def ensure_base(args) -> None:
     if not image_exists(BASE):
-        build_base(args)
+        with build_lock("base"):
+            # Re-check under the lock: a concurrent jms may have just built it.
+            if not image_exists(BASE):
+                _build_base(args)
 
 
 def project_data(workdir: bytes):
@@ -2146,6 +2474,11 @@ def shared_base_dependency(spec: bytes) -> ResolvedImage | None:
 
 
 def build_project(data, args):
+    with build_lock(data["pid"]):
+        return _build_project(data, args)
+
+
+def _build_project(data, args):
     tag = data["tag_prefix"] + ":" + data["tf"][:12]
     # A base-derived project is stale when its recorded base id (stamped as
     # the jms.base label at build time) no longer matches the local base
@@ -2191,11 +2524,7 @@ def build_project(data, args):
 def agent_state_mounts(user="isolation"):
     root = agent_state_root()
     home = "/root" if user == "root" else "/home/" + user
-    return [(root / "claude", home + "/.claude"),
-            (root / "codex", home + "/.codex"),
-            (root / "opencode", home + "/.local/share/opencode"),
-            (root / "opencode-config", home + "/.config/opencode"),
-            (root / "pi", home + "/.pi/agent")]
+    return [(root / entry.leaf, home + "/" + entry.target) for entry in AGENT_ROSTER]
 
 
 def shell_state_mount(user="isolation"):
@@ -2345,7 +2674,7 @@ def launch_plan(workdir: bytes, data, args, image: str, auth: bool) -> LaunchPla
     mount_auth = auth and (config["mount_auth"] or args.auth)
     env = []
     if mount_auth:
-        env.append(("CLAUDE_CONFIG_DIR", effective_home + "/.claude"))
+        env += agent_config_env(effective_home)
     # The host's zone is merged into the manifest's own environment before
     # sorting, not appended beside it: a manifest that pins TZ must replace
     # the inherited value outright.  Emitting both and relying on a runtime's
@@ -2421,7 +2750,7 @@ def cmd_build(args):
 def cmd_launch(args):
     if args.auth and args.no_auth: fail("--auth and --no-auth cannot be combined", 2)
     if args.workdir is not None and args.name is not None:
-        fail("a positional project name cannot be combined with --workdir", 2)
+        fail("a positional PATH cannot be combined with --workdir", 2)
     validate_launch_cli_runtime_args(args)
     runtime()  # side-effect-free selection: refusals exit 2 before any consent prompt
     operand = args.workdir if args.workdir is not None else args.name
@@ -2455,15 +2784,25 @@ def cmd_launch(args):
     runtime_run(runtime().run_argv(plan), replace=True)
 
 
-def cmd_trust(args):
-    if args.auth and args.no_auth:
-        fail("--auth and --no-auth cannot be combined", 2)
+def trust_verb(args) -> str | None:
+    """The trust verb, or None to approve; settles `trust [path]` in one place.
+
+    The historical grammar is `trust [path]`; reserve only the three verbs,
+    so an absolute path remains a valid first positional operand: any other
+    first operand is the path itself.
+    """
     action = getattr(args, "trust_action", None)
-    # The historical grammar is `trust [path]`; reserve only the three verbs,
-    # so an absolute path remains a valid first positional operand.
     if action not in (None, "list", "revoke", "prune"):
         if args.path: fail("trust accepts one project path", 2)
         args.path, action = action, None
+    return action
+
+
+def cmd_trust(args):
+    """`jms trust`: check the flags each verb accepts, then hand off to it."""
+    if args.auth and args.no_auth:
+        fail("--auth and --no-auth cannot be combined", 2)
+    action = trust_verb(args)
     if action in ("list", "revoke", "prune"):
         if getattr(args, "fingerprint", None):
             fail("--fingerprint is valid only when approving project trust", 2)
@@ -2471,89 +2810,100 @@ def cmd_trust(args):
             fail("--auth and --no-auth are valid only when approving project trust", 2)
     if args.purge_images and action != "revoke":
         fail("--purge-images is valid only with trust revoke", 2)
-    if action == "list":
-        if args.path: fail("trust list does not take a path", 2)
-        store = read_store()
-        for pid, record in sorted(store["projects"].items()):
-            state = "present" if os.path.isdir(record["root"]) else "missing"
-            # A remembered no-definition answer is a credential choice, not
-            # an approved definition; mark it so the two read differently.
-            kind = "  no-definition" if record["tf"] == BASE_CREDENTIAL_TF else ""
-            print("%s  %s  %s  auth=%s%s" % (pid[:12], quote(record["root"]), state,
-                                             "yes" if record["grants"]["auth"] else "no", kind))
-        return
-    if action == "prune":
-        if args.path: fail("trust prune does not take a path", 2)
-        removed = []
-        def prune(store):
-            for pid, record in list(store["projects"].items()):
-                if not os.path.isdir(record["root"]):
-                    removed.append((pid, record)); del store["projects"][pid]
-            return bool(removed)
-        update_store(prune)
-        for pid, record in removed: print("pruned trust record " + pid[:12] + " " + quote(record["root"]))
-        return
-    if action == "revoke":
-        if not args.path: fail("trust revoke requires a project path", 2)
-        workdir, _ = resolve_operand(args.path)
-        root, _ = discover(workdir, consume_spec=False)
-        base = None
-        if root is None:
-            # Every vanished definition's record on the way to the checkout
-            # root -- any one left would still govern launches here and
-            # regain its grants if its definition came back -- and otherwise
-            # the checkout's remembered no-definition answer.
-            base_root, base, vanished = base_credential_records(read_store(), workdir)
-            roots = [path for path, _ in vanished] or [base_root]
-        else:
-            roots = [root]
-        pids = [hashlib.sha256(root).hexdigest() for root in roots]
-        if args.purge_images:
-            runtime()  # select before mutating the store: a refusal leaves it untouched
-        revoked = []
-        def revoke(store):
-            revoked.extend(root for root, pid in zip(roots, pids) if pid in store["projects"])
-            if not revoked:
-                if args.purge_images:
-                    return False
-                fail("no trust record for " + quote(roots[0]))
-            for pid in pids:
-                store["projects"].pop(pid, None)
-            return True
-        update_store(revoke)
-        for root in revoked:
-            print("revoked trust for " + quote(root))
+    {"list": trust_list, "prune": trust_prune, "revoke": trust_revoke, None: trust_approve}[action](args)
+
+
+def trust_list(args):
+    """`jms trust list`: one line per record, marking missing roots and no-definition answers."""
+    if args.path: fail("trust list does not take a path", 2)
+    store = read_store()
+    for pid, record in sorted(store["projects"].items()):
+        state = "present" if os.path.isdir(record["root"]) else "missing"
+        # A remembered no-definition answer is a credential choice, not
+        # an approved definition; mark it so the two read differently.
+        kind = "  no-definition" if record["tf"] == BASE_CREDENTIAL_TF else ""
+        print("%s  %s  %s  auth=%s%s" % (pid[:12], quote(record["root"]), state,
+                                         "yes" if record["grants"]["auth"] else "no", kind))
+
+
+def trust_prune(args):
+    """`jms trust prune`: drop every record whose root directory is gone."""
+    if args.path: fail("trust prune does not take a path", 2)
+    removed = []
+    def prune(store):
+        for pid, record in list(store["projects"].items()):
+            if not os.path.isdir(record["root"]):
+                removed.append((pid, record)); del store["projects"][pid]
+        return bool(removed)
+    update_store(prune)
+    for pid, record in removed: print("pruned trust record " + pid[:12] + " " + quote(record["root"]))
+
+
+def trust_revoke(args):
+    """`jms trust revoke PATH [--purge-images]`: forget the records governing PATH."""
+    if not args.path: fail("trust revoke requires a project path", 2)
+    workdir, _ = resolve_operand(args.path)
+    root, _ = discover(workdir, consume_spec=False)
+    base = None
+    if root is None:
+        # Every vanished definition's record on the way to the checkout
+        # root -- any one left would still govern launches here and
+        # regain its grants if its definition came back -- and otherwise
+        # the checkout's remembered no-definition answer.
+        base_root, base, vanished = base_credential_records(read_store(), workdir)
+        roots = [path for path, _ in vanished] or [base_root]
+    else:
+        roots = [root]
+    pids = [hashlib.sha256(root).hexdigest() for root in roots]
+    if args.purge_images:
+        runtime()  # select before mutating the store: a refusal leaves it untouched
+    revoked = []
+    def revoke(store):
+        revoked.extend(root for root, pid in zip(roots, pids) if pid in store["projects"])
         if not revoked:
-            print("trust already revoked for " + quote(roots[0]))
-        if base and revoked and base["root"].encode("utf-8") not in revoked:
-            print("note: the remembered credential answer for " + quote(base["root"]) + " (auth=" +
-                  ("yes" if base["grants"]["auth"] else "no") + ") now applies here; revoke again "
-                  "to remove it", file=sys.stderr)
-        if args.purge_images:
-            # Revocation committed above, so every purge-path failure --
-            # readiness, enumeration, or removal -- keeps the "trust was
-            # revoked, but image purge failed" split (MIR-048).
-            try:
-                runtime_ready()
-                schedule = [step for root, pid in zip(roots, pids)
-                            for step in image_removal_schedule(pid, tag_prefix_for(root, pid), keep=0)]
-            except JMSException as exc:
-                fail("trust was revoked, but image purge failed: " + str(exc))
-            def report(ref, result):
-                if result.outcome == "removed":
-                    print("removed image " + quote(ref))
-            results = execute_removal_schedule(schedule, report)
-            failures = [(ref, result) for ref, result in results if result.outcome == "failed"]
-            if failures:
-                detail = "; ".join(quote(ref) + ": " + result.detail for ref, result in failures)
-                fail("trust was revoked, but image purge failed: " + detail)
-        return
+            if args.purge_images:
+                return False
+            fail("no trust record for " + quote(roots[0]))
+        for pid in pids:
+            store["projects"].pop(pid, None)
+        return True
+    update_store(revoke)
+    for root in revoked:
+        print("revoked trust for " + quote(root))
+    if not revoked:
+        print("trust already revoked for " + quote(roots[0]))
+    if base and revoked and base["root"].encode("utf-8") not in revoked:
+        print("note: the remembered credential answer for " + quote(base["root"]) + " (auth=" +
+              ("yes" if base["grants"]["auth"] else "no") + ") now applies here; revoke again "
+              "to remove it", file=sys.stderr)
+    if args.purge_images:
+        # Revocation committed above, so every purge-path failure --
+        # readiness, enumeration, or removal -- keeps the "trust was
+        # revoked, but image purge failed" split (MIR-048).
+        try:
+            runtime_ready()
+            schedule = [step for root, pid in zip(roots, pids)
+                        for step in image_removal_schedule(pid, tag_prefix_for(root, pid), keep=0)]
+        except JMSException as exc:
+            fail("trust was revoked, but image purge failed: " + str(exc))
+        def report(ref, result):
+            if result.outcome == "removed":
+                print("removed image " + quote(ref))
+        results = execute_removal_schedule(schedule, report)
+        failures = [(ref, result) for ref, result in results if result.outcome == "failed"]
+        if failures:
+            detail = "; ".join(quote(ref) + ": " + result.detail for ref, result in failures)
+            fail("trust was revoked, but image purge failed: " + detail)
+
+
+def trust_approve(args):
+    """`jms trust [PATH]`: approve a definition, or record a no-definition credential answer."""
     workdir, _ = resolve_operand(args.path)
     data = project_data(workdir)
     if not data:
         if not (args.auth or args.no_auth):
             fail("no project container definition found -- pass --auth or --no-auth to record "
-                 "the credential answer for launches here without one")
+                 "the credential answer for launches here without one", 2)
         if args.fingerprint:
             fail("--fingerprint is valid only with a project definition", 2)
         root, _, vanished = base_credential_records(read_store(), workdir)
@@ -2564,7 +2914,7 @@ def cmd_trust(args):
                  "longer present; run jms trust revoke " + quote(workdir) + " first")
         record_base_answer(root, args.auth)
         if args.auth:
-            print(BASE_CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
+            print(consent_text(BASE_CREDENTIAL_SCOPE_NOTE), file=sys.stderr)
         print("recorded credential answer for " + quote(root) + ": auth=" + ("yes" if args.auth else "no"))
         return
     approve(data["root"], data["tf"], args, action="trust", config=data["config"])
@@ -2573,7 +2923,7 @@ def cmd_trust(args):
 
 def cmd_inspect(args):
     if args.workdir is not None and args.name is not None:
-        fail("a positional project name cannot be combined with --workdir", 2)
+        fail("a positional PATH cannot be combined with --workdir", 2)
     workdir, _ = resolve_operand(args.workdir if args.workdir is not None else args.name)
     data = project_data(workdir)
     print("workdir: " + quote(workdir))
@@ -2645,7 +2995,10 @@ def cmd_init(args):
         try: os.rmdir(target)
         except OSError: pass
         raise
-    print("created " + quote(str(target / "Containerfile")))
+    for path in created_files:
+        print("created " + quote(str(path)))
+    print("next: edit " + quote(str(target / "Containerfile")) + ", then run jms launch",
+          file=sys.stderr)
 
 
 def container_records() -> list[dict]:
@@ -2698,10 +3051,27 @@ def cmd_clean(args):
     image_refs = sorted(set(image_refs))
     for value in [*ids, *image_refs]:
         runtime_argument(value, usage=False)
+    if not ids and not image_refs:
+        print("nothing to remove", file=sys.stderr)
+        return
     if args.dry_run:
         for ident in ids: print("would remove container " + quote(ident))
         for ref in image_refs: print("would remove image " + quote(ref))
         return
+    # A selected container is usually a live session (launch runs --rm), and
+    # --all --images takes the shared base, so a person at a terminal is asked
+    # first.  Off a terminal clean proceeds as it always has (UX-04).
+    if not args.yes and sys.stdin.isatty() and sys.stderr.isatty():
+        for ident in ids: print("- container " + quote(ident), file=sys.stderr)
+        for ref in image_refs: print("- image " + quote(ref), file=sys.stderr)
+        if ids:
+            print("running containers are stopped first, ending any session inside them",
+                  file=sys.stderr)
+        if BASE in image_refs:
+            print("removing the shared base means the next build rebuilds it from scratch",
+                  file=sys.stderr)
+        if consent_input("Remove these? [y/N] ").strip().lower() not in ("y", "yes"):
+            fail("clean declined; nothing was removed")
     # Attempt every scheduled removal, containers before images; aggregate
     # failures and exit 1 rather than aborting mid-list (MIR-048).
     failures = []
@@ -2737,50 +3107,123 @@ class SafeArgumentParser(argparse.ArgumentParser):
         self.exit(2, "%s: error: %s\n" % (self.prog, terminal_safe_text(message)))
 
 
+TOP_DESCRIPTION = """\
+Run AI coding agents (Claude Code, Codex, OpenCode, Pi) or a shell in a
+throwaway container, with your checkout mounted read-write at /work."""
+
+TOP_EPILOG = """\
+terms:
+  PATH          the project directory a command acts on (default: the
+                current directory)
+  definition    a project's .jmscontainer/ directory: its Containerfile and
+                optional jmscontainer.toml
+  fingerprint   SHA-256 of the definition; any change asks for approval again
+  grants        build/run approval and credential access, asked for separately
+  agent state   persistent agent credentials and configuration, mounted only
+                with consent
+  base          the shared image a launch uses when there is no definition
+
+examples:
+  jms build --base                  build the shared base image (once)
+  jms launch                        open a shell in the current checkout
+  jms launch -b yolo-claude         start Claude Code, permission prompts off
+  jms launch -b yolo-claude -- --continue
+                                    pass arguments to the agent after --
+
+environment:
+  JMS_PROJECT_ROOTS      colon-separated directories searched for a bare PATH
+                         name that matches nothing in the current directory
+  JMS_TRUST_FINGERPRINT  approve this exact fingerprint for one invocation
+
+exit status: 0 success (launch: the container's own status), 1 failure,
+2 usage error, 3 trust not granted, 130 interrupted,
+129/143 hangup/terminated. The full reference is
+docs/cli.md in the jms checkout. Run 'jms COMMAND --help' for a command."""
+
+LAUNCH_EPILOG = """\
+PATH is the project directory, given positionally or with -w, not both.
+-n NAME names the container, not the project. Everything after -- is
+appended to the entry program's arguments, so jms never parses it.
+
+examples:
+  jms launch ../sibling             launch another checkout
+  jms launch -b yolo-codex          start Codex directly
+  jms launch --no-auth --no-network review code you did not write, offline
+  jms launch -b yolo-claude -- --continue
+                                    pass arguments to the agent"""
+
+TRUST_EPILOG = """\
+trust takes PATH positionally only (no -w). list, revoke and prune are
+reserved words: pass a directory literally named one of them as ./list
+or an absolute path.
+
+examples:
+  jms trust                         review and approve the current project
+  jms trust . --fingerprint HEX64   approve non-interactively (automation)
+  jms trust list                    show durable grants
+  jms trust revoke .                forget this project's grants"""
+
+
 def parser():
-    p = SafeArgumentParser(prog="jms",
-                           description="Build and run trust-gated development containers.")
+    p = SafeArgumentParser(prog="jms", description=TOP_DESCRIPTION, epilog=TOP_EPILOG,
+                           formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version=__version__)
-    sub = p.add_subparsers(dest="command", required=True)
+    sub = p.add_subparsers(dest="command", required=True, metavar="COMMAND",
+                           title="commands")
+    def command(name, help, description, epilog=None):
+        return sub.add_parser(name, help=help, description=description, epilog=epilog,
+                              formatter_class=argparse.RawDescriptionHelpFormatter)
     def flags(sp, *pairs):
         for name, text in pairs:
             sp.add_argument(name, action="store_true", help=text)
-    WORKDIR_HELP = "project root: absolute or relative path (default: current directory)"
-    NAME_HELP = ("project root: absolute or relative path, or a bare name when "
-                 "JMS_PROJECT_ROOTS is set (default: current directory)")
+    # One help string for both operand forms: they share resolve_operand(),
+    # so JMS_PROJECT_ROOTS applies to -w exactly as it does to PATH.
+    PATH_HELP = ("project directory: absolute or relative path, or a bare name "
+                 "found via JMS_PROJECT_ROOTS (default: current directory)")
+    def workdir(sp, positional=False):
+        if positional:
+            sp.add_argument("name", nargs="?", metavar="PATH", help=PATH_HELP + "; or use -w")
+        sp.add_argument("-w", "--workdir", metavar="PATH", help=PATH_HELP)
     NO_AUTH_HELP = "do not mount agent state (credentials and configuration)"
     NO_CACHE_HELP = "build without reusable layers"
-    b = sub.add_parser("build", help="realize an image from current local inputs",
-                       description="Realize an image from current local inputs.")
-    b.add_argument("-w", "--workdir", help=WORKDIR_HELP)
+    b = command("build", help="build the project's image, or the shared base image",
+                description="Build the discovered project's image, or the shared base image\n"
+                            "with --base or when there is no definition.")
+    workdir(b)
     flags(b, ("--base", "build the shared base image instead of a project image"),
           ("--trust", "one-shot build/run approval for this invocation; never grants credentials"),
           ("--no-auth", NO_AUTH_HELP), ("--no-cache", NO_CACHE_HELP),
           ("--pull", "refresh FROM references from the registry (--base only)"))
     b.set_defaults(func=cmd_build)
-    l = sub.add_parser("launch", help="build or reuse the discovered image and run a container",
-                       description="Build (or reuse) the discovered image and run a container on it.")
-    l.add_argument("name", nargs="?", help=NAME_HELP)
-    l.add_argument("-w", "--workdir", help=WORKDIR_HELP)
+    l = command("launch", help="run an agent or a shell in a container for a project",
+                description="Build (or reuse) the project's image and run a container on it:\n"
+                            "a login shell by default, or an AI agent with -b.",
+                epilog=LAUNCH_EPILOG)
+    workdir(l, positional=True)
     flags(l, ("--trust", "one-shot build/run approval for this invocation; never grants credentials"),
           ("--auth", "mount agent state (with a definition, asks for the credential grant if not already given)"),
           ("--no-auth", NO_AUTH_HELP), ("--no-cache", NO_CACHE_HELP),
           ("--no-network", "run the container with no network; a project image build still uses it"),
           ("--git-writable", "mount the project's .git read-write (hooks and config there run on your host)"))
     l.add_argument("-r", "--root", action="store_true", help="run as root instead of the isolation user")
-    l.add_argument("-b", "--bin", help="entry program to run instead of the configured entry")
-    l.add_argument("-n", "--name", dest="container_name", metavar="NAME", help="container name")
+    l.add_argument("-b", "--bin", metavar="PROGRAM",
+                   help="entry program to run instead of the configured entry, "
+                        "e.g. yolo-claude, yolo-codex, yolo-opencode, yolo-pi")
+    l.add_argument("-n", "--name", dest="container_name", metavar="NAME",
+                   help="container name (not the project; see PATH)")
     l.set_defaults(func=cmd_launch)
-    i = sub.add_parser("inspect", help="report discovery, fingerprint, and trust status",
-                       description="Report discovery, fingerprint, and trust status.")
-    i.add_argument("name", nargs="?", help=NAME_HELP)
-    i.add_argument("-w", "--workdir", help=WORKDIR_HELP); i.set_defaults(func=cmd_inspect)
-    t = sub.add_parser("trust", help="approve a definition, or list/revoke/prune durable grants",
-                       description="Approve a project definition, or manage durable grants "
-                                   "with list, revoke, and prune.")
-    t.add_argument("trust_action", nargs="?", metavar="path|list|revoke|prune",
-                   help="project path to approve, or one of the reserved words")
-    t.add_argument("path", nargs="?", help="project path (revoke operand)")
+    i = command("inspect", help="report discovery, fingerprint, and trust status",
+                description="Report discovery, fingerprint, and trust status without\n"
+                            "prompting, writing, or contacting the runtime.")
+    workdir(i, positional=True); i.set_defaults(func=cmd_inspect)
+    t = command("trust", help="approve a definition, or list/revoke/prune durable grants",
+                description="Approve a project definition, or manage durable grants\n"
+                            "with list, revoke, and prune.",
+                epilog=TRUST_EPILOG)
+    t.add_argument("trust_action", nargs="?", metavar="PATH|list|revoke|prune",
+                   help="project directory to approve (default: current directory), "
+                        "or one of the reserved words")
+    t.add_argument("path", nargs="?", metavar="PATH", help="project directory (revoke operand)")
     t.add_argument("--fingerprint", metavar="HEX64",
                    help="record durable trust non-interactively when the value matches the current fingerprint")
     flags(t, ("--auth", "with --fingerprint, also record the credential grant; interactive approval asks regardless; "
@@ -2788,18 +3231,21 @@ def parser():
           ("--no-auth", "record the credential grant as declined without asking"),
           ("--purge-images", "with revoke: also delete the project's images"))
     t.set_defaults(func=cmd_trust)
-    n = sub.add_parser("init", help="scaffold .jmscontainer/Containerfile in a project",
-                       description="Scaffold .jmscontainer/Containerfile in a project.")
-    n.add_argument("-w", "--workdir", help=WORKDIR_HELP)
+    n = command("init", help="create a project definition (.jmscontainer/Containerfile)",
+                description="Create a project definition: .jmscontainer/Containerfile, and\n"
+                            "jmscontainer.toml with --with-manifest.")
+    workdir(n)
     n.add_argument("--with-manifest", action="store_true", help="also scaffold jmscontainer.toml")
     n.set_defaults(func=cmd_init)
-    c = sub.add_parser("clean", help="remove this project's jms containers",
-                       description="Remove this project's jms containers, or every jms "
-                                   "container with --all.")
-    c.add_argument("-w", "--workdir", help=WORKDIR_HELP)
+    c = command("clean", help="remove this project's jms containers",
+                description="Remove this project's jms containers, or every jms\n"
+                            "container with --all.")
+    workdir(c)
     flags(c, ("--all", "select all jms containers (and the shared base with --images)"),
           ("--images", "also remove the selection's images"),
           ("--dry-run", "report the selection without mutating"))
+    c.add_argument("-y", "--yes", action="store_true",
+                   help="do not ask for confirmation on a terminal")
     c.set_defaults(func=cmd_clean)
     return p
 
@@ -2812,7 +3258,23 @@ def parse_cli(argv=None):
         separator = values.index("--")
         extra = values[separator + 1:]
         values = values[:separator]
-    args = parser().parse_args(values)
+    top = parser()
+    args, unknown = top.parse_known_args(values)
+    if unknown:
+        # Report a mistyped option against the subcommand it was meant for,
+        # with its usage and the nearest real option, instead of the
+        # top-level usage argparse would print.
+        owner = top
+        if values and values[0] == args.command:
+            owner = next(a for a in top._actions
+                         if isinstance(a, argparse._SubParsersAction)).choices[args.command]
+        message = "unrecognized arguments: " + " ".join(unknown)
+        options = [o for a in owner._actions for o in a.option_strings]
+        close = unknown[0].startswith("-") and difflib.get_close_matches(
+            unknown[0].split("=", 1)[0], options, n=1)
+        if close:
+            message += " (did you mean " + close[0] + "?)"
+        owner.error(message)
     if args.command == "launch":
         args.extra = extra
     return args
@@ -2820,6 +3282,7 @@ def parse_cli(argv=None):
 
 def main():
     try:
+        install_signal_forwarding()
         args = parse_cli()
         args.func(args)
     except JMSException as exc:
@@ -2835,6 +3298,12 @@ def main():
         return 1
     except KeyboardInterrupt:
         return 130
+    except Terminated as exc:
+        try:
+            print("error: terminated by " + signal.Signals(exc.signum).name, file=sys.stderr)
+        except OSError:
+            pass  # stderr may be the terminal whose hangup this is
+        return exc.exit_code
 
 
 if __name__ == "__main__":

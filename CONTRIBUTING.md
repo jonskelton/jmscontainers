@@ -13,7 +13,13 @@ make test
 It runs the unit tests and shell lint against the fake backends, so it needs
 no container runtime and no particular host: the apple/container and Podman
 surfaces are both exercised by fakes. PR CI runs exactly that, on Ubuntu
-(Python 3.11, 3.14 and 3.15) and on macOS.
+(Python 3.11, 3.13, 3.14 and 3.15) and on macOS.
+
+Most tests in `tests/test_jms.py` replace the process seam (`runtime_run`)
+and agent-state creation with fakes. `tests/test_seams.py` runs both for
+real: `runtime_run` against a stub `podman` shell script that is the only
+executable on `PATH`, and `ensure_agent_state_directory` under a temporary
+`HOME`. A change to either function needs a test there.
 
 Real-runtime checks are opt-in and intentionally not part of PR CI. Run
 `make integration` — or `scripts/integration.sh a|b|all` for one tier — on
@@ -34,7 +40,9 @@ approval, fingerprinting, and runtime argv derived from the same validated
 data. New CLI or manifest behavior needs adversarial tests, and changes to
 `jmscontainer.toml` require updating its versioned reference. Changes to the
 command grammar, flags, environment variables, or defaults belong in
-[docs/cli.md](docs/cli.md) and `completions/jms.bash` in the same commit. Do
+[docs/cli.md](docs/cli.md) and both completions (`completions/jms.bash`,
+`completions/_jms`) in the same commit; `tests/test_help_and_completion.py`
+checks that every parser flag appears in all three. Do
 not add broad trust bypasses, implicit credential mounts, or build-time secret
 channels.
 
@@ -56,6 +64,14 @@ on the protocol with both backends implementing it. Both backends are covered
 by fakes in `make test`, and per-backend differences that users can observe
 (mount grammar, version qualification, cleanup semantics) need tests
 asserting the two agree wherever they are supposed to.
+
+Security tables are written once and derived everywhere else. Both backends
+build their run argv through `_launch_argv()`, passing only what differs. The
+persistent agents (claude, codex, opencode, pi) are rows in `AGENT_ROSTER`:
+their state mounts, reserved mount targets, host credential paths, consent
+text and injected variables all follow from it, so supporting a new agent is
+one new row, not an edit at each site. Trust-store records are written only
+by `make_trust_record()`.
 
 ## Pull requests
 

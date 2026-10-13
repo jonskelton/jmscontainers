@@ -23,7 +23,14 @@ credentials (default no) and remembers the answer for that checkout.
 
 ## Install
 
-Requirements: Python 3.11+, `make`, and one supported container runtime.
+Requirements: Python 3.11+, `make`, and the platform's container runtime:
+apple/container on macOS, local rootless Podman on Linux. **Docker is not
+supported** on either platform: jms has no Docker backend and no runtime
+switch, because its boundary depends on a VM per container (macOS) or a
+rootless user namespace that maps the container user to you (Linux).
+
+The first `jms build --base` downloads Fedora and every agent CLI and
+produces an image of roughly 3 GB; expect it to take several minutes.
 
 ### Apple Silicon macOS 15+
 
@@ -58,6 +65,19 @@ normally receive the required subordinate ID ranges in `/etc/subuid` and
 **unqualified but allowed**. See the [Linux guide](docs/linux.md) for the
 support boundary, prerequisite checks, and known limitations.
 
+### Shell completion
+
+`make install` also links a bash completion into
+`~/.local/share/bash-completion/completions` and a zsh completion into
+`~/.local/share/zsh/site-functions`. bash-completion finds the first on its
+own. zsh, the macOS default shell, reads only directories on its `fpath`, so
+add the second to `~/.zshrc` before `compinit` runs:
+
+```sh
+fpath=(~/.local/share/zsh/site-functions $fpath)
+autoload -Uz compinit && compinit
+```
+
 ## Use
 
 From any checkout:
@@ -67,7 +87,8 @@ cd ~/path/to/project
 jms launch
 ```
 
-You land in a shell as `isolation` with passwordless sudo. The project is at
+You land in a shell as `isolation`, the container's unprivileged user, with
+passwordless sudo. The project is at
 `/work`; writes there appear on the host with your ownership. (A project that
 needs its container path to match its host path — so a path-keyed tool agrees
 on both sides — can set `run.preserve_host_path`; see
@@ -95,6 +116,12 @@ Your host's agent logins do not carry over: the container keeps its own
 agent state, so log in once inside the container (for example, `yolo-claude`
 opens Claude Code's login). Later launches that mount the credentials reuse
 that login.
+
+Terms used below: a **project definition** is a `.jmscontainer/` directory
+holding a Containerfile and an optional `jmscontainer.toml`; its
+**fingerprint** is a SHA-256 hash of that directory; a **grant** is an
+approval jms records, kept separately for build/run and for credential
+access. `jms --help` repeats these.
 
 ## Know these three things
 
@@ -125,7 +152,7 @@ jms launch -b yolo-codex         # start an agent directly
 jms inspect                      # show discovery, fingerprint, and trust
 jms init                         # create .jmscontainer/Containerfile
 jms trust                        # review and approve a project definition
-jms clean                        # remove this project's containers
+jms clean                        # remove this project's containers (asks first)
 jms clean --all                  # remove all jms containers
 ```
 
@@ -190,14 +217,43 @@ the directory layout and safe setup.
 
 ## Update and remove
 
+### Upgrading jms
+
+`make install` links `jms` into your checkout, so the checkout *is* the
+installation. Upgrade it in place, then rebuild the images:
+
 ```sh
+cd ~/path/to/jmscontainers           # the checkout you installed from
+git pull --ff-only
+make install                         # re-links; picks up any new files
 jms build --base --pull --no-cache   # rebuild the shared base from upstream
-jms build                            # rebuild this project's image onto it
-make uninstall                       # remove the jms command and completion
+jms build                            # in each project (launch also does it)
 ```
 
-Already-running containers keep their original image; exit and relaunch after
-an update.
+- **Local edits ship.** The base builds from the checkout's `Containerfile`
+  as it is on disk, and `jms` runs from the checkout's `bin/`. An
+  uncommitted edit there becomes every project's base on this machine.
+  Keep the checkout clean.
+- **Running containers keep their image.** Exit and relaunch after an update.
+- **The old base stays on disk.** jms no longer sees it; see disk usage on
+  [Linux](docs/linux.md#disk-usage) or [macOS](docs/macos.md#disk-usage).
+
+### Uninstalling
+
+`make uninstall` removes only the `jms` command and its completion. Remove
+the rest in this order, while `jms` still works:
+
+| Left behind | Remove with |
+| --- | --- |
+| jms containers and images, including the base | `jms clean --all --images` |
+| Images jms no longer sees (old bases, deleted projects) | your runtime's commands: see disk usage on [Linux](docs/linux.md#disk-usage) or [macOS](docs/macos.md#disk-usage) |
+| Trust store: approvals and remembered credential answers | `rm -rf ~/.config/jmscontainers` |
+| Agent logins and config, container shell files | `rm -rf ~/.local/share/jmscontainers` |
+| The command and completion | `make uninstall`, then delete the checkout |
+
+Deleting agent state removes the stored tokens but does not revoke them;
+sign out or revoke them with each provider if they matter. `.jmscontainer/`
+directories in your projects are yours and stay.
 
 ## More documentation
 

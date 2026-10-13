@@ -223,7 +223,7 @@ files are sourced in every container, including projects you never granted
 credential access, so an `export TOKEN=...` in `bashrc` hands that token to
 all of them. jms has no supported way to pass a secret into a container
 yet; `[env]` values are passed to the runtime as `--env KEY=VALUE`
-arguments.
+arguments, and `JMS_DEBUG=1` prints those arguments to stderr.
 
 The trust store lives at `~/.config/jmscontainers/store.json`; agent state —
 credentials and configuration — lives under
@@ -243,6 +243,11 @@ definition nor a container-side agent can grant itself further trust by
 editing the trust store or the jms code the host will run next. To hack on
 jms itself inside a container, work from a scratch clone of the checkout
 rather than the live one.
+
+Every trust-store change is written to a temporary file, flushed to disk,
+renamed over `store.json`, and the directory is flushed in turn. A crash or
+power loss leaves either the old store or the new one, never a partial
+file, and a grant or revocation jms has reported is already on disk.
 
 Host sockets are refused too, because a read-only mount does not stop a
 container connecting to one. A manifest mount whose source is a socket,

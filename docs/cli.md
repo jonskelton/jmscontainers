@@ -12,7 +12,7 @@ jms trust   list
 jms trust   revoke PATH [--purge-images]
 jms trust   prune
 jms init    [-w|--workdir PATH] [--with-manifest]
-jms clean   [-w|--workdir PATH | --all] [--images] [--dry-run]
+jms clean   [-w|--workdir PATH | --all] [--images] [--dry-run] [-y|--yes]
 ```
 
 Every `PATH` is any nonempty path, and the positional and `--workdir` forms
@@ -27,8 +27,11 @@ does not exist is a usage error (exit 2).
 
 `--auth` and `--no-auth` are mutually exclusive. A supplied `--bin` must be
 nonempty UTF-8 without NUL. `launch` and `inspect` take the workdir either
-positionally or as `--workdir`, never both. `build --base` and `clean --all`
-cannot be combined with `--workdir`. `--pull` is valid only with `--base`.
+positionally or as `--workdir`, never both; `build`, `init`, and `clean`
+take only `--workdir`, and `trust` takes only a positional `PATH`. `-n NAME`
+on `launch` names the container, not the project. `build --base` and
+`clean --all` cannot be combined with `--workdir`. `--pull` is valid only
+with `--base`.
 
 ## Runtimes
 
@@ -36,10 +39,16 @@ jms selects its container runtime from the platform, lazily on first use
 and with no override switch: macOS selects **apple/container**, Linux
 selects **local rootless Podman**. Selection is side-effect-free and
 precedes every consent prompt or trust-store write, so a selection refusal
-(exit 2) never leaves partial state. What is refused is exactly:
-platforms other than Linux and macOS, uid 0 on Linux, and remote Podman
-services (`host.serviceIsRemote`, checked at readiness). Any other local
-rootless Linux configuration is unqualified but allowed, with no warning.
+(exit 2) never leaves partial state. Selection refuses platforms other
+than Linux and macOS, and uid 0 on Linux. Readiness, checked when a command
+first uses the runtime, then refuses (exit 1) a runtime below its minimum
+version and, on Podman, a remote service (`host.serviceIsRemote`),
+non-rootless mode, subordinate ID maps that do not cover 65536 ids, and
+`podman info` output that is malformed or names no storage graph driver; see
+[What jms refuses](linux.md#what-jms-refuses). Any other local rootless
+Linux configuration is unqualified but allowed, with no warning.
+Docker is not a supported runtime on either platform; jms has no Docker
+backend.
 
 Both runtimes have a minimum version and no ceiling: nothing at or above
 the floor is ever refused, because each runtime arrives from a package
@@ -55,9 +64,11 @@ semantics the backends parse strictly.
   `podman info`: local service, rootless mode, subordinate ID coverage of
   at least 65536 ids per map, and readable storage metadata.
 
-Commands that never touch the runtime — `--version`, `inspect`, `init`,
-`trust list`, `trust revoke` without `--purge-images`, `trust prune` —
-work with no runtime installed, on unsupported platforms, and under uid 0.
+Commands that never touch the runtime — `--version`, `--help`, `inspect`,
+`init`, `trust PATH` (including its `--fingerprint`, `--auth`, and
+`--no-auth` forms), `trust list`, `trust revoke` without `--purge-images`,
+`trust prune` — work with no runtime installed, on unsupported platforms,
+and under uid 0.
 
 ## Project discovery
 
@@ -115,6 +126,23 @@ by a plain `jms build` in each project is a complete update. The comparison
 is skipped for projects whose Containerfile does not name
 `jmscontainers-base` in a `FROM` line (including `ARG`-indirected bases);
 those rebuild only on a fingerprint change or `--no-cache`.
+
+Every image jms builds, base and project alike, also carries a `jms.version`
+label with the jms version that built it and, when the jms checkout is a git
+working tree, a `jms.commit` label with its `HEAD` commit (suffixed `-dirty`
+when tracked files have local changes). Read them with
+`podman image inspect --format '{{json .Labels}}' <image>` to compare what
+built the images on two machines. The commit is best effort: when git is
+missing or the checkout is not a repository the label is left off and the
+build goes ahead.
+
+Builds of one image are serialized: a second `jms build` (or an implicit
+build from `jms launch`) of the same project, or of the base, prints
+`waiting for another jms build of this image to finish...` and waits for the
+first to finish. It then rechecks, so it normally finds the image up to date
+and reuses it rather than building it twice. The lock files live in
+`~/.local/share/jmscontainers/locks/`; builds of different projects do not
+wait for each other.
 
 The runtime resolves every candidate `FROM` reference exactly. A qualified
 spelling such as `docker.io/library/jmscontainers-base:latest` counts as the
@@ -201,10 +229,23 @@ a manifest mount cannot claim or shadow `~/.config/jms-shell`.
 ## inspect
 
 `inspect` reports discovery, the trust fingerprint, and trust status without
-prompting, writing, or contacting the runtime. Without a definition it
-reports `credential_root` (where the answer is keyed) and
-`credential_grant`: `held`, `declined`, `unrecorded`, or declined because a
-trusted definition vanished.
+prompting, writing, or contacting the runtime. It prints one `key: value`
+line per field on stdout. The output is written for people: later versions
+may add keys, so a script should look keys up by name, not by line.
+
+| Key | Value |
+| --- | --- |
+| `workdir` | the resolved operand |
+| `root` | the project root (the workdir itself without a definition) |
+| `spec` | the `.jmscontainer/` directory, or `shared base` |
+| `project_id` | SHA-256 of the root path; keys the trust store |
+| `trust_fingerprint` | SHA-256 of the definition (definition only) |
+| `trust_store` | `readable`, or `error: ...`; without a definition an error ends the output here |
+| `trust_source` | `trust store`, `stale trust-store record`, `JMS_TRUST_FINGERPRINT (one-shot)`, `JMS_TRUST_FINGERPRINT mismatch`, or `none` (definition only) |
+| `build_run_grant` | `held` or `required` (definition only) |
+| `credential_root` | where a no-definition credential answer is keyed: the enclosing checkout root, else the workdir (no definition only) |
+| `credential_grant` | with a definition, `held` or `required`; without one, `held`, `declined`, `unrecorded`, or `declined (definition at PATH vanished)` |
+| `target_image` | the image tag `build` and `launch` would use |
 
 ## trust
 
@@ -260,7 +301,8 @@ can produce; a definition added later at that root needs full consent.
 ## init
 
 `init` scaffolds `.jmscontainer/Containerfile` in the workdir, plus
-`jmscontainer.toml` beside it with `--with-manifest`. It fails rather than
+`jmscontainer.toml` beside it with `--with-manifest`, prints one `created`
+line per file on stdout, and suggests the next step on stderr. It fails rather than
 overwriting an existing `.jmscontainer`, and removes anything it created if a
 later step fails. It refuses to scaffold at `$HOME`, at `/`, or inside a
 protected jms host directory (the jms checkout, `~/.config/jmscontainers`,
@@ -273,6 +315,14 @@ nested project will shadow the outer one.
 `clean` removes this project's containers (or all jms containers with
 `--all`); `--images` also removes the project's images (plus the shared base
 under `--all`). `--dry-run` reports the selection without mutating.
+
+On a terminal (stdin and stderr both a TTY), `clean` lists what it selected
+and asks `Remove these? [y/N]` before it stops or removes anything; the
+default is no. Selected containers are usually live sessions, since
+`launch` runs them with `--rm`. Declining removes nothing and exits 1.
+`-y`/`--yes` skips the question. Off a terminal, `clean` does not ask and
+proceeds, as before. When nothing matches, `clean` (and `clean --dry-run`)
+prints `nothing to remove` on stderr and exits 0.
 
 Container ownership requires two labels jms applies to every container it
 creates: the `jms.project` scope label **and** the `jms.container=launch`
@@ -288,8 +338,37 @@ images it does not own, under any scope (image untags on Podman pass
 parents). Run your runtime's own `image prune` yourself if you want a
 global sweep.
 
+## Timeouts and signals
+
+jms bounds the calls it makes to check or query the runtime: the version
+probe, `podman info`, `container system status`, image inspect, exists and
+list, and container listing. Each may run for 60 seconds (`container system
+start`, which may boot the VM, three times that) before jms kills it and
+exits 1 with `error: runtime command timed out after 60s: "<command>"`. A
+runtime that hits this is wedged (a stale storage lock, for example); check
+it by hand. `JMS_RUNTIME_TIMEOUT` changes the limit. Image builds, container
+stops and removals, and the container `launch` runs are never timed out.
+
+When jms receives SIGTERM or SIGHUP while a runtime command such as a build
+is running, it passes the signal on to that command and waits for it to
+exit, so stopping jms (a closed SSH session, a service manager) does not
+leave a build running on its own. jms then exits with 128 plus the signal
+number (143 for SIGTERM, 129 for SIGHUP) after printing
+`error: terminated by SIGTERM` (or `SIGHUP`). Ctrl-C is unchanged: the
+terminal delivers it to the runtime directly. `launch` replaces jms with the
+runtime, so a signal sent during a session goes to the runtime itself.
+
 ## Environment variables
 
+- `JMS_DEBUG`: set to `1` (any value except empty or `0`) to print every
+  runtime command to stderr as jms runs it, as `jms-debug: run: "podman"
+  "info" ...` (or `exec:` for the command `launch` replaces itself with),
+  followed by `jms-debug: exit <status> (<seconds>s)`. Use it to see which
+  runtime step failed or hung. The trace includes the full arguments,
+  including manifest `[env]` values passed as `--env`.
+- `JMS_RUNTIME_TIMEOUT`: seconds each runtime readiness or query call may run
+  before jms gives up (see Timeouts and signals). A whole number from 1 to
+  999999; the default is 60. Any other value is a usage error (exit 2).
 - `JMS_PROJECT_ROOTS`: colon-separated absolute directories (a leading `~` is
   expanded) searched for a bare-name operand that matches nothing in the
   current directory, first match wins. Unset by default. Set it to keep every
@@ -319,8 +398,31 @@ global sweep.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | success (for `launch`, the container's own exit status, since jms `exec`s the runtime) |
+| 0 | success |
 | 1 | operational failure: the runtime, a build, host I/O, or an invalid manifest or trust store |
-| 2 | usage error: bad flags or operands, including a workdir that does not exist |
+| 2 | usage error: bad flags or operands, including a workdir that does not exist or a missing project definition where a command needs one |
 | 3 | trust error: consent declined, prompting unavailable, or a fingerprint mismatch |
-| 130 | interrupted at a prompt (Ctrl-C) |
+| 130 | interrupted (Ctrl-C) at any point before `launch` hands over to the runtime |
+| 129, 143 | terminated by SIGHUP or SIGTERM; jms forwards the signal to the running runtime command and waits for it first |
+
+When jms itself exits 1, 2 or 3, it writes a line to stderr that starts
+with `error: ` (`jms <command>: error: ` for a flag error caught by the
+argument parser). That line is the last one, or is followed only by a
+single `hint: ` line. An interrupt prints nothing.
+
+**`launch` passes the container's exit status through.** Once its checks
+pass, `launch` replaces itself with the runtime's `run` command, so from
+then on the exit status is whatever the runtime returns. That is usually
+the launched program's own status, which can be any number, including 1, 2,
+3 or 130. A program that exits 3 is indistinguishable by status alone from
+a jms trust refusal. The runtime also uses codes of its own: Podman exits
+125 when `podman run` itself fails, 126 when the entry program cannot be
+executed, and 127 when it is not found. To tell jms's refusals apart in a
+script:
+
+- Look for the `error: ` line. It is only a strong signal: a program in
+  the container may print a line that looks the same.
+- Or split the gates off: `jms build` runs the same trust and build steps
+  without starting a container, and `jms inspect` reports the grants
+  `launch` would need. After those succeed, a nonzero `launch` status
+  almost always comes from the container.

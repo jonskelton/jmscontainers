@@ -12,9 +12,9 @@
 - Reconcile the docs with the behavior actually shipping: `README.md`,
   [SECURITY.md](../SECURITY.md), [docs/cli.md](cli.md),
   [docs/jmscontainer.toml.md](jmscontainer.toml.md),
-  [CONTRIBUTING.md](../CONTRIBUTING.md), and
-  `completions/jms.bash`. CONTRIBUTING.md is easy to miss because it
-  describes the development workflow rather than the CLI: re-read its
+  [CONTRIBUTING.md](../CONTRIBUTING.md), `completions/jms.bash`, and
+  `completions/_jms`. CONTRIBUTING.md is easy to miss because it describes
+  the development workflow rather than the CLI: re-read its
   development-checks and scope sections whenever the test or integration
   invocation, the CI matrix, or the backend seam changes. Any design
   document under `docs/` that this release implements needs its `Status:`
@@ -107,7 +107,7 @@ macOS qualification host with apple/container at the qualified version.
    for i in 1 2 3 4 5 6 7 8 9 10; do
        jms build --trust --no-auth -w /tmp/jms-race
        container image delete "$ref" >/dev/null 2>&1 &
-       jms clean --images -w /tmp/jms-race || echo "FAIL: exit $? on iteration $i"
+       jms clean --yes --images -w /tmp/jms-race || echo "FAIL: exit $? on iteration $i"
        wait
    done
    ```
@@ -118,7 +118,7 @@ macOS qualification host with apple/container at the qualified version.
      between enumeration and removal);
    - no iteration reports a failed removal for the vanished ref;
    - after the loop, `container image list` shows no
-     `jmscontainers-jms-race` ref, and a final `jms clean --images -w
+     `jmscontainers-jms-race` ref, and a final `jms clean --yes --images -w
      /tmp/jms-race` exits 0 with nothing left to remove (convergence).
 
 5. Record the run (date, apple/container version, outcome) in the release
