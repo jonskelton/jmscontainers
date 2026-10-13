@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **The approval summary names `--git-writable`.** A first launch with
+  `jms launch --git-writable` mounted `.git` read-write, but the
+  capability summary shown before consent still called it read-only.
+  The `.git` line now says writable and names each source:
+  `run.git_writable`, `--git-writable`, or both.
+
 ## 2.0.0 — 2026-10-12
 
 - **Breaking: a launch mounts the project's top-level `.git` read-only.**

@@ -1615,15 +1615,21 @@ def extra_mount_mode(mount: dict) -> str:
 GIT_WRITABLE_NOTE = "container can write .git (hooks and config there run on your host)"
 
 
-def print_capability_summary(root: bytes, config: dict) -> None:
-    """Describe every project-controlled runtime capability before consent."""
+def print_capability_summary(root: bytes, config: dict, git_writable_flag: bool = False) -> None:
+    """Describe every project-controlled runtime capability before consent.
+
+    git_writable_flag is launch --git-writable, which drops the read-only
+    .git bind just as run.git_writable does, so the summary must say so.
+    """
     print("Project container capabilities:", file=sys.stderr)
     print("- build and run: arbitrary commands with unrestricted network and root via passwordless sudo",
           file=sys.stderr)
     print("- project mount: " + quote(root) + " -> "
           + (quote(root) + " (host path preserved)" if config["preserve_host_path"] else "\"/work\"")
           + " read-write", file=sys.stderr)
-    print("- project .git: " + (GIT_WRITABLE_NOTE + " (run.git_writable)" if config["git_writable"]
+    sources = [name for name, on in (("run.git_writable", config["git_writable"]),
+                                     ("--git-writable", git_writable_flag)) if on]
+    print("- project .git: " + (GIT_WRITABLE_NOTE + " (" + ", ".join(sources) + ")" if sources
                                 else "read-only when it is a directory at the project root"),
           file=sys.stderr)
     for mount in config["mounts"]:
@@ -1704,7 +1710,8 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
         print("project definition changed since it was last trusted (fingerprint " +
               record["tf"][:12] + " -> " + tf[:12] + ")", file=sys.stderr)
     if action == "trust" or getattr(args, "trust", False) or not build_ok or (wants_auth and not auth_ok):
-        print_capability_summary(root, config or default_config())
+        print_capability_summary(root, config or default_config(),
+                                 git_writable_flag=getattr(args, "git_writable", False))
     def record_approval(auth):
         new = {"root": root.decode("utf-8"), "tf": tf, "grants": {"build_run": True, "auth": auth},
                "granted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "jms_version": __version__}
