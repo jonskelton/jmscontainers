@@ -133,7 +133,8 @@ The precise Linux claims:
   alike. jms neither validates nor neutralizes them; host configuration
   that mounts additional data into containers is your own configuration,
   outside jms's claims. jms's argv pins only what it itself relies on: the
-  explicit `--userns` mapping and `label=disable`.
+  numeric `--user`, the explicit `--userns` mapping, `--hostname container`,
+  and `label=disable`.
 - **No mandatory access control applies on the qualified Linux target.**
   The qualified Debian 13 capture reports `apparmorEnabled: false`, and
   containers launched there run with an empty `AppArmorProfile`

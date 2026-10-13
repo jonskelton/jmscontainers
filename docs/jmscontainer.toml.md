@@ -62,7 +62,8 @@ answer to the credential question was yes, or a matching
 `JMS_TRUST_FINGERPRINT` pin is combined with `--auth`. Otherwise jms drops
 it and prints one `note: not mounting host credential path ...` line per
 dropped mount; the launch still proceeds. That covers a declined grant,
-`--no-auth`, a bare `--trust`, and a pin without `--auth`. The gate reads
+`--no-auth`, and — when no credential grant is recorded — a bare `--trust`
+or a pin without `--auth`. The gate reads
 the grant itself, not `run.mount_auth`: a manifest with
 `mount_auth = false` still keeps its credential mounts when the grant is
 recorded. The consent summary marks these mounts, and the credential
