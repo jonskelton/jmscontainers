@@ -1071,16 +1071,29 @@ def store_directory() -> Path:
     return Path(os.fsdecode(home_path())) / ".config" / "jmscontainers"
 
 
+# The schema-2 trust-store record.  make_trust_record() is the only writer and
+# valid_store() the only reader of its shape, so a schema change touches both
+# here and nowhere else (MAINT-08).
+TRUST_RECORD_FIELDS = frozenset({"root", "tf", "grants", "granted_at", "jms_version"})
+TRUST_GRANT_FIELDS = frozenset({"build_run", "auth"})
+
+
+def make_trust_record(root: bytes, tf: str, auth: bool) -> dict:
+    """A fresh store record for a canonical root: build/run granted, auth as answered, stamped now."""
+    return {"root": root.decode("utf-8"), "tf": tf, "grants": {"build_run": True, "auth": auth},
+            "granted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "jms_version": __version__}
+
+
 def valid_store(data) -> bool:
     if type(data) is not dict or set(data) != {"schema", "projects"} or data["schema"] != 2 or not isinstance(data["projects"], dict):
         return False
     for pid, record in data["projects"].items():
         if (not isinstance(pid, str) or not re.fullmatch(r"[0-9a-f]{64}", pid) or not isinstance(record, dict)
-                or set(record) != {"root", "tf", "grants", "granted_at", "jms_version"}
+                or set(record) != TRUST_RECORD_FIELDS
                 or not isinstance(record["root"], str) or not isinstance(record["tf"], str)
                 or not re.fullmatch(r"[0-9a-f]{64}", record["tf"])
                 or hashlib.sha256(record["root"].encode()).hexdigest() != pid
-                or not isinstance(record["grants"], dict) or set(record["grants"]) != {"build_run", "auth"}
+                or not isinstance(record["grants"], dict) or set(record["grants"]) != TRUST_GRANT_FIELDS
                 or record["grants"].get("build_run") is not True or not isinstance(record["grants"].get("auth"), bool)
                 or not isinstance(record["granted_at"], str) or not re.fullmatch(UTC_SECONDS, record["granted_at"])
                 or not isinstance(record["jms_version"], str)):
@@ -1741,8 +1754,7 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
         print_capability_summary(root, config or default_config(),
                                  git_writable_flag=getattr(args, "git_writable", False))
     def record_approval(auth):
-        new = {"root": root.decode("utf-8"), "tf": tf, "grants": {"build_run": True, "auth": auth},
-               "granted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "jms_version": __version__}
+        new = make_trust_record(root, tf, auth)
         def replace(current):
             current["projects"][pid] = new
             return True
@@ -1865,9 +1877,7 @@ def base_launch_auth(workdir: bytes, args) -> bool:
 def record_base_answer(root: bytes, answer: bool):
     """Remember a no-definition credential answer for a base_credential_root()."""
     pid = hashlib.sha256(root).hexdigest()
-    new = {"root": root.decode("utf-8"), "tf": BASE_CREDENTIAL_TF,
-           "grants": {"build_run": True, "auth": answer},
-           "granted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "jms_version": __version__}
+    new = make_trust_record(root, BASE_CREDENTIAL_TF, answer)
     def remember(store):
         store["projects"][pid] = new
         return True

@@ -1,5 +1,6 @@
 """Single-source tables (C-13): each security table is written once and every
 site derives from it, so extending a table cannot silently miss a site."""
+import hashlib
 import importlib.machinery
 import importlib.util
 import os
@@ -146,6 +147,36 @@ class SharedLaunchArgvTests(unittest.TestCase):
                                  ["CLAUDE_CONFIG_DIR=" + HOME + "/.claude",
                                   "NEWAGENT_HOME=" + HOME + "/.newagent/state"])
                 self.assertGreater(argv.index("FOO=bar"), first_mount)
+
+
+class TrustRecordTests(unittest.TestCase):
+    """MAINT-08: one constructor writes the trust record valid_store() reads."""
+
+    def store_with(self, record):
+        return {"schema": 2, "projects": {hashlib.sha256(b"/home/u/git/p").hexdigest(): record}}
+
+    def test_constructed_records_are_exactly_what_the_validator_accepts(self):
+        for tf, auth in (("a" * 64, True), ("a" * 64, False), (JMS.BASE_CREDENTIAL_TF, False)):
+            record = JMS.make_trust_record(b"/home/u/git/p", tf, auth)
+            self.assertEqual(set(record), JMS.TRUST_RECORD_FIELDS)
+            self.assertEqual(record["grants"], {"build_run": True, "auth": auth})
+            self.assertEqual((record["root"], record["tf"], record["jms_version"]),
+                             ("/home/u/git/p", tf, JMS.__version__))
+            self.assertTrue(JMS.valid_store(self.store_with(record)))
+            for field in JMS.TRUST_RECORD_FIELDS:
+                partial = {key: value for key, value in record.items() if key != field}
+                self.assertFalse(JMS.valid_store(self.store_with(partial)), field)
+
+    def test_the_base_answer_writer_stores_the_constructed_record(self):
+        written = []
+        def capture(change):
+            store = {"schema": 2, "projects": {}}
+            change(store)
+            written.extend(store["projects"].values())
+        with mock.patch.object(JMS, "update_store", capture), \
+             mock.patch.object(JMS, "make_trust_record", return_value={"sentinel": True}):
+            JMS.record_base_answer(b"/home/u/git/p", True)
+        self.assertEqual(written, [{"sentinel": True}])
 
 
 if __name__ == "__main__":
