@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import pty
+import shutil
 import re
 import socket
 import stat
@@ -103,6 +104,18 @@ def golden_tree(spec):
 
 def fingerprint_of(root):
     return JMS.trust_fingerprint(JMS.spec_entries(os.fsencode(root / ".jmscontainer")))
+
+
+
+def remember_base_answer(root, auth):
+    """Write a no-definition credential answer for a canonical root."""
+    def add(store):
+        store["projects"][hashlib.sha256(root).hexdigest()] = {
+            "root": root.decode(), "tf": JMS.BASE_CREDENTIAL_TF,
+            "grants": {"build_run": True, "auth": auth},
+            "granted_at": "2026-01-01T00:00:00Z", "jms_version": JMS.__version__}
+        return True
+    JMS.update_store(add)
 
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -921,6 +934,26 @@ class ConsentTests(unittest.TestCase):
              mock.patch.object(sys, "stderr", TTYIO(tty)):
             return JMS.approve(root, tf, args, action=action, config=config)
 
+    def test_definition_added_after_a_base_answer_needs_full_consent(self):
+        with sandbox() as home:
+            root = JMS.canon(os.fsencode(make_project(home)))
+            remember_base_answer(root, True)
+            self.assertNotEqual(JMS.BASE_CREDENTIAL_TF, GOLDEN_SINGLE_TF)
+            # The remembered yes does not carry over to the new definition.
+            self.assertEqual(self.approve(root, GOLDEN_SINGLE_TF, ["launch"], action="launch",
+                                          answers=["y", ""]), (True, False))
+            self.assertEqual(len(self.questions), 2)
+            record = JMS.read_store()["projects"][hashlib.sha256(root).hexdigest()]
+            self.assertEqual(record["tf"], GOLDEN_SINGLE_TF)
+            self.assertEqual(record["grants"]["auth"], False)
+
+    def test_base_answer_sentinel_is_a_valid_schema_2_record(self):
+        with sandbox():
+            self.assertEqual(JMS.BASE_CREDENTIAL_TF, JMS.trust_fingerprint([]))
+            root = JMS.canon(os.fsencode(pathlib.Path(os.environ["HOME"]) / "git"))
+            remember_base_answer(root, False)
+            self.assertTrue(JMS.valid_store(JMS.read_store()))
+
     def test_consent_read_survives_a_leaked_nonblocking_terminal(self):
         # An attached `container run --interactive` exits with O_NONBLOCK
         # left on the shared terminal description; the consent read must not
@@ -1709,11 +1742,28 @@ class LaunchTests(unittest.TestCase):
     USER_ROOT = "root"
     MOUNT = "source="
 
-    def launch_argv(self, home, argv, images=None, containers=None, trusted_auth=False):
-        """Run cmd_launch against the fake runtime; return the exec argv."""
+    def launch_argv(self, home, argv, images=None, containers=None, trusted_auth=False,
+                    tty=False, answers=None):
+        """Run cmd_launch against the fake runtime; return the exec argv.
+
+        stdin and stderr are pinned to `tty` so the suite never depends on
+        how it was started; stderr is kept in self.stderr.  With answers=None
+        any consent question fails the test.
+        """
+        self.stderr = TTYIO(tty)
+        replies = list(answers or [])
+        self.questions = []
+        def reply(question):
+            if answers is None:
+                raise AssertionError("unexpected consent question: " + question)
+            self.questions.append(question)
+            return replies.pop(0)
         with fake_runtime(backend=self.BACKEND, images=dict(images or {})) as runtime, \
              mock.patch.object(JMS, "ensure_agent_state_directory"), \
-             contextlib.redirect_stdout(io.StringIO()), quiet():
+             mock.patch.object(JMS, "consent_input", side_effect=reply), \
+             mock.patch.object(sys, "stdin", TTYIO(tty)), \
+             mock.patch.object(sys, "stderr", self.stderr), \
+             contextlib.redirect_stdout(io.StringIO()):
             JMS.cmd_launch(JMS.parse_cli(argv))
         replaced = [call for call in runtime.calls if call["replace"]]
         self.assertEqual(len(replaced), 1)
@@ -1778,25 +1828,158 @@ class LaunchTests(unittest.TestCase):
             self.assertIn(self.MOUNT + agents + "/pi,target=/home/isolation/.pi/agent", mounts)
             self.assertIn("CLAUDE_CONFIG_DIR=/home/isolation/.claude", argv)
 
-    def test_pi_state_mounts_follow_home_and_no_auth(self):
+    def test_pi_state_mounts_follow_home_and_explicit_auth(self):
         with sandbox() as home:
             plain = home / "git" / "plain"
             plain.mkdir()
             source = JMS.agent_state_root() / "pi"
             for root_flags, target_home in (([], "/home/isolation"), (["--root"], "/root")):
-                for auth_flags in ([], ["--no-auth"]):
+                for auth_flags in (["--auth"], ["--no-auth"]):
                     with self.subTest(root=root_flags, auth=auth_flags):
                         argv = self.launch_argv(
                             home, ["launch", "-w", str(plain), "-b", "yolo-pi",
                                    *root_flags, *auth_flags, "--", "--version"],
                             images={JMS.BASE: image_record(JMS.BASE)})
                         mount = self.MOUNT + str(source) + ",target=" + target_home + "/.pi/agent"
-                        if auth_flags:
+                        if auth_flags == ["--no-auth"]:
                             self.assertNotIn(mount, argv)
                         else:
                             self.assertIn(mount, argv)
                         self.assertEqual(argv[argv.index("--entrypoint") + 1], "yolo-pi")
                         self.assertEqual(argv[-1], "--version")
+
+    # A launch with no definition mounts agent state only with consent.
+
+    def checkout(self, home, name="plain"):
+        root = home / "git" / name
+        (root / ".git").mkdir(parents=True)
+        return root, JMS.canon(os.fsencode(root))
+
+    def assert_agent_state(self, argv, mounted):
+        joined = " ".join(argv)
+        for leaf in JMS.AGENT_STATE_LEAVES:
+            source = self.MOUNT + str(JMS.agent_state_root() / leaf) + ","
+            (self.assertIn if mounted else self.assertNotIn)(source, joined)
+        (self.assertIn if mounted else self.assertNotIn)(
+            "CLAUDE_CONFIG_DIR=/home/isolation/.claude", argv)
+
+    def base_launch(self, home, workdir, *flags, tty=False, answers=None):
+        return self.launch_argv(home, ["launch", *flags, "-w", str(workdir)],
+                                images={JMS.BASE: image_record(JMS.BASE)},
+                                tty=tty, answers=answers)
+
+    def test_unrecorded_checkout_mounts_no_agent_state_off_a_terminal(self):
+        with sandbox() as home:
+            plain, canonical = self.checkout(home)
+            self.assert_agent_state(self.base_launch(home, plain), False)
+            notices = [line for line in self.stderr.getvalue().splitlines()
+                       if line.startswith("note:")]
+            self.assertEqual(len(notices), 1)
+            self.assertIn("not mounting agent state", notices[0])
+            self.assertIn("--auth", notices[0])
+            self.assertIn(os.fsdecode(canonical), notices[0])
+            self.assertEqual(JMS.read_store()["projects"], {})
+
+    def test_explicit_auth_is_consent_for_one_launch_only(self):
+        with sandbox() as home:
+            plain, _ = self.checkout(home)
+            self.assert_agent_state(self.base_launch(home, plain, "--auth"), True)
+            self.assertNotIn("note:", self.stderr.getvalue())
+            self.assertEqual(JMS.read_store()["projects"], {})
+            self.assert_agent_state(self.base_launch(home, plain), False)
+
+    def test_remembered_yes_mounts_without_asking_again(self):
+        with sandbox() as home:
+            plain, canonical = self.checkout(home)
+            self.assert_agent_state(self.base_launch(home, plain, tty=True, answers=["y"]), True)
+            self.assertEqual(len(self.questions), 1)
+            self.assertIn("[y/N]", self.questions[0])
+            self.assertIn("remembered for this checkout path", self.stderr.getvalue())
+            record = JMS.read_store()["projects"][hashlib.sha256(canonical).hexdigest()]
+            self.assertEqual(record["root"], canonical.decode())
+            self.assertEqual(record["tf"], JMS.BASE_CREDENTIAL_TF)
+            self.assertEqual(record["grants"], {"build_run": True, "auth": True})
+            for tty in (True, False):
+                self.assert_agent_state(self.base_launch(home, plain, tty=tty), True)
+            self.assert_agent_state(self.base_launch(home, plain, "--no-auth"), False)
+
+    def test_remembered_no_stays_no_and_auth_does_not_change_it(self):
+        with sandbox() as home:
+            plain, canonical = self.checkout(home)
+            pid = hashlib.sha256(canonical).hexdigest()
+            # EOF at the question is its default-No answer, and it is remembered.
+            self.assert_agent_state(self.base_launch(home, plain, tty=True, answers=[""]), False)
+            self.assertEqual(JMS.read_store()["projects"][pid]["grants"]["auth"], False)
+            self.assert_agent_state(self.base_launch(home, plain, tty=True), False)
+            self.assert_agent_state(self.base_launch(home, plain, "--auth", tty=True), True)
+            self.assertEqual(JMS.read_store()["projects"][pid]["grants"]["auth"], False)
+
+    def test_nested_workdir_shares_the_checkout_root_answer(self):
+        with sandbox() as home:
+            plain, canonical = self.checkout(home)
+            inner = plain / "sub" / "deeper"
+            inner.mkdir(parents=True)
+            argv = self.base_launch(home, inner, tty=True, answers=["y"])
+            self.assert_agent_state(argv, True)
+            self.assertEqual(list(JMS.read_store()["projects"]),
+                             [hashlib.sha256(canonical).hexdigest()])
+            self.assert_agent_state(self.base_launch(home, plain, tty=True), True)
+            self.assert_agent_state(self.base_launch(home, plain / "sub", tty=True), True)
+
+    def test_workdir_outside_a_checkout_is_keyed_on_itself(self):
+        with sandbox() as home:
+            loose = home / "loose"
+            loose.mkdir()
+            self.base_launch(home, loose, tty=True, answers=["y"])
+            canonical = JMS.canon(os.fsencode(loose))
+            self.assertEqual(list(JMS.read_store()["projects"]),
+                             [hashlib.sha256(canonical).hexdigest()])
+
+    def trust_with_auth(self, root):
+        with quiet(), contextlib.redirect_stdout(io.StringIO()):
+            JMS.cmd_trust(JMS.parse_cli(["trust", str(root), "--fingerprint",
+                                         fingerprint_of(root), "--auth"]))
+
+    def test_vanished_definition_warns_and_mounts_nothing(self):
+        with sandbox() as home:
+            root = make_project(home)
+            inner = root / "sub"
+            inner.mkdir()
+            self.trust_with_auth(root)
+            shutil.rmtree(root / ".jmscontainer")
+            before = JMS.read_store()
+            for workdir in (root, inner):
+                for tty in (True, False):
+                    with self.subTest(workdir=str(workdir), tty=tty):
+                        self.assert_agent_state(self.base_launch(home, workdir, tty=tty), False)
+                        self.assertIn("warning:", self.stderr.getvalue())
+                        self.assertIn("no longer present", self.stderr.getvalue())
+            self.assert_agent_state(self.base_launch(home, root, "--auth"), True)
+            self.assertIn("for this launch only", self.stderr.getvalue())
+            self.assertEqual(JMS.read_store(), before)
+
+    def test_vanished_definition_below_the_checkout_root_is_found(self):
+        with sandbox() as home:
+            outer, _ = self.checkout(home, "outer")
+            root = outer / "service"
+            (root / ".jmscontainer").mkdir(parents=True)
+            (root / ".jmscontainer" / "Containerfile").write_bytes(DEFAULT_CONTAINERFILE)
+            self.trust_with_auth(root)
+            shutil.rmtree(root / ".jmscontainer")
+            self.assert_agent_state(self.base_launch(home, root, tty=True), False)
+            self.assertIn("no longer present", self.stderr.getvalue())
+            # The checkout root is not inside the vanished definition's root.
+            self.assert_agent_state(self.base_launch(home, outer, tty=True, answers=["y"]), True)
+
+    def test_no_auth_launch_does_not_need_a_readable_store(self):
+        with sandbox() as home:
+            plain, _ = self.checkout(home)
+            store = home / ".config" / "jmscontainers"
+            store.mkdir(parents=True)
+            (store / "store.json").write_text("{")
+            self.assert_agent_state(self.base_launch(home, plain, "--no-auth"), False)
+            with self.assertRaisesRegex(JMS.JMSException, "cannot read trust store"):
+                self.base_launch(home, plain)
 
     def test_launch_without_project_uses_the_shared_base(self):
         with sandbox() as home:
@@ -2251,6 +2434,24 @@ class TrustCommandTests(unittest.TestCase):
                 self.run_trust(["trust", "revoke", str(root), "--purge-images"])
             self.assertEqual(runtime.deleted, [mine])
 
+    def test_revoke_forgets_a_no_definition_answer_from_any_subdirectory(self):
+        with sandbox() as home:
+            plain = home / "git" / "plain"
+            (plain / ".git").mkdir(parents=True)
+            (plain / "sub").mkdir()
+            canonical = JMS.canon(os.fsencode(plain))
+            remember_base_answer(canonical, True)
+            output = self.run_trust(["trust", "revoke", str(plain / "sub")])
+            self.assertIn("revoked trust for " + JMS.quote(canonical), output)
+            self.assertEqual(JMS.read_store()["projects"], {})
+
+    def test_revoke_finds_a_vanished_definition_record(self):
+        with sandbox() as home:
+            root, canonical, _ = self.seed(home)
+            shutil.rmtree(root / ".jmscontainer")
+            self.run_trust(["trust", "revoke", str(root)])
+            self.assertEqual(JMS.read_store()["projects"], {})
+
     def test_trust_requires_a_project_definition(self):
         with sandbox() as home:
             (home / "git" / "plain").mkdir()
@@ -2307,6 +2508,21 @@ class InspectTests(unittest.TestCase):
             self.assertEqual(report["target_image"], JMS.BASE)
             self.assertNotIn("trust_fingerprint", report)
 
+
+    def test_non_project_report_shows_the_credential_answer(self):
+        with sandbox() as home:
+            plain = home / "git" / "plain"
+            (plain / ".git").mkdir(parents=True)
+            (plain / "sub").mkdir()
+            canonical = JMS.canon(os.fsencode(plain))
+            report = self.inspect(["inspect", "-w", str(plain / "sub")])
+            self.assertEqual(report["credential_root"], JMS.quote(canonical))
+            self.assertEqual(report["credential_grant"], "unrecorded")
+            remember_base_answer(canonical, True)
+            self.assertEqual(self.inspect(["inspect", "-w", str(plain)])["credential_grant"], "held")
+            remember_base_answer(canonical, False)
+            self.assertEqual(self.inspect(["inspect", "-w", str(plain)])["credential_grant"],
+                             "declined")
 
 class InitTests(unittest.TestCase):
     def test_init_scaffolds_a_project(self):
