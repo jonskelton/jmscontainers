@@ -27,8 +27,11 @@ does not exist is a usage error (exit 2).
 
 `--auth` and `--no-auth` are mutually exclusive. A supplied `--bin` must be
 nonempty UTF-8 without NUL. `launch` and `inspect` take the workdir either
-positionally or as `--workdir`, never both. `build --base` and `clean --all`
-cannot be combined with `--workdir`. `--pull` is valid only with `--base`.
+positionally or as `--workdir`, never both; `build`, `init`, and `clean`
+take only `--workdir`, and `trust` takes only a positional `PATH`. `-n NAME`
+on `launch` names the container, not the project. `build --base` and
+`clean --all` cannot be combined with `--workdir`. `--pull` is valid only
+with `--base`.
 
 ## Runtimes
 
@@ -36,10 +39,14 @@ jms selects its container runtime from the platform, lazily on first use
 and with no override switch: macOS selects **apple/container**, Linux
 selects **local rootless Podman**. Selection is side-effect-free and
 precedes every consent prompt or trust-store write, so a selection refusal
-(exit 2) never leaves partial state. What is refused is exactly:
-platforms other than Linux and macOS, uid 0 on Linux, and remote Podman
-services (`host.serviceIsRemote`, checked at readiness). Any other local
-rootless Linux configuration is unqualified but allowed, with no warning.
+(exit 2) never leaves partial state. Selection refuses platforms other
+than Linux and macOS, and uid 0 on Linux. Readiness, checked when a command
+first uses the runtime, then refuses (exit 1) a runtime below its minimum
+version and, on Podman, a remote service (`host.serviceIsRemote`),
+non-rootless mode, subordinate ID maps that do not cover 65536 ids, and
+`podman info` output that is malformed or names no storage graph driver; see
+[What jms refuses](linux.md#what-jms-refuses). Any other local rootless
+Linux configuration is unqualified but allowed, with no warning.
 
 Both runtimes have a minimum version and no ceiling: nothing at or above
 the floor is ever refused, because each runtime arrives from a package
@@ -55,9 +62,11 @@ semantics the backends parse strictly.
   `podman info`: local service, rootless mode, subordinate ID coverage of
   at least 65536 ids per map, and readable storage metadata.
 
-Commands that never touch the runtime — `--version`, `inspect`, `init`,
-`trust list`, `trust revoke` without `--purge-images`, `trust prune` —
-work with no runtime installed, on unsupported platforms, and under uid 0.
+Commands that never touch the runtime — `--version`, `--help`, `inspect`,
+`init`, `trust PATH` (including its `--fingerprint`, `--auth`, and
+`--no-auth` forms), `trust list`, `trust revoke` without `--purge-images`,
+`trust prune` — work with no runtime installed, on unsupported platforms,
+and under uid 0.
 
 ## Project discovery
 
@@ -200,10 +209,23 @@ a manifest mount cannot claim or shadow `~/.config/jms-shell`.
 ## inspect
 
 `inspect` reports discovery, the trust fingerprint, and trust status without
-prompting, writing, or contacting the runtime. Without a definition it
-reports `credential_root` (where the answer is keyed) and
-`credential_grant`: `held`, `declined`, `unrecorded`, or declined because a
-trusted definition vanished.
+prompting, writing, or contacting the runtime. It prints one `key: value`
+line per field on stdout. The output is written for people: later versions
+may add keys, so a script should look keys up by name, not by line.
+
+| Key | Value |
+| --- | --- |
+| `workdir` | the resolved operand |
+| `root` | the project root (the workdir itself without a definition) |
+| `spec` | the `.jmscontainer/` directory, or `shared base` |
+| `project_id` | SHA-256 of the root path; keys the trust store |
+| `trust_fingerprint` | SHA-256 of the definition (definition only) |
+| `trust_store` | `readable`, or `error: ...`; without a definition an error ends the output here |
+| `trust_source` | `trust store`, `stale trust-store record`, `JMS_TRUST_FINGERPRINT (one-shot)`, `JMS_TRUST_FINGERPRINT mismatch`, or `none` (definition only) |
+| `build_run_grant` | `held` or `required` (definition only) |
+| `credential_root` | where a no-definition credential answer is keyed: the enclosing checkout root, else the workdir (no definition only) |
+| `credential_grant` | with a definition, `held` or `required`; without one, `held`, `declined`, `unrecorded`, or `declined (definition at PATH vanished)` |
+| `target_image` | the image tag `build` and `launch` would use |
 
 ## trust
 

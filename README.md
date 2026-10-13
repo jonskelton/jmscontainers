@@ -77,7 +77,8 @@ cd ~/path/to/project
 jms launch
 ```
 
-You land in a shell as `isolation` with passwordless sudo. The project is at
+You land in a shell as `isolation`, the container's unprivileged user, with
+passwordless sudo. The project is at
 `/work`; writes there appear on the host with your ownership. (A project that
 needs its container path to match its host path — so a path-keyed tool agrees
 on both sides — can set `run.preserve_host_path`; see
@@ -99,6 +100,12 @@ The container exits with the agent. Use plain `jms launch` when you want a
 shell to remain after the agent exits. The first launch in a checkout asks
 whether to mount your agent credentials; answer `y` for an agent that should
 stay logged in. Without a terminal, pass `--auth` to mount them.
+
+Terms used below: a **project definition** is a `.jmscontainer/` directory
+holding a Containerfile and an optional `jmscontainer.toml`; its
+**fingerprint** is a SHA-256 hash of that directory; a **grant** is an
+approval jms records, kept separately for build/run and for credential
+access. `jms --help` repeats these.
 
 ## Know these three things
 
