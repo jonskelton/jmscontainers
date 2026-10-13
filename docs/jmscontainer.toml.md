@@ -144,9 +144,9 @@ The container can then ask the agent to sign with any loaded key for as
 long as it runs, though it cannot copy the keys. The source expands from
 the host environment, so a launch without an agent fails with an unset
 variable. This does not work on macOS: apple/container (checked on 1.5.0)
-bind-mounts directories, not single files, so there the launch fails
-after the build with `path '...' is not a directory`. That applies to any
-`[[mounts]]` source that is a file there, not just a socket.
+bind-mounts directories, not single files, so on macOS `jms launch`
+refuses any `[[mounts]]` source that is not a directory (a file, not just a
+socket) before the consent prompt and before building.
 
 ## Time zone
 

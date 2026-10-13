@@ -59,6 +59,12 @@
   store records (no schema change); an older jms ignores them.
   `jms trust revoke PATH` forgets an answer and `jms inspect` shows it.
 
+- **On macOS, `jms launch` refuses a `[[mounts]]` source that is not a
+  directory before consent and before building.** apple/container
+  (checked on 1.5.0) bind-mounts directories only, so a file or socket
+  source used to fail at run, after a full build, with `path '...' is not
+  a directory`. Linux is unchanged.
+
 - **`jms trust list` marks remembered no-definition answers.** Those rows
   end in `no-definition`; rows for definitions are unchanged.
 
