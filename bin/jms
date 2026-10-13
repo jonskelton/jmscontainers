@@ -132,8 +132,10 @@ def runtime_run(argv, *, capture=True, check=True, stdin=None, stdout=None, stde
     except FileNotFoundError:
         fail(runtime().exe + " CLI not found; " + runtime().install_hint)
     except subprocess.CalledProcessError as exc:
-        detail = quote(exc.stderr or exc.stdout or b"")
-        fail("command failed: " + quote(" ".join(map(str, argv))) + " -- " + detail)
+        # Streamed (uncaptured) output is already on the terminal; an empty
+        # `-- ""` suffix would only suggest the runtime said nothing.
+        detail = exc.stderr or exc.stdout
+        fail("command failed: " + quote(" ".join(map(str, argv))) + (" -- " + quote(detail) if detail else ""))
 
 
 def runtime_json(argv) -> object:
@@ -2252,7 +2254,7 @@ def validate_launch_cli_runtime_args(args) -> None:
         if not args.container_name: fail("container name must be nonempty UTF-8 without NUL", 2)
         runtime_argument(args.container_name)
     if args.bin is not None:
-        if not args.bin: fail("binary must be nonempty UTF-8 without NUL", 2)
+        if not args.bin: fail("--bin must be nonempty UTF-8 without NUL", 2)
         runtime_argument(args.bin)
     for value in args.extra:
         runtime_argument(value)
@@ -2419,7 +2421,8 @@ def cmd_launch(args):
         runtime_path(workdir)
     if not data and not explicit:
         refusal = implicit_workdir_refusal(workdir)
-        if refusal: fail(refusal + " -- cd into a project or pass a workdir", 2)
+        if refusal: fail(refusal + " -- cd into a checkout, or name this directory to mount "
+                         "it anyway: jms launch .", 2)
     validate_agent_state_sources("root" if args.root else "isolation")
     validate_shell_state_source()
     if data:

@@ -1468,7 +1468,7 @@ class CliSurfaceTests(unittest.TestCase):
                         function(JMS.parse_cli(argv))
 
     def test_launch_rejects_empty_runtime_arguments_before_discovery(self):
-        for argv, message in ((["launch", "-b", ""], "binary must be nonempty"),
+        for argv, message in ((["launch", "-b", ""], "--bin must be nonempty"),
                               (["launch", "-n", ""], "container name must be nonempty")):
             with self.subTest(argv=argv), mock.patch.object(JMS, "resolve_operand") as resolve:
                 with self.assertRaisesRegex(JMS.UsageError, message):
@@ -2373,8 +2373,10 @@ class LaunchTests(unittest.TestCase):
             outside = home / "elsewhere"
             outside.mkdir()
             with mock.patch.object(os, "getcwd", return_value=str(outside)):
-                with self.assertRaisesRegex(JMS.UsageError, "not inside a checkout"):
+                with self.assertRaisesRegex(JMS.UsageError, "not inside a checkout") as caught:
                     JMS.cmd_launch(JMS.parse_cli(["launch"]))
+            # The refusal names the explicit form that gets past it (ADOPT-05).
+            self.assertTrue(str(caught.exception).endswith(": jms launch ."))
 
     def test_launch_refuses_home_even_when_home_is_a_repository(self):
         with sandbox() as home:
@@ -3739,6 +3741,23 @@ class ContainerStartTests(unittest.TestCase):
         self.assertEqual(calls, [["system", "status"], ["system", "start"], ["system", "status"]])
         self.assertEqual(out.getvalue(), "")
         self.assertIn("starting container runtime...", err.getvalue())
+
+
+class RuntimeRunFailureTests(unittest.TestCase):
+    """UX-18: a failed command whose output was streamed has no `-- ""` tail."""
+
+    def fail_with(self, output):
+        error = subprocess.CalledProcessError(1, ["container", "build"], output=output[0], stderr=output[1])
+        with mock.patch.object(JMS.subprocess, "run", side_effect=error), \
+                self.assertRaises(JMS.JMSException) as caught:
+            JMS.runtime_run(["container", "build", "."], capture=output != (None, None))
+        return str(caught.exception)
+
+    def test_streamed_failure_has_no_empty_detail(self):
+        self.assertEqual(self.fail_with((None, None)), 'command failed: "container build ."')
+
+    def test_captured_failure_keeps_its_detail(self):
+        self.assertEqual(self.fail_with((b"", b"boom")), 'command failed: "container build ." -- "boom"')
 
 
 class PodmanReadinessTests(unittest.TestCase):
