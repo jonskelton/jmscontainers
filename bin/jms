@@ -27,6 +27,7 @@ import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 # A `.dev` suffix marks a working tree that is not a release.  The first
 # runtime-affecting commit after a tag carries the next patch version plus
@@ -85,7 +86,7 @@ def terminal_safe_text(value: bytes | str) -> str:
     return "".join(chr(byte) if 32 <= byte <= 126 else "\\x%02x" % byte for byte in raw)
 
 
-def fail(message: str, code: int = 1) -> None:
+def fail(message: str, code: int = 1) -> NoReturn:
     exc = UsageError(message) if code == 2 else TrustError(message) if code == 3 else JMSException(message)
     raise exc
 
@@ -1043,7 +1044,7 @@ def count(n: int) -> bytes:
 
 def spec_entries(spec: bytes) -> list[tuple[bytes, bytes, bytes, bytes]]:
     """Canonical (type, relpath, exec, content) entries for a definition."""
-    def raise_error(error): raise error
+    def raise_error(error) -> NoReturn: raise error
     entries = []
     for directory, dirnames, filenames in os.walk(spec, onerror=raise_error):
         for name in dirnames + filenames:
