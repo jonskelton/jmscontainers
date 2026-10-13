@@ -5,6 +5,8 @@ import importlib.util
 import pathlib
 import io
 import re
+import shutil
+import subprocess
 import sys
 import unittest
 
@@ -104,6 +106,53 @@ class HelpTests(unittest.TestCase):
         self.assertIn("usage: jms build", stderr.getvalue())
         self.assertIn("unrecognized arguments: somewhere\n", stderr.getvalue())
 
+
+BASH = shutil.which("bash")
+# Stand-ins for the bash-completion helpers, so the test needs only bash:
+# _filedir marks where directories would be offered.
+BASH_STUBS = r"""
+_init_completion() {
+    words=("${COMP_WORDS[@]}"); cword=$COMP_CWORD
+    cur=${words[cword]}; prev=${words[cword-1]}
+}
+_filedir() { COMPREPLY+=("<dirs>"); }
+"""
+
+
+@unittest.skipUnless(BASH, "bash is not installed")
+class BashCompletionTests(unittest.TestCase):
+    def complete(self, line):
+        words = line.split(" ")
+        script = (BASH_STUBS + 'source "$1"; shift; COMP_WORDS=("$@"); '
+                  'COMP_CWORD=$(( $# - 1 )); _jms_completion; printf "%s\\n" "${COMPREPLY[@]}"')
+        result = subprocess.run([BASH, "--norc", "--noprofile", "-c", script, "bash",
+                                 str(ROOT / "completions" / "jms.bash"), *words],
+                                capture_output=True, text=True, check=True)
+        return set(result.stdout.split())
+
+    def test_completion_follows_the_argument_position(self):
+        launch = {"-w", "--workdir", "--trust", "--auth", "--no-auth", "--no-cache",
+                  "--no-network", "--git-writable", "-r", "--root", "-b", "--bin", "-n", "--name"}
+        cases = {
+            "jms --v": {"--version"},
+            "jms build ": {"-w", "--workdir", "--base", "--trust", "--no-auth", "--no-cache", "--pull"},
+            "jms init ": {"-w", "--workdir", "--with-manifest"},
+            "jms launch -w ": {"<dirs>"},
+            "jms launch -b ": set(),
+            "jms launch -n x ": launch | {"<dirs>"},
+            "jms launch . ": launch,
+            "jms launch -w . ": launch,
+            "jms launch -- ": set(),
+            "jms launch -b yolo-claude -- --c": set(),
+            "jms trust ": {"list", "revoke", "prune", "--fingerprint", "--auth", "--no-auth", "<dirs>"},
+            "jms trust list ": set(),
+            "jms trust revoke ": {"--purge-images", "<dirs>"},
+            "jms trust revoke . ": {"--purge-images"},
+            "jms trust . ": {"--fingerprint", "--auth", "--no-auth"},
+        }
+        for line, expected in cases.items():
+            with self.subTest(line=line):
+                self.assertEqual(self.complete(line), expected)
 
 if __name__ == "__main__":
     unittest.main()
