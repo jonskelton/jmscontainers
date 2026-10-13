@@ -401,5 +401,87 @@ def _is_dir_fd(fd):
     return stat.S_ISDIR(os.fstat(fd).st_mode)
 
 
+class ProvenanceLabelTests(unittest.TestCase):
+    """OPS-05/MAINT-17: builds record the jms version and checkout commit."""
+
+    def build_labels(self, commit):
+        recorder = Recorder()
+        with sandbox(), mock.patch.object(JMS, "runtime_run", recorder), \
+             mock.patch.object(JMS, "checkout_commit", lambda: commit), quiet():
+            JMS.run_build("/spec", "t:1", JMS.parse_cli(["build"]),
+                          {"jms.project": "p"}, project=True)
+        argv = recorder.calls[-1][0]
+        return {argv[i + 1].partition("=")[0]: argv[i + 1].partition("=")[2]
+                for i, value in enumerate(argv) if value == "--label"}
+
+    def test_version_and_commit_labels(self):
+        labels = self.build_labels("a" * 40)
+        self.assertEqual(labels["jms.version"], JMS.__version__)
+        self.assertEqual(labels["jms.commit"], "a" * 40)
+        self.assertEqual(labels["jms.project"], "p")
+        self.assertEqual(labels["jms.container"], "image")
+
+    def test_unknown_commit_omits_the_label(self):
+        labels = self.build_labels(None)
+        self.assertEqual(labels["jms.version"], JMS.__version__)
+        self.assertNotIn("jms.commit", labels)
+
+    @contextlib.contextmanager
+    def fixed_checkout(self, metadata=True):
+        # Resolve the sandbox checkout once, so the faked subprocess.run
+        # only ever sees the calls under test (canon() would otherwise
+        # reach it through realpath).
+        root = JMS.checkout_root()
+        if metadata:
+            (pathlib.Path(os.fsdecode(root)) / ".git").mkdir()
+        with mock.patch.object(JMS, "checkout_root", lambda: root):
+            yield
+
+    def git(self, responses):
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            response = responses.pop(0)
+            if isinstance(response, BaseException):
+                raise response
+            return response
+        return run, calls
+
+    def test_checkout_commit_reads_head_and_dirty_state(self):
+        head = result(stdout=b"b" * 40 + b"\n")
+        for status, expected in ((result(stdout=b""), "b" * 40),
+                                 (result(stdout=b" M bin/jms\n"), "b" * 40 + "-dirty"),
+                                 (result(returncode=128), "b" * 40)):
+            with self.subTest(expected=expected), sandbox(), self.fixed_checkout():
+                run, calls = self.git([head, status])
+                with mock.patch.dict(os.environ, {"GIT_DIR": "/elsewhere"}), \
+                     mock.patch.object(subprocess, "run", run):
+                    self.assertEqual(JMS.checkout_commit(), expected)
+                self.assertEqual(calls[0][0][3:], ["rev-parse", "--verify", "HEAD"])
+                self.assertNotIn("GIT_DIR", calls[0][1]["env"])
+                self.assertIs(calls[0][1]["stdin"], subprocess.DEVNULL)
+
+    def test_checkout_commit_is_best_effort(self):
+        cases = [
+            [FileNotFoundError("git")],
+            [subprocess.TimeoutExpired("git", 10)],
+            [result(returncode=128, stderr=b"not a git repository")],
+            [result(stdout=b"garbage\n")],
+        ]
+        for responses in cases:
+            with self.subTest(responses=responses), sandbox(), self.fixed_checkout():
+                run, _ = self.git(list(responses))
+                with mock.patch.object(subprocess, "run", run):
+                    self.assertIsNone(JMS.checkout_commit())
+
+    def test_no_git_metadata_runs_nothing(self):
+        def forbid(*args, **kwargs):
+            raise AssertionError("git must not run without checkout metadata")
+        with sandbox(), self.fixed_checkout(metadata=False), \
+             mock.patch.object(subprocess, "run", forbid):
+            self.assertIsNone(JMS.checkout_commit())
+
+
 if __name__ == "__main__":
     unittest.main()

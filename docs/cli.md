@@ -116,6 +116,15 @@ is skipped for projects whose Containerfile does not name
 `jmscontainers-base` in a `FROM` line (including `ARG`-indirected bases);
 those rebuild only on a fingerprint change or `--no-cache`.
 
+Every image jms builds, base and project alike, also carries a `jms.version`
+label with the jms version that built it and, when the jms checkout is a git
+working tree, a `jms.commit` label with its `HEAD` commit (suffixed `-dirty`
+when tracked files have local changes). Read them with
+`podman image inspect --format '{{json .Labels}}' <image>` to compare what
+built the images on two machines. The commit is best effort: when git is
+missing or the checkout is not a repository the label is left off and the
+build goes ahead.
+
 The runtime resolves every candidate `FROM` reference exactly. A qualified
 spelling such as `docker.io/library/jmscontainers-base:latest` counts as the
 shared base only when it resolves to the same image ID as the canonical local

@@ -2004,6 +2004,11 @@ def run_build(context: bytes | str, tag: str, args, labels: dict[str, str] | Non
     # LABEL, so no image can preseed the launch marker (§5 provenance).
     labels = dict(labels or {})
     labels["jms.container"] = "image"
+    # Build provenance (OPS-05): which jms, and which checkout, built this.
+    labels["jms.version"] = __version__
+    commit = checkout_commit()
+    if commit is not None:
+        labels["jms.commit"] = commit
     cmd = backend.build_argv(context_text, tag, labels,
                              no_cache=getattr(args, "no_cache", False),
                              pull=getattr(args, "pull", False), project=project)
@@ -2026,6 +2031,29 @@ def run_build(context: bytes | str, tag: str, args, labels: dict[str, str] | Non
             if base_absent:
                 print(MISSING_BASE_NOTE, file=sys.stderr)
         raise
+
+
+def checkout_commit() -> str | None:
+    """Best-effort HEAD commit of the jms checkout, suffixed `-dirty` when
+    tracked files differ; None when unknown.  Never fails a build (OPS-05)."""
+    root = os.fsdecode(checkout_root())
+    if not os.path.exists(os.path.join(root, ".git")):
+        return None
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    vcs = "git"
+    try:
+        head = subprocess.run([vcs, "-C", root, "rev-parse", "--verify", "HEAD"], env=env,
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+        if head.returncode or not re.fullmatch(rb"[0-9a-f]{40}([0-9a-f]{24})?\n", head.stdout):
+            return None
+        dirty = subprocess.run([vcs, "-C", root, "status", "--porcelain", "--untracked-files=no"],
+                               env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = head.stdout.decode("ascii").strip()
+    if dirty.returncode == 0 and dirty.stdout.strip():
+        return commit + "-dirty"
+    return commit
 
 
 def build_base(args):

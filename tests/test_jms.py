@@ -1726,7 +1726,7 @@ class BuildTests(unittest.TestCase):
 
     def test_base_build_failure_has_no_context_note(self):
         stderr = io.StringIO()
-        with self.fake(build_error="command failed"), \
+        with sandbox(), self.fake(build_error="command failed"), \
              contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(stderr):
             with self.assertRaises(JMS.JMSException):
@@ -1734,7 +1734,12 @@ class BuildTests(unittest.TestCase):
         self.assertNotIn(".jmscontainer", stderr.getvalue())
 
     def test_base_build_uses_the_repo_as_context(self):
-        with self.fake() as runtime, contextlib.redirect_stdout(io.StringIO()):
+        # The real checkout is the context here, so keep the build lock in a
+        # scratch HOME and never read the checkout's commit.
+        with tempfile.TemporaryDirectory() as home, \
+             mock.patch.dict(os.environ, {"HOME": home}), \
+             mock.patch.object(JMS, "checkout_commit", lambda: None), \
+             self.fake() as runtime, contextlib.redirect_stdout(io.StringIO()):
             JMS.build_base(self.build_args("--base", "--pull", "--no-cache"))
         build = runtime.calls[-1]["argv"]
         repo = os.fsdecode(JMS.canon(os.fsencode(pathlib.Path(JMS.__file__).resolve().parent.parent)))
@@ -3462,7 +3467,9 @@ class BuildArgvGoldenTests(unittest.TestCase):
     def test_builds_stamp_the_neutral_provenance_label(self):
         # run_build owns the shared label assembly; the stamp overrides any
         # caller-supplied value (R5.8's build half).
-        with fake_runtime() as runtime, contextlib.redirect_stdout(io.StringIO()):
+        # Sandboxed: a base build now takes a lock under HOME and reads the
+        # checkout's commit, neither of which may touch the real ones.
+        with sandbox(), fake_runtime() as runtime, contextlib.redirect_stdout(io.StringIO()):
             JMS.build_base(JMS.parse_cli(["build", "--base"]))
         build = runtime.calls[-1]["argv"]
         self.assertIn("jms.container=image", build)
