@@ -58,8 +58,10 @@ jms trust list            # "missing" marks a deleted checkout
 A project image is named `jmscontainers-<directory>-<id>:<tag>`, where
 `<id>` is the first eight characters of the id `jms trust list` prints.
 Remove one with `container image delete <name>:<tag>`, then drop the stale
-approval with `jms trust prune`. `container image prune` sweeps every
-unnamed image in the runtime, not only the ones jms left.
+approval with `jms trust prune`. Check `container image --help` for a
+prune command before relying on one; any prune sweeps every unnamed image
+in the runtime, not only the ones jms left. (Not yet verified on a Mac:
+whether apple/container keeps the replaced base as an unnamed image.)
 
 ## Resource limits
 
