@@ -1,12 +1,38 @@
 # Changelog
 
-## Unreleased
+## 2.0.1 — 2026-10-12
 
 - **The approval summary names `--git-writable`.** A first launch with
   `jms launch --git-writable` mounted `.git` read-write, but the
   capability summary shown before consent still called it read-only.
   The `.git` line now says writable and names each source:
   `run.git_writable`, `--git-writable`, or both.
+
+### Qualification
+
+Linux matrix of the release-preparation host (2026-10-12), unchanged from
+2.0.0. On it, `make test` passed (382 tests), integration tier A passed,
+and `podman image inspect` of an absent ref exited 125 with `[]` on stdout
+and a stderr byte-identical to
+`tests/fixtures/podman-5.4.2-image-inspect-absent.stderr`.
+
+| Dimension | Tested value |
+| --- | --- |
+| Podman | 5.4.2 |
+| Architecture | amd64 (`x86_64`) |
+| Kernel | 6.12.107+deb13-amd64 |
+| Distribution | Debian GNU/Linux 13 (trixie) |
+| cgroup | v2, `systemd` manager |
+| OCI runtime | crun 1.21 |
+| Storage driver | `overlay` |
+| Network backend | netavark 1.14.0, aardvark-dns 1.14.0, pasta (passt 0.0~git20250503.587980c) |
+| Rootless | yes |
+| Python | 3.15.0 |
+
+The change is to consent text only; it does not touch the runtime
+interaction surface, so macOS integration was not rerun and
+`ContainerBackend._version_qualified` is unchanged (CI's macOS leg ran
+`make test`).
 
 ## 2.0.0 — 2026-10-12
 
