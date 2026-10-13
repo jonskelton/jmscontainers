@@ -1,7 +1,9 @@
 import argparse
+import contextlib
 import importlib.machinery
 import importlib.util
 import pathlib
+import io
 import re
 import sys
 import unittest
@@ -55,6 +57,36 @@ class ParityTests(unittest.TestCase):
                 for path, text in texts.items():
                     with self.subTest(command=command, word=word, file=path):
                         self.assertRegex(text, r"(?<![\w-])" + re.escape(word) + r"(?![\w-])")
+
+
+def help_text(*argv):
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.suppress(SystemExit):
+        JMS.parse_cli([*argv, "--help"])
+    return stdout.getvalue()
+
+
+class HelpTests(unittest.TestCase):
+    def test_top_level_help_names_agents_terms_environment_and_exit_codes(self):
+        text = help_text()
+        for needle in ("AI coding agents", "definition", "fingerprint", "JMS_PROJECT_ROOTS",
+                       "JMS_TRUST_FINGERPRINT", "exit status", "jms launch -b yolo-claude -- ",
+                       "docs/cli.md"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, text)
+
+    def test_launch_help_separates_the_project_path_from_the_container_name(self):
+        text = help_text("launch")
+        self.assertIn("[-n NAME]", text)
+        self.assertIn("[PATH]", text)
+        self.assertNotIn("[name]", text)
+        self.assertIn("Everything after --", text)
+
+    def test_every_workdir_option_shows_a_path_metavar(self):
+        for command in ("build", "launch", "inspect", "init", "clean"):
+            with self.subTest(command=command):
+                self.assertIn("-w, --workdir PATH", help_text(command))
+                self.assertIn("JMS_PROJECT_ROOTS", help_text(command))
 
 
 if __name__ == "__main__":
