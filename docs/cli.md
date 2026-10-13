@@ -226,7 +226,7 @@ definition at PATH or an ancestor inside its checkout if there is one, and
 otherwise the remembered credential answer for PATH's checkout root; the
 next launch there on a terminal asks again. `trust PATH` itself still
 requires a definition. `trust list` shows remembered answers alongside
-project grants.
+project grants, marking each remembered answer `no-definition`.
 
 The trust store is `~/.config/jmscontainers/store.json` (schema 2). A
 remembered answer for a launch without a definition is an ordinary record

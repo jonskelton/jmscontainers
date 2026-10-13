@@ -2434,6 +2434,17 @@ class TrustCommandTests(unittest.TestCase):
                 self.run_trust(["trust", "revoke", str(root), "--purge-images"])
             self.assertEqual(runtime.deleted, [mine])
 
+    def test_list_marks_no_definition_answers_only(self):
+        with sandbox() as home:
+            _, defined, _ = self.seed(home)
+            plain = home / "git" / "plain"
+            (plain / ".git").mkdir(parents=True)
+            remembered = JMS.canon(os.fsencode(plain))
+            remember_base_answer(remembered, True)
+            rows = {line.split()[0]: line for line in self.run_trust(["trust", "list"]).splitlines()}
+            self.assertTrue(rows[hashlib.sha256(remembered).hexdigest()[:12]].endswith("auth=yes  no-definition"))
+            self.assertTrue(rows[hashlib.sha256(defined).hexdigest()[:12]].endswith("auth=no"))
+
     def test_revoke_forgets_a_no_definition_answer_from_any_subdirectory(self):
         with sandbox() as home:
             plain = home / "git" / "plain"

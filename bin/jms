@@ -2228,7 +2228,11 @@ def cmd_trust(args):
         store = read_store()
         for pid, record in sorted(store["projects"].items()):
             state = "present" if os.path.isdir(record["root"]) else "missing"
-            print("%s  %s  %s  auth=%s" % (pid[:12], quote(record["root"]), state, "yes" if record["grants"]["auth"] else "no"))
+            # A remembered no-definition answer is a credential choice, not
+            # an approved definition; mark it so the two read differently.
+            kind = "  no-definition" if record["tf"] == BASE_CREDENTIAL_TF else ""
+            print("%s  %s  %s  auth=%s%s" % (pid[:12], quote(record["root"]), state,
+                                             "yes" if record["grants"]["auth"] else "no", kind))
         return
     if action == "prune":
         if args.path: fail("trust prune does not take a path", 2)
