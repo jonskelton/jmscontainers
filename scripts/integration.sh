@@ -469,7 +469,7 @@ tier_a() {
     [ "$status" -ne 0 ] || fail "build with the base absent unexpectedly succeeded"
     grep -q "proxyconnect" "$work/missing-base.err" \
         || fail "absent-base build never reached the refused proxy (check is vacuous)"
-    grep -q "run \`jms build\` in the base directory first" "$work/missing-base.err" \
+    grep -q "run \`jms build --base\` first" "$work/missing-base.err" \
         || fail "missing-base failure lacked the conditional hint"
     jms build --base    # restore (cached layers make this fast)
     jms clean --yes --images -w "$proj" >/dev/null 2>&1 || true
