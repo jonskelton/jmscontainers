@@ -2741,15 +2741,25 @@ def cmd_launch(args):
     runtime_run(runtime().run_argv(plan), replace=True)
 
 
-def cmd_trust(args):
-    if args.auth and args.no_auth:
-        fail("--auth and --no-auth cannot be combined", 2)
+def trust_verb(args) -> str | None:
+    """The trust verb, or None to approve; settles `trust [path]` in one place.
+
+    The historical grammar is `trust [path]`; reserve only the three verbs,
+    so an absolute path remains a valid first positional operand: any other
+    first operand is the path itself.
+    """
     action = getattr(args, "trust_action", None)
-    # The historical grammar is `trust [path]`; reserve only the three verbs,
-    # so an absolute path remains a valid first positional operand.
     if action not in (None, "list", "revoke", "prune"):
         if args.path: fail("trust accepts one project path", 2)
         args.path, action = action, None
+    return action
+
+
+def cmd_trust(args):
+    """`jms trust`: check the flags each verb accepts, then hand off to it."""
+    if args.auth and args.no_auth:
+        fail("--auth and --no-auth cannot be combined", 2)
+    action = trust_verb(args)
     if action in ("list", "revoke", "prune"):
         if getattr(args, "fingerprint", None):
             fail("--fingerprint is valid only when approving project trust", 2)
@@ -2757,83 +2767,94 @@ def cmd_trust(args):
             fail("--auth and --no-auth are valid only when approving project trust", 2)
     if args.purge_images and action != "revoke":
         fail("--purge-images is valid only with trust revoke", 2)
-    if action == "list":
-        if args.path: fail("trust list does not take a path", 2)
-        store = read_store()
-        for pid, record in sorted(store["projects"].items()):
-            state = "present" if os.path.isdir(record["root"]) else "missing"
-            # A remembered no-definition answer is a credential choice, not
-            # an approved definition; mark it so the two read differently.
-            kind = "  no-definition" if record["tf"] == BASE_CREDENTIAL_TF else ""
-            print("%s  %s  %s  auth=%s%s" % (pid[:12], quote(record["root"]), state,
-                                             "yes" if record["grants"]["auth"] else "no", kind))
-        return
-    if action == "prune":
-        if args.path: fail("trust prune does not take a path", 2)
-        removed = []
-        def prune(store):
-            for pid, record in list(store["projects"].items()):
-                if not os.path.isdir(record["root"]):
-                    removed.append((pid, record)); del store["projects"][pid]
-            return bool(removed)
-        update_store(prune)
-        for pid, record in removed: print("pruned trust record " + pid[:12] + " " + quote(record["root"]))
-        return
-    if action == "revoke":
-        if not args.path: fail("trust revoke requires a project path", 2)
-        workdir, _ = resolve_operand(args.path)
-        root, _ = discover(workdir, consume_spec=False)
-        base = None
-        if root is None:
-            # Every vanished definition's record on the way to the checkout
-            # root -- any one left would still govern launches here and
-            # regain its grants if its definition came back -- and otherwise
-            # the checkout's remembered no-definition answer.
-            base_root, base, vanished = base_credential_records(read_store(), workdir)
-            roots = [path for path, _ in vanished] or [base_root]
-        else:
-            roots = [root]
-        pids = [hashlib.sha256(root).hexdigest() for root in roots]
-        if args.purge_images:
-            runtime()  # select before mutating the store: a refusal leaves it untouched
-        revoked = []
-        def revoke(store):
-            revoked.extend(root for root, pid in zip(roots, pids) if pid in store["projects"])
-            if not revoked:
-                if args.purge_images:
-                    return False
-                fail("no trust record for " + quote(roots[0]))
-            for pid in pids:
-                store["projects"].pop(pid, None)
-            return True
-        update_store(revoke)
-        for root in revoked:
-            print("revoked trust for " + quote(root))
+    {"list": trust_list, "prune": trust_prune, "revoke": trust_revoke, None: trust_approve}[action](args)
+
+
+def trust_list(args):
+    """`jms trust list`: one line per record, marking missing roots and no-definition answers."""
+    if args.path: fail("trust list does not take a path", 2)
+    store = read_store()
+    for pid, record in sorted(store["projects"].items()):
+        state = "present" if os.path.isdir(record["root"]) else "missing"
+        # A remembered no-definition answer is a credential choice, not
+        # an approved definition; mark it so the two read differently.
+        kind = "  no-definition" if record["tf"] == BASE_CREDENTIAL_TF else ""
+        print("%s  %s  %s  auth=%s%s" % (pid[:12], quote(record["root"]), state,
+                                         "yes" if record["grants"]["auth"] else "no", kind))
+
+
+def trust_prune(args):
+    """`jms trust prune`: drop every record whose root directory is gone."""
+    if args.path: fail("trust prune does not take a path", 2)
+    removed = []
+    def prune(store):
+        for pid, record in list(store["projects"].items()):
+            if not os.path.isdir(record["root"]):
+                removed.append((pid, record)); del store["projects"][pid]
+        return bool(removed)
+    update_store(prune)
+    for pid, record in removed: print("pruned trust record " + pid[:12] + " " + quote(record["root"]))
+
+
+def trust_revoke(args):
+    """`jms trust revoke PATH [--purge-images]`: forget the records governing PATH."""
+    if not args.path: fail("trust revoke requires a project path", 2)
+    workdir, _ = resolve_operand(args.path)
+    root, _ = discover(workdir, consume_spec=False)
+    base = None
+    if root is None:
+        # Every vanished definition's record on the way to the checkout
+        # root -- any one left would still govern launches here and
+        # regain its grants if its definition came back -- and otherwise
+        # the checkout's remembered no-definition answer.
+        base_root, base, vanished = base_credential_records(read_store(), workdir)
+        roots = [path for path, _ in vanished] or [base_root]
+    else:
+        roots = [root]
+    pids = [hashlib.sha256(root).hexdigest() for root in roots]
+    if args.purge_images:
+        runtime()  # select before mutating the store: a refusal leaves it untouched
+    revoked = []
+    def revoke(store):
+        revoked.extend(root for root, pid in zip(roots, pids) if pid in store["projects"])
         if not revoked:
-            print("trust already revoked for " + quote(roots[0]))
-        if base and revoked and base["root"].encode("utf-8") not in revoked:
-            print("note: the remembered credential answer for " + quote(base["root"]) + " (auth=" +
-                  ("yes" if base["grants"]["auth"] else "no") + ") now applies here; revoke again "
-                  "to remove it", file=sys.stderr)
-        if args.purge_images:
-            # Revocation committed above, so every purge-path failure --
-            # readiness, enumeration, or removal -- keeps the "trust was
-            # revoked, but image purge failed" split (MIR-048).
-            try:
-                runtime_ready()
-                schedule = [step for root, pid in zip(roots, pids)
-                            for step in image_removal_schedule(pid, tag_prefix_for(root, pid), keep=0)]
-            except JMSException as exc:
-                fail("trust was revoked, but image purge failed: " + str(exc))
-            def report(ref, result):
-                if result.outcome == "removed":
-                    print("removed image " + quote(ref))
-            results = execute_removal_schedule(schedule, report)
-            failures = [(ref, result) for ref, result in results if result.outcome == "failed"]
-            if failures:
-                detail = "; ".join(quote(ref) + ": " + result.detail for ref, result in failures)
-                fail("trust was revoked, but image purge failed: " + detail)
-        return
+            if args.purge_images:
+                return False
+            fail("no trust record for " + quote(roots[0]))
+        for pid in pids:
+            store["projects"].pop(pid, None)
+        return True
+    update_store(revoke)
+    for root in revoked:
+        print("revoked trust for " + quote(root))
+    if not revoked:
+        print("trust already revoked for " + quote(roots[0]))
+    if base and revoked and base["root"].encode("utf-8") not in revoked:
+        print("note: the remembered credential answer for " + quote(base["root"]) + " (auth=" +
+              ("yes" if base["grants"]["auth"] else "no") + ") now applies here; revoke again "
+              "to remove it", file=sys.stderr)
+    if args.purge_images:
+        # Revocation committed above, so every purge-path failure --
+        # readiness, enumeration, or removal -- keeps the "trust was
+        # revoked, but image purge failed" split (MIR-048).
+        try:
+            runtime_ready()
+            schedule = [step for root, pid in zip(roots, pids)
+                        for step in image_removal_schedule(pid, tag_prefix_for(root, pid), keep=0)]
+        except JMSException as exc:
+            fail("trust was revoked, but image purge failed: " + str(exc))
+        def report(ref, result):
+            if result.outcome == "removed":
+                print("removed image " + quote(ref))
+        results = execute_removal_schedule(schedule, report)
+        failures = [(ref, result) for ref, result in results if result.outcome == "failed"]
+        if failures:
+            detail = "; ".join(quote(ref) + ": " + result.detail for ref, result in failures)
+            fail("trust was revoked, but image purge failed: " + detail)
+
+
+def trust_approve(args):
+    """`jms trust [PATH]`: approve a definition, or record a no-definition credential answer."""
     workdir, _ = resolve_operand(args.path)
     data = project_data(workdir)
     if not data:
