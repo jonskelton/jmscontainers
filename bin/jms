@@ -1243,6 +1243,24 @@ def special_file_kind(path: bytes) -> str | None:
     return None
 
 
+def refuse_writable_git_mounts(root: bytes, config: dict) -> None:
+    """Refuse a read-write manifest mount that reaches the project's .git.
+
+    The launch binds <root>/.git read-only, but an extra mount of .git, a
+    path inside it, or anything containing it (the root itself, its parent)
+    would hand the same directory back read-write under another target.
+    Only run.git_writable, which the approval prompt names, grants that.
+    """
+    git_dir = root + b"/.git"
+    if config["git_writable"] or not os.path.isdir(git_dir) or os.path.islink(git_dir):
+        return
+    for index, mount in enumerate(config["mounts"]):
+        if not mount["readonly"] and overlaps_any(mount["source"], [git_dir]):
+            fail("mounts[%d] source %s would make the project .git writable"
+                 " -- set readonly = true, or run.git_writable = true to grant it"
+                 % (index, quote(mount["source"])))
+
+
 def refuse_socket_mounts(config: dict) -> None:
     """Refuse manifest mounts that would hand the container a host socket.
 
@@ -1915,6 +1933,7 @@ def project_data(workdir: bytes):
             fail("mount source overlaps a protected jms host directory: " + quote(mount["source"]))
         runtime_path(mount["source"])
     refuse_socket_mounts(config)
+    refuse_writable_git_mounts(root, config)
     tf = trust_fingerprint(entries)
     mark_credential_mounts(config)
     pid = hashlib.sha256(root).hexdigest()

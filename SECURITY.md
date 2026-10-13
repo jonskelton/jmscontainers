@@ -70,7 +70,8 @@ to know:
   and the rest of the git directory cannot be written, and `.git` cannot be
   renamed out of the way. It stays open when:
   - the launch used `--git-writable`, or an approved definition sets
-    `run.git_writable = true`;
+    `run.git_writable = true` (only then may the definition also mount
+    `.git`, or a directory containing it, read-write elsewhere);
   - `.git` at the mount root is not a directory (a linked worktree's or
     submodule's `.git` file, or a symlink), or is absent, as in a launch
     with no definition from a checkout's subdirectory;

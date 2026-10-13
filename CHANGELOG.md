@@ -7,7 +7,9 @@
   `core.fsmonitor` that host git later runs. This breaks `git add` and
   `git commit` inside the container ("Read-only file system"): commit on
   the host, launch with `--git-writable`, or set `[run] git_writable =
-  true` in the definition (the approval prompt names it). Only a real
+  true` in the definition (the approval prompt names it). Without that
+  key, a definition's read-write mount of `.git`, a path inside it, or a
+  directory containing it is refused. Only a real
   `.git` directory at the mount root is covered: linked worktrees,
   submodules, a `.git` symlink and subdirectory launches without a
   definition get no bind. Verified on Podman; macOS qualification is
