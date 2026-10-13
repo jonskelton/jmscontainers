@@ -1459,7 +1459,7 @@ def validate_mount_layout(root: bytes, config: dict, as_root: bool) -> str:
 
 def default_config():
     return {"name": None, "env": {}, "mounts": [], "entry": ["/bin/bash", "-l"],
-            "mount_auth": True, "preserve_host_path": False}
+            "mount_auth": True, "preserve_host_path": False, "git_writable": False}
 
 
 def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
@@ -1491,7 +1491,7 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
     if type(run) is not dict: err("run")
     else:
         for key in run:
-            if key not in {"entry", "mount_auth", "preserve_host_path"}: err("run." + key)
+            if key not in {"entry", "mount_auth", "preserve_host_path", "git_writable"}: err("run." + key)
         if "entry" in run:
             entry = run["entry"]
             if type(entry) is not list or not entry or any(type(x) is not str or "\0" in x for x in entry) or not entry[0]: err("run.entry")
@@ -1502,6 +1502,9 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
         if "preserve_host_path" in run:
             if type(run["preserve_host_path"]) is not bool: err("run.preserve_host_path")
             else: config["preserve_host_path"] = run["preserve_host_path"]
+        if "git_writable" in run:
+            if type(run["git_writable"]) is not bool: err("run.git_writable")
+            else: config["git_writable"] = run["git_writable"]
     mounts = data.get("mounts", [])
     if type(mounts) is not list: err("mounts")
     else:
@@ -1571,6 +1574,11 @@ def extra_mount_mode(mount: dict) -> str:
     return "read-only" if mount["readonly"] else "read-write"
 
 
+# The repository author writes run.git_writable, so approving a definition that
+# sets it must say plainly what it hands the container.
+GIT_WRITABLE_NOTE = "container can write .git (hooks and config there run on your host)"
+
+
 def print_capability_summary(root: bytes, config: dict) -> None:
     """Describe every project-controlled runtime capability before consent."""
     print("Project container capabilities:", file=sys.stderr)
@@ -1579,6 +1587,9 @@ def print_capability_summary(root: bytes, config: dict) -> None:
     print("- project mount: " + quote(root) + " -> "
           + (quote(root) + " (host path preserved)" if config["preserve_host_path"] else "\"/work\"")
           + " read-write", file=sys.stderr)
+    print("- project .git: " + (GIT_WRITABLE_NOTE + " (run.git_writable)" if config["git_writable"]
+                                else "read-only when it is a directory at the project root"),
+          file=sys.stderr)
     for mount in config["mounts"]:
         mode = extra_mount_mode(mount)
         print("- extra mount: " + quote(mount["source"]) + " -> " + quote(mount["target"]) + " " + mode
@@ -1678,6 +1689,8 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
               + ("its own host path " + quote(root) + " (run.preserve_host_path)."
                  if (config or default_config())["preserve_host_path"] else "/work."),
               file=sys.stderr)
+        if (config or default_config())["git_writable"]:
+            print("It also sets run.git_writable: " + GIT_WRITABLE_NOTE + ".", file=sys.stderr)
         if consent_input("Allow build & run? [y/N] ").strip().lower() not in ("y", "yes"):
             fail("project trust declined", 3)
         build_ok = True
@@ -2268,6 +2281,20 @@ def launch_plan(workdir: bytes, data, args, image: str, auth: bool) -> LaunchPla
     inherited.update(config["env"])
     env += sorted(inherited.items())
     mounts = [(mount, project_target, False)]
+    # The project's own .git is bound read-only over the read-write project
+    # mount, so the container cannot plant hooks or edit config (core.fsmonitor,
+    # core.hooksPath) that host git later runs.  Only a real directory at the
+    # mount root is covered: a .git file (linked worktree, submodule) names a
+    # git dir outside the mount, and a launch from a checkout's subdirectory
+    # has no .git at the mount root to bind.  lstat, not stat: a .git symlink
+    # is not bound, since its target need not exist at that container path.
+    git_dir = os.path.join(mount, b".git")
+    try:
+        git_is_dir = stat.S_ISDIR(os.lstat(git_dir).st_mode)
+    except OSError:
+        git_is_dir = False
+    if git_is_dir and not (config["git_writable"] or getattr(args, "git_writable", False)):
+        mounts.append((git_dir, project_target + "/.git", True))
     for extra_mount in config["mounts"]:
         # Keyed on the grant itself, not on mount_auth: a manifest that keeps
         # the agent-state pool off by default still holds its own credentials.
@@ -2657,7 +2684,8 @@ def parser():
     flags(l, ("--trust", "one-shot build/run approval for this invocation; never grants credentials"),
           ("--auth", "mount agent state (with a definition, asks for the credential grant if not already given)"),
           ("--no-auth", NO_AUTH_HELP), ("--no-cache", NO_CACHE_HELP),
-          ("--no-network", "run the container with no network; a project image build still uses it"))
+          ("--no-network", "run the container with no network; a project image build still uses it"),
+          ("--git-writable", "mount the project's .git read-write (hooks and config there run on your host)"))
     l.add_argument("-r", "--root", action="store_true", help="run as root instead of the isolation user")
     l.add_argument("-b", "--bin", help="entry program to run instead of the configured entry")
     l.add_argument("-n", "--name", dest="container_name", metavar="NAME", help="container name")

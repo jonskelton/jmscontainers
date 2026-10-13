@@ -520,6 +520,14 @@ class ManifestTests(unittest.TestCase):
                                "target": "/home/isolation/.cache/demo", "readonly": True,
                                "allow_socket": False}])
 
+    def test_git_writable_accepts_the_boolean_and_rejects_anything_else(self):
+        self.assertFalse(JMS.parse_manifest(None)["git_writable"])
+        self.assertTrue(JMS.parse_manifest(b"[run]\ngit_writable = true\n")["git_writable"])
+        self.assertFalse(JMS.parse_manifest(b"[run]\ngit_writable = false\n")["git_writable"])
+        for raw in (b'[run]\ngit_writable = "yes"\n', b"[run]\ngit_writable = 1\n"):
+            with self.assertRaisesRegex(JMS.JMSException, "run.git_writable"):
+                JMS.parse_manifest(raw)
+
     def test_invalid_fields_are_reported_together(self):
         with self.assertRaisesRegex(JMS.JMSException, "invalid jmscontainer.toml fields"):
             JMS.parse_manifest(b'nonsense = 1\n[env]\n"BAD KEY" = "x"\n')
@@ -1123,6 +1131,40 @@ class ConsentTests(unittest.TestCase):
                                   answers=["y"])
             self.assertEqual(result, (True, True))
             self.assertEqual(JMS.read_store()["projects"][pid]["grants"]["auth"], True)
+
+    def test_git_writable_is_named_in_the_approval_text(self):
+        """The repository author writes the key, so consent must say what it grants."""
+        note = "container can write .git (hooks and config there run on your host)"
+        with sandbox() as home:
+            root = JMS.canon(os.fsencode(make_project(home)))
+            # A fresh fingerprint per case, so each one reaches the approval prompt.
+            for tf, raw, shown in (("d" * 64, b"[run]\ngit_writable = true\n", True),
+                                   ("e" * 64, b"[run]\ngit_writable = false\n", False),
+                                   ("f" * 64, None, False)):
+                with self.subTest(manifest=raw):
+                    stderr = TTYIO(True)
+                    replies = ["y", ""]
+                    with mock.patch.object(JMS, "consent_input", side_effect=lambda q: replies.pop(0)), \
+                         mock.patch.object(sys, "stdin", TTYIO(True)), \
+                         mock.patch.object(sys, "stderr", stderr):
+                        JMS.approve(root, tf, JMS.parse_cli(["build"]), action="build",
+                                    config=JMS.parse_manifest(raw))
+                    self.assertEqual(replies, [])
+                    self.assertEqual(note in stderr.getvalue(), shown)
+                    self.assertEqual("run.git_writable" in stderr.getvalue(), shown)
+
+    def test_changing_git_writable_changes_the_fingerprint_and_reprompts(self):
+        with sandbox() as home:
+            root = make_project(home, manifest=b"[run]\ngit_writable = false\n")
+            canonical = JMS.canon(os.fsencode(root))
+            before = JMS.project_data(canonical)["tf"]
+            self.approve(canonical, before, ["build"], answers=["y", ""])
+            self.assertEqual(self.approve(canonical, before, ["build"], tty=False), (True, False))
+            (root / ".jmscontainer" / "jmscontainer.toml").write_bytes(b"[run]\ngit_writable = true\n")
+            after = JMS.project_data(canonical)["tf"]
+            self.assertNotEqual(after, before)
+            with self.assertRaisesRegex(JMS.TrustError, "prompting is unavailable"):
+                self.approve(canonical, after, ["build"], tty=False)
 
 
     def credential_flags(self, home, *sources):
@@ -2342,6 +2384,72 @@ class LaunchTests(unittest.TestCase):
             root_text = os.fsdecode(JMS.canon(os.fsencode(root)))
             self.assertIn(self.MOUNT + root_text + ",target=/work", argv)
 
+
+    def project_launch(self, home, manifest=None, extra=()):
+        root = make_project(home, manifest=manifest)
+        data = JMS.project_data(JMS.canon(os.fsencode(root)))
+        tag = data["tag_prefix"] + ":" + data["tf"][:12]
+        argv = self.launch_argv(home, ["launch", "--trust", "--no-auth", *extra, "-w", str(root)],
+                                images={tag: image_record(tag)})
+        return os.fsdecode(JMS.canon(os.fsencode(root))), argv
+
+    def test_project_git_is_mounted_read_only_by_default(self):
+        with sandbox() as home:
+            root_text, argv = self.project_launch(home)
+            git_mount = self.MOUNT + root_text + "/.git,target=/work/.git,readonly"
+            self.assertIn(git_mount, argv)
+            # Nested inside the project mount, so it must follow it.
+            self.assertLess(argv.index(self.MOUNT + root_text + ",target=/work"),
+                            argv.index(git_mount))
+
+    def test_git_mount_follows_a_preserved_host_path(self):
+        with sandbox() as home:
+            root_text, argv = self.project_launch(home, b"[run]\npreserve_host_path = true\n")
+            self.assertIn(self.MOUNT + root_text + "/.git,target=" + root_text + "/.git,readonly",
+                          argv)
+
+    def test_git_writable_flag_drops_the_read_only_git_mount(self):
+        with sandbox() as home:
+            _, argv = self.project_launch(home, extra=["--git-writable"])
+            self.assertFalse([arg for arg in argv if "/.git" in arg])
+
+    def test_manifest_git_writable_drops_the_read_only_git_mount(self):
+        with sandbox() as home:
+            _, argv = self.project_launch(home, b"[run]\ngit_writable = true\n")
+            self.assertFalse([arg for arg in argv if "/.git" in arg])
+
+    def test_no_definition_launch_gets_the_git_mount_and_the_flag(self):
+        with sandbox() as home:
+            plain = home / "git" / "plain"
+            (plain / ".git").mkdir(parents=True)
+            text = os.fsdecode(JMS.canon(os.fsencode(plain)))
+            images = {JMS.BASE: image_record(JMS.BASE)}
+            argv = self.launch_argv(home, ["launch", "--no-auth", "-w", str(plain)], images=images)
+            self.assertIn(self.MOUNT + text + "/.git,target=/work/.git,readonly", argv)
+            argv = self.launch_argv(home, ["launch", "--no-auth", "--git-writable", "-w", str(plain)],
+                                    images=images)
+            self.assertFalse([arg for arg in argv if "/.git" in arg])
+
+    def test_git_file_symlink_or_absence_adds_no_mount(self):
+        """Only a real directory at the mount root is bound."""
+        with sandbox() as home:
+            images = {JMS.BASE: image_record(JMS.BASE)}
+            worktree = home / "git" / "worktree"
+            worktree.mkdir()
+            (worktree / ".git").write_bytes(b"gitdir: /elsewhere/.git/worktrees/w\n")
+            linked = home / "git" / "linked"
+            linked.mkdir()
+            (linked / "real-git").mkdir()
+            (linked / ".git").symlink_to("real-git")
+            checkout = home / "git" / "checkout"
+            (checkout / ".git").mkdir(parents=True)
+            (checkout / "sub").mkdir()
+            for workdir in (worktree, linked, home / "git" / "plain", checkout / "sub"):
+                workdir.mkdir(exist_ok=True)
+                with self.subTest(workdir=workdir.name):
+                    argv = self.launch_argv(home, ["launch", "--no-auth", "-w", str(workdir)],
+                                            images=images)
+                    self.assertFalse([arg for arg in argv if "/.git" in arg])
 
     def test_launch_inherits_the_host_timezone(self):
         with sandbox() as home:

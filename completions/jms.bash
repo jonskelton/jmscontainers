@@ -29,7 +29,7 @@ _jms_completion() {
             COMPREPLY=( $(compgen -W '-w --workdir --base --trust --no-auth --no-cache --pull' -- "$cur") )
             _jms_dirs ;;
         launch)
-            COMPREPLY=( $(compgen -W '-w --workdir --trust --auth --no-auth --no-cache --no-network -r --root -b --bin -n --name' -- "$cur") )
+            COMPREPLY=( $(compgen -W '-w --workdir --trust --auth --no-auth --no-cache --no-network --git-writable -r --root -b --bin -n --name' -- "$cur") )
             _jms_dirs ;;
         inspect)
             COMPREPLY=( $(compgen -W '-w --workdir' -- "$cur") )
