@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -113,7 +114,93 @@ def runtime():
     return _RUNTIME
 
 
-def runtime_run(argv, *, capture=True, check=True, stdin=None, stdout=None, stderr=None, replace=False):
+# Readiness and query calls (version probe, `system status`, `info`, image
+# inspect/list, ps) are bounded so a wedged engine cannot hang jms forever
+# (OPS-01); `build`, removals and the exec'd `run` stay unbounded on purpose.
+DEFAULT_RUNTIME_TIMEOUT = 60
+# apple/container's `system start` may boot the VM and fetch a kernel.
+SYSTEM_START_TIMEOUT_FACTOR = 3
+
+
+def query_timeout() -> int:
+    """Seconds a runtime readiness/query call may run (JMS_RUNTIME_TIMEOUT)."""
+    raw = os.environ.get("JMS_RUNTIME_TIMEOUT")
+    if raw is None or raw == "":
+        return DEFAULT_RUNTIME_TIMEOUT
+    if not re.fullmatch(r"[1-9][0-9]{0,5}", raw):
+        fail("JMS_RUNTIME_TIMEOUT must be a whole number of seconds from 1 to 999999, "
+             "not " + quote(raw), 2)
+    return int(raw)
+
+
+def debug_enabled() -> bool:
+    return os.environ.get("JMS_DEBUG", "") not in ("", "0")
+
+
+def debug(message: str) -> None:
+    if debug_enabled():
+        print("jms-debug: " + terminal_safe_text(message), file=sys.stderr)
+
+
+class Terminated(BaseException):
+    """SIGTERM/SIGHUP reached jms; unwinds like KeyboardInterrupt (OPS-02)."""
+
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
+        self.exit_code = 128 + signum
+
+
+# The runtime child currently being waited on, and the termination signal
+# forwarded to it, if any.  Only runtime_run() sets _CHILD.
+_CHILD = None
+_TERMINATING = None
+
+
+def forward_termination(signum, frame=None):
+    """SIGTERM/SIGHUP handler: hand the signal to the runtime child and keep
+    waiting for it, so a killed jms never orphans a build under PID 1."""
+    global _TERMINATING
+    _TERMINATING = signum
+    child = _CHILD
+    if child is not None and child.returncode is None:
+        child.send_signal(signum)
+        return
+    raise Terminated(signum)
+
+
+def install_signal_forwarding() -> None:
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, forward_termination)
+
+
+def supervise(argv, *, stdin, stdout, stderr, timeout):
+    """Run one runtime child to completion, bounded by timeout (or not)."""
+    global _CHILD
+    with subprocess.Popen(argv, stdin=stdin, stdout=stdout, stderr=stderr) as child:
+        try:
+            _CHILD = child
+            out, err = child.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.communicate()
+            debug("timed out after %ds" % timeout)
+            fail("runtime command timed out after %ds: %s\nhint: the container runtime "
+                 "is not responding; check it by hand, or raise JMS_RUNTIME_TIMEOUT"
+                 % (timeout, quote(" ".join(argv))))
+        except BaseException:
+            child.kill()
+            raise
+        finally:
+            _CHILD = None
+    if _TERMINATING is not None:
+        debug("exit %d after forwarded signal %d" % (child.returncode, _TERMINATING))
+        raise Terminated(_TERMINATING)
+    return subprocess.CompletedProcess(argv, child.returncode, out, err)
+
+
+def runtime_run(argv, *, capture=True, check=True, stdin=None, stdout=None, stderr=None, replace=False,
+                timeout=None):
     """The sole process boundary for invoking the container runtime executable."""
     if not argv or argv[0] != runtime().exe:
         raise AssertionError("runtime argv must begin with " + runtime().exe)
@@ -124,20 +211,25 @@ def runtime_run(argv, *, capture=True, check=True, stdin=None, stdout=None, stde
         stdout = subprocess.PIPE if capture else None
     if stderr is None:
         stderr = subprocess.PIPE if capture else None
+    debug(("exec: " if replace else "run: ") + " ".join(map(quote, argv))
+          + ("" if timeout is None else " (timeout %ds)" % timeout))
     try:
         if replace:
             os.execvp(argv[0], argv)
             raise AssertionError("runtime exec unexpectedly returned")
-        return subprocess.run(argv, stdin=stdin, stdout=stdout, stderr=stderr, check=check)
+        started = time.monotonic()
+        proc = supervise(argv, stdin=stdin, stdout=stdout, stderr=stderr, timeout=timeout)
     except FileNotFoundError:
         fail(runtime().exe + " CLI not found; " + runtime().install_hint)
-    except subprocess.CalledProcessError as exc:
-        detail = quote(exc.stderr or exc.stdout or b"")
+    debug("exit %d (%.2fs)" % (proc.returncode, time.monotonic() - started))
+    if check and proc.returncode:
+        detail = quote(proc.stderr or proc.stdout or b"")
         fail("command failed: " + quote(" ".join(map(str, argv))) + " -- " + detail)
+    return proc
 
 
 def runtime_json(argv) -> object:
-    proc = runtime_run(argv)
+    proc = runtime_run(argv, timeout=query_timeout())
     try:
         return json.loads(proc.stdout.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
@@ -321,18 +413,19 @@ class ContainerBackend:
                      ".".join(map(str, self._version_qualified))), file=sys.stderr)
 
     def ensure_started(self):
-        probe = runtime_run([self.exe, "system", "status"], check=False)
+        probe = runtime_run([self.exe, "system", "status"], check=False, timeout=query_timeout())
         if probe.returncode:
             print("starting container runtime...")
-            started = runtime_run([self.exe, "system", "start"], capture=True, check=False)
-            recheck = runtime_run([self.exe, "system", "status"], check=False)
+            started = runtime_run([self.exe, "system", "start"], capture=True, check=False,
+                                  timeout=query_timeout() * SYSTEM_START_TIMEOUT_FACTOR)
+            recheck = runtime_run([self.exe, "system", "status"], check=False, timeout=query_timeout())
             if recheck.returncode:
                 detail = recheck.stderr or recheck.stdout or started.stderr or started.stdout or b""
                 fail("container runtime did not start: " + quote(detail))
 
     def resolve_image(self, ref):
         source = self.exe + " image inspect"
-        proc = runtime_run([self.exe, "image", "inspect", ref], check=False)
+        proc = runtime_run([self.exe, "image", "inspect", ref], check=False, timeout=query_timeout())
         if proc.returncode == 0:
             try:
                 records = json.loads(proc.stdout.decode("utf-8"))
@@ -655,7 +748,7 @@ class PodmanBackend:
                  "and any storage.conf override")
 
     def image_exists(self, image):
-        proc = runtime_run([self.exe, "image", "exists", image], check=False)
+        proc = runtime_run([self.exe, "image", "exists", image], check=False, timeout=query_timeout())
         if proc.returncode == 0:
             return True
         if proc.returncode == 1:
@@ -675,7 +768,7 @@ class PodmanBackend:
         if not self.image_exists(ref):
             return None
         source = self.exe + " image inspect"
-        proc = runtime_run([self.exe, "image", "inspect", ref], check=False)
+        proc = runtime_run([self.exe, "image", "inspect", ref], check=False, timeout=query_timeout())
         if proc.returncode != 0:
             fail(source + " failed for " + quote(ref) + " (exit " + str(proc.returncode)
                  + "): " + quote(proc.stderr or proc.stdout or b""))
@@ -1847,7 +1940,7 @@ def record_base_answer(root: bytes, answer: bool):
 
 def runtime_ready():
     backend = runtime()
-    version = runtime_run(backend.version_argv(), check=False)
+    version = runtime_run(backend.version_argv(), check=False, timeout=query_timeout())
     output = version.stdout
     try:
         first_line = output.decode("utf-8").split("\n", 1)[0]
@@ -2784,6 +2877,7 @@ def parse_cli(argv=None):
 
 def main():
     try:
+        install_signal_forwarding()
         args = parse_cli()
         args.func(args)
     except JMSException as exc:
@@ -2797,6 +2891,9 @@ def main():
         return 1
     except KeyboardInterrupt:
         return 130
+    except Terminated as exc:
+        print("error: terminated by " + signal.Signals(exc.signum).name, file=sys.stderr)
+        return exc.exit_code
 
 
 if __name__ == "__main__":

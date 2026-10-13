@@ -222,7 +222,7 @@ files are sourced in every container, including projects you never granted
 credential access, so an `export TOKEN=...` in `bashrc` hands that token to
 all of them. jms has no supported way to pass a secret into a container
 yet; `[env]` values are passed to the runtime as `--env KEY=VALUE`
-arguments.
+arguments, and `JMS_DEBUG=1` prints those arguments to stderr.
 
 The trust store lives at `~/.config/jmscontainers/store.json`; agent state —
 credentials and configuration — lives under

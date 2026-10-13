@@ -215,7 +215,7 @@ class FakeRuntime:
         return self.result()
 
     def __call__(self, argv, capture=True, check=True, stdin=None,
-                 stdout=None, stderr=None, replace=False):
+                 stdout=None, stderr=None, replace=False, timeout=None):
         self.calls.append({"argv": list(argv), "replace": replace})
         if argv[0] != self.backend:
             raise AssertionError("fake %s runtime saw argv[0]=%s" % (self.backend, argv[0]))

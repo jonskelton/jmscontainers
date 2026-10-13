@@ -283,8 +283,37 @@ images it does not own, under any scope (image untags on Podman pass
 parents). Run your runtime's own `image prune` yourself if you want a
 global sweep.
 
+## Timeouts and signals
+
+jms bounds the calls it makes to check or query the runtime: the version
+probe, `podman info`, `container system status`, image inspect, exists and
+list, and container listing. Each may run for 60 seconds (`container system
+start`, which may boot the VM, three times that) before jms kills it and
+exits 1 with `error: runtime command timed out after 60s: "<command>"`. A
+runtime that hits this is wedged (a stale storage lock, for example); check
+it by hand. `JMS_RUNTIME_TIMEOUT` changes the limit. Image builds, container
+stops and removals, and the container `launch` runs are never timed out.
+
+When jms receives SIGTERM or SIGHUP while a runtime command such as a build
+is running, it passes the signal on to that command and waits for it to
+exit, so stopping jms (a closed SSH session, a service manager) does not
+leave a build running on its own. jms then exits with 128 plus the signal
+number (143 for SIGTERM, 129 for SIGHUP) after printing
+`error: terminated by SIGTERM` (or `SIGHUP`). Ctrl-C is unchanged: the
+terminal delivers it to the runtime directly. `launch` replaces jms with the
+runtime, so a signal sent during a session goes to the runtime itself.
+
 ## Environment variables
 
+- `JMS_DEBUG`: set to `1` (any value except empty or `0`) to print every
+  runtime command to stderr as jms runs it, as `jms-debug: run: "podman"
+  "info" ...` (or `exec:` for the command `launch` replaces itself with),
+  followed by `jms-debug: exit <status> (<seconds>s)`. Use it to see which
+  runtime step failed or hung. The trace includes the full arguments,
+  including manifest `[env]` values passed as `--env`.
+- `JMS_RUNTIME_TIMEOUT`: seconds each runtime readiness or query call may run
+  before jms gives up (see Timeouts and signals). A whole number from 1 to
+  999999; the default is 60. Any other value is a usage error (exit 2).
 - `JMS_PROJECT_ROOTS`: colon-separated absolute directories (a leading `~` is
   expanded) searched for a bare-name operand that matches nothing in the
   current directory, first match wins. Unset by default. Set it to keep every
