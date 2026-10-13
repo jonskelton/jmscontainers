@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- **Breaking: launches without a project definition no longer mount agent
+  credentials without consent.** Before, a launch that found no
+  `.jmscontainer/` mounted every agent's credentials and configuration
+  read-write with no question, and deleting a trusted definition brought
+  that back. Now the first such launch in a checkout asks the default-No
+  credential question once and remembers the answer for the checkout root
+  (the enclosing checkout, else the workdir); a remembered "yes" behaves as
+  before. Off a terminal nothing is mounted and one `note:` line says so;
+  pass `--auth` for a one-launch grant. A trust record for a definition
+  that is no longer present prints a warning and mounts nothing rather than
+  asking again. `--no-auth` and `--root` are unchanged. What breaks: scripts
+  and other non-interactive launches without a definition that relied on
+  the silent mount must now pass `--auth`, every existing checkout asks
+  once, and such launches now read the trust store, so an unreadable store
+  stops them unless `--no-auth` is passed. Answers are ordinary schema-2
+  store records (no schema change); an older jms ignores them.
+  `jms trust revoke PATH` forgets an answer and `jms inspect` shows it.
+
 ## 1.2.0 — 2026-10-12
 
 Pi joins the shared base image, manifest mounts accept relative sources and
@@ -29,24 +49,6 @@ leave for host tools, and moves the license to MIT alone.
   inspecting them with non-git tools after an untrusted session, and states
   that executable agent configuration in the shared agent-state pool is
   shared by every project granted credentials.
-
-- **Breaking: launches without a project definition no longer mount agent
-  credentials without consent.** Before, a launch that found no
-  `.jmscontainer/` mounted every agent's credentials and configuration
-  read-write with no question, and deleting a trusted definition brought
-  that back. Now the first such launch in a checkout asks the default-No
-  credential question once and remembers the answer for the checkout root
-  (the enclosing checkout, else the workdir); a remembered "yes" behaves as
-  before. Off a terminal nothing is mounted and one `note:` line says so;
-  pass `--auth` for a one-launch grant. A trust record for a definition
-  that is no longer present prints a warning and mounts nothing rather than
-  asking again. `--no-auth` and `--root` are unchanged. What breaks: scripts
-  and other non-interactive launches without a definition that relied on
-  the silent mount must now pass `--auth`, every existing checkout asks
-  once, and such launches now read the trust store, so an unreadable store
-  stops them unless `--no-auth` is passed. Answers are ordinary schema-2
-  store records (no schema change); an older jms ignores them.
-  `jms trust revoke PATH` forgets an answer and `jms inspect` shows it.
 
 - **Security: the protected-path check now resolves symlinked `~/.config`
   and `~/.local` the same way as mount sources and workdirs.** Affected
