@@ -1359,7 +1359,8 @@ def expand_mount_source(expression: str, root: bytes | None = None) -> bytes:
         if root is None: fail("relative mount source requires a project root: " + quote(result))
         result = os.path.join(root, result)
     if not os.path.exists(result):
-        fail("mount source does not exist: " + quote(result))
+        fail("mount source does not exist: " + quote(result) + "; create it first: mkdir -p "
+             + quote(result))
     return canon(result)
 
 
@@ -1505,11 +1506,16 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
         data = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         fail("invalid jmscontainer.toml: " + quote(str(exc)))
-    errors = []
-    def err(path): errors.append(path)
+    errors, details = [], {}
+    def err(path, detail=None):
+        errors.append(path)
+        if detail: details.setdefault(path, detail)
+    def unknown(path, allowed):
+        err(path, "unknown key; allowed: " + ", ".join(sorted(allowed)))
     if not isinstance(data, dict): err("manifest")
     for key in data:
-        if key not in {"schema", "name", "env", "mounts", "run"}: err(key)
+        if key not in {"schema", "name", "env", "mounts", "run"}:
+            unknown(key, {"schema", "name", "env", "mounts", "run"})
     schema = data.get("schema", 1)
     if type(schema) is not int or schema < 1: err("schema")
     elif schema > 1: fail("manifest schema is newer than this jms version; upgrade jms")
@@ -1527,7 +1533,8 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
     if type(run) is not dict: err("run")
     else:
         for key in run:
-            if key not in {"entry", "mount_auth", "preserve_host_path", "git_writable"}: err("run." + key)
+            if key not in {"entry", "mount_auth", "preserve_host_path", "git_writable"}:
+                unknown("run." + key, {"entry", "mount_auth", "preserve_host_path", "git_writable"})
         if "entry" in run:
             entry = run["entry"]
             if type(entry) is not list or not entry or any(type(x) is not str or "\0" in x for x in entry) or not entry[0]: err("run.entry")
@@ -1549,7 +1556,7 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
             prefix = "mounts[%d]" % index
             if type(mount) is not dict: err(prefix); continue
             for key in set(mount) - {"source", "target", "readonly", "allow_socket"}:
-                err(prefix + "." + str(key))
+                unknown(prefix + "." + str(key), {"source", "target", "readonly", "allow_socket"})
             source_valid = type(mount.get("source")) is str and bool(mount.get("source"))
             target = mount.get("target")
             relative_target = type(target) is str and bool(target) and not target.startswith("/")
@@ -1574,8 +1581,10 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
             if source_valid:
                 try:
                     source = expand_mount_source(mount["source"], root)
-                except JMSException:
-                    err(prefix + ".source")
+                except JMSException as exc:
+                    # Keep the reason ("does not exist: PATH"): the field name
+                    # alone reads like a syntax error in the manifest.
+                    err(prefix + ".source", str(exc))
             if (source is not None and target_valid and readonly_valid and allow_socket_valid
                     and not (set(mount) - {"source", "target", "readonly", "allow_socket"})):
                 parsed_mount = {"source": source, "target": target, "readonly": readonly,
@@ -1585,7 +1594,9 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
                 config["mounts"].append(parsed_mount)
     targets = [mount["target"] for mount in config["mounts"]]
     if len(set(targets)) != len(targets) or any(a != b and (a.startswith(b + "/") or b.startswith(a + "/")) for a in targets for b in targets): err("mounts targets overlap")
-    if errors: fail("invalid jmscontainer.toml fields: " + ", ".join(quote(value) for value in sorted(set(errors))))
+    if errors: fail("invalid jmscontainer.toml fields: " + ", ".join(
+        quote(value) + (" (" + details[value] + ")" if value in details else "")
+        for value in sorted(set(errors))))
     return config
 
 

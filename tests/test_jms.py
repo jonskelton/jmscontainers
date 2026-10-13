@@ -548,6 +548,24 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(JMS.JMSException, "invalid jmscontainer.toml fields"):
             JMS.parse_manifest(b'nonsense = 1\n[env]\n"BAD KEY" = "x"\n')
 
+    def test_invalid_field_errors_keep_their_reason(self):
+        """ADOPT-03/ADOPT-09: say why a field is invalid, not only which."""
+        with self.assertRaises(JMS.JMSException) as caught:
+            JMS.parse_manifest(b'[run]\nentrypoint = ["sh"]\n')
+        self.assertEqual(str(caught.exception),
+                         'invalid jmscontainer.toml fields: "run.entrypoint" (unknown key; allowed: '
+                         'entry, git_writable, mount_auth, preserve_host_path)')
+        with sandbox() as home:
+            missing = home / ".cache" / "go-build"
+            with self.assertRaises(JMS.JMSException) as caught:
+                JMS.parse_manifest(('[[mounts]]\nsource = "%s"\ntarget = "/opt/c"\nbogus = 1\n'
+                                    % missing).encode())
+            shown = JMS.quote(os.fsencode(missing))
+            self.assertEqual(str(caught.exception),
+                             'invalid jmscontainer.toml fields: "mounts[0].bogus" (unknown key; allowed: '
+                             'allow_socket, readonly, source, target), "mounts[0].source" (mount source '
+                             'does not exist: ' + shown + '; create it first: mkdir -p ' + shown + ')')
+
     def test_newer_schema_is_rejected(self):
         with self.assertRaisesRegex(JMS.JMSException, "newer than this jms"):
             JMS.parse_manifest(b"schema = 2\n")
