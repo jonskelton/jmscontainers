@@ -2429,6 +2429,19 @@ class LaunchTests(unittest.TestCase):
             _, argv = self.project_launch(home, extra=["--git-writable"])
             self.assertFalse([arg for arg in argv if "/.git" in arg])
 
+    def test_capability_summary_names_the_git_writable_source(self):
+        """The consent summary must not call .git read-only when it is writable."""
+        cases = ((None, [], "read-only when it is a directory"),
+                 (None, ["--git-writable"], "(--git-writable)"),
+                 (b"[run]\ngit_writable = true\n", [], "(run.git_writable)"),
+                 (b"[run]\ngit_writable = true\n", ["--git-writable"], "(run.git_writable, --git-writable)"))
+        for manifest, extra, expected in cases:
+            with self.subTest(manifest=manifest, extra=extra), sandbox() as home:
+                self.project_launch(home, manifest, extra=extra)
+                line = [item for item in self.stderr.getvalue().splitlines()
+                        if item.startswith("- project .git:")][0]
+                self.assertIn(expected, line)
+
     def test_manifest_git_writable_drops_the_read_only_git_mount(self):
         with sandbox() as home:
             _, argv = self.project_launch(home, b"[run]\ngit_writable = true\n")
