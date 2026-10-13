@@ -224,8 +224,12 @@ Every other `trust` form is store-only and works without the runtime CLI.
 `trust revoke PATH` without a definition removes the record of a vanished
 definition at PATH or an ancestor inside its checkout if there is one, and
 otherwise the remembered credential answer for PATH's checkout root; the
-next launch there on a terminal asks again. `trust PATH` itself still
-requires a definition. `trust list` shows remembered answers alongside
+next launch there on a terminal asks again. `trust PATH --auth` (or
+`--no-auth`) without a definition records that answer for PATH's checkout
+root directly, replacing any earlier one, and needs no terminal; it refuses
+while a vanished definition's record covers PATH (revoke that first), and
+rejects `--fingerprint`. Plain `trust PATH` without a definition fails.
+`trust list` shows remembered answers alongside
 project grants, marking each remembered answer `no-definition`.
 
 The trust store is `~/.config/jmscontainers/store.json` (schema 2). A

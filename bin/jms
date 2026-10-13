@@ -1646,6 +1646,12 @@ def base_launch_auth(workdir: bytes, args) -> bool:
     print(quote(root) + " has no project definition and no recorded credential answer.", file=sys.stderr)
     print(BASE_CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
     answer = consent_input("Mount persistent agent state -- credentials and configuration for claude, codex, opencode, and pi -- with read-write access? [y/N] ").strip().lower() in ("y", "yes")
+    record_base_answer(root, answer)
+    return answer
+
+
+def record_base_answer(root: bytes, answer: bool):
+    """Remember a no-definition credential answer for a base_credential_root()."""
     pid = hashlib.sha256(root).hexdigest()
     new = {"root": root.decode("utf-8"), "tf": BASE_CREDENTIAL_TF,
            "grants": {"build_run": True, "auth": answer},
@@ -1654,7 +1660,6 @@ def base_launch_auth(workdir: bytes, args) -> bool:
         store["projects"][pid] = new
         return True
     update_store(remember)
-    return answer
 
 
 def runtime_ready():
@@ -2288,7 +2293,23 @@ def cmd_trust(args):
         return
     workdir, _ = resolve_operand(args.path)
     data = project_data(workdir)
-    if not data: fail("no project container definition found")
+    if not data:
+        if not (args.auth or args.no_auth):
+            fail("no project container definition found -- pass --auth or --no-auth to record "
+                 "the credential answer for launches here without one")
+        if args.fingerprint:
+            fail("--fingerprint is valid only with a project definition", 2)
+        root, _, vanished = base_credential_records(read_store(), workdir)
+        if vanished:
+            # Launches here ignore a recorded answer while this record exists,
+            # and overwriting it would discard a definition's grants unseen.
+            fail(quote(vanished[0]) + " has a trust record for a project definition that is no "
+                 "longer present; run jms trust revoke " + quote(workdir) + " first")
+        record_base_answer(root, args.auth)
+        if args.auth:
+            print(BASE_CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
+        print("recorded credential answer for " + quote(root) + ": auth=" + ("yes" if args.auth else "no"))
+        return
     approve(data["root"], data["tf"], args, action="trust", config=data["config"])
     print("trusted " + quote(data["root"]))
 
@@ -2503,7 +2524,8 @@ def parser():
     t.add_argument("path", nargs="?", help="project path (revoke operand)")
     t.add_argument("--fingerprint", metavar="HEX64",
                    help="record durable trust non-interactively when the value matches the current fingerprint")
-    flags(t, ("--auth", "with --fingerprint, also record the credential grant; interactive approval asks regardless"),
+    flags(t, ("--auth", "with --fingerprint, also record the credential grant; interactive approval asks regardless; "
+                        "without a definition, record a yes for the checkout"),
           ("--no-auth", "record the credential grant as declined without asking"),
           ("--purge-images", "with revoke: also delete the project's images"))
     t.set_defaults(func=cmd_trust)

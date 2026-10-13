@@ -2466,8 +2466,56 @@ class TrustCommandTests(unittest.TestCase):
     def test_trust_requires_a_project_definition(self):
         with sandbox() as home:
             (home / "git" / "plain").mkdir()
-            with self.assertRaisesRegex(JMS.JMSException, "no project container definition"):
+            with self.assertRaisesRegex(JMS.JMSException,
+                                        "no project container definition.*--auth or --no-auth"):
                 self.run_trust(["trust", str(home / "git" / "plain")])
+            self.assertEqual(JMS.read_store()["projects"], {})
+
+    def plain_checkout(self, home):
+        plain = home / "git" / "plain"
+        (plain / ".git").mkdir(parents=True)
+        (plain / "sub").mkdir()
+        return plain, JMS.canon(os.fsencode(plain))
+
+    def test_trust_records_a_no_definition_answer_without_a_terminal(self):
+        with sandbox() as home, mock.patch.object(JMS, "consent_input", forbid):
+            plain, canonical = self.plain_checkout(home)
+            pid = hashlib.sha256(canonical).hexdigest()
+            output = self.run_trust(["trust", str(plain / "sub"), "--auth"])
+            self.assertEqual(output, "recorded credential answer for " + JMS.quote(canonical)
+                             + ": auth=yes\n")
+            record = JMS.read_store()["projects"][pid]
+            self.assertEqual(record["tf"], JMS.BASE_CREDENTIAL_TF)
+            self.assertEqual(record["root"], canonical.decode())
+            self.assertEqual(record["grants"], {"build_run": True, "auth": True})
+            # --no-auth updates the same record in place.
+            self.assertIn("auth=no", self.run_trust(["trust", str(plain), "--no-auth"]))
+            projects = JMS.read_store()["projects"]
+            self.assertEqual(list(projects), [pid])
+            self.assertEqual(projects[pid]["grants"], {"build_run": True, "auth": False})
+
+    def test_trust_without_a_definition_rejects_fingerprint(self):
+        with sandbox() as home:
+            plain, _ = self.plain_checkout(home)
+            with self.assertRaisesRegex(JMS.UsageError, "--fingerprint is valid only"):
+                self.run_trust(["trust", str(plain), "--auth", "--fingerprint", "0" * 64])
+            self.assertEqual(JMS.read_store()["projects"], {})
+
+    def test_trust_without_a_definition_refuses_over_a_vanished_record(self):
+        with sandbox() as home:
+            root, canonical, _ = self.seed(home)
+            (root / "sub").mkdir()
+            shutil.rmtree(root / ".jmscontainer")
+            before = JMS.read_store()
+            for flag in ("--auth", "--no-auth"):
+                with self.subTest(flag=flag), \
+                     self.assertRaisesRegex(JMS.JMSException, "no longer present.*trust revoke"):
+                    self.run_trust(["trust", str(root / "sub"), flag])
+            self.assertEqual(JMS.read_store(), before)
+            self.run_trust(["trust", "revoke", str(root)])
+            self.run_trust(["trust", str(root), "--auth"])
+            self.assertEqual(JMS.read_store()["projects"][hashlib.sha256(canonical).hexdigest()]["tf"],
+                             JMS.BASE_CREDENTIAL_TF)
 
 
 class InspectTests(unittest.TestCase):
