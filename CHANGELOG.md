@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- **Breaking: a launch mounts the project's top-level `.git` read-only.**
+  A container can no longer plant `.git/hooks/*` or set config such as
+  `core.fsmonitor` that host git later runs. This breaks `git add` and
+  `git commit` inside the container ("Read-only file system"): commit on
+  the host, launch with `--git-writable`, or set `[run] git_writable =
+  true` in the definition (the approval prompt names it). Only a real
+  `.git` directory at the mount root is covered: linked worktrees,
+  submodules, a `.git` symlink and subdirectory launches without a
+  definition get no bind. Verified on Podman; macOS qualification is
+  pending.
+
+- **Breaking: manifest mounts of host sockets are refused unless the
+  mount sets `allow_socket = true`.** A source that is a socket, FIFO or
+  device node fails unless that mount opts in, and the consent line names
+  the opt-in. A source that contains or sits inside `$XDG_RUNTIME_DIR`,
+  `/run/user/<uid>`, `/run`, `/var/run`, `/tmp/tmux-<uid>` or
+  `/tmp/.X11-unix` is refused outright, as is the socket named by
+  `$SSH_AUTH_SOCK` or a `unix://` `$DOCKER_HOST`, or any directory above
+  it. Only an exact opted-in socket is exempt, so ssh-agent forwarding
+  means mounting `$SSH_AUTH_SOCK` itself. An older jms rejects the new
+  key. The list is best-effort; see docs/jmscontainer.toml.md.
+
+- **Breaking: manifest mounts of host credential stores need the
+  credential grant.** A `[[mounts]]` source that is, contains, or sits
+  inside a listed credential path (`~/.ssh`, `~/.gnupg`, `~/.config/gh`,
+  `~/.aws`, `~/.kube`, `~/.docker`, `~/.netrc`,
+  `~/.cargo/credentials.toml`, the host agents' own sign-in directories,
+  and others, plus `$GNUPGHOME`, `$DOCKER_CONFIG`, `$KUBECONFIG` and
+  `$AWS_SHARED_CREDENTIALS_FILE`) is kept only when the project's recorded
+  grant is `auth = yes`, or under a matching `JMS_TRUST_FINGERPRINT` pin
+  with `--auth`. Otherwise it is dropped with a `note:` naming it. The
+  consent summary and the credential question list these mounts;
+  `run.mount_auth = false` does not affect them. Mounting all of
+  `~/.cargo` or `~/.m2` now goes through the credential question. The
+  list is best-effort.
+
 - **Breaking: launches without a project definition no longer mount agent
   credentials without consent.** Before, a launch that found no
   `.jmscontainer/` mounted every agent's credentials and configuration
@@ -19,6 +55,21 @@
   stops them unless `--no-auth` is passed. Answers are ordinary schema-2
   store records (no schema change); an older jms ignores them.
   `jms trust revoke PATH` forgets an answer and `jms inspect` shows it.
+
+- **`jms trust list` marks remembered no-definition answers.** Those rows
+  end in `no-definition`; rows for definitions are unchanged.
+
+- **`jms trust PATH --auth` (or `--no-auth`) records the credential
+  answer for a checkout without a project definition.** No terminal is
+  needed, so automation can set it. Plain `jms trust PATH` there still
+  fails, now pointing at those flags; `--fingerprint` is rejected, and it
+  refuses while a vanished definition's trust record covers PATH (revoke
+  that first).
+
+- **`jms trust revoke PATH` without a definition removes every vanished
+  definition's record from PATH up to the checkout root**, not just the
+  nearest, and names each one. If a remembered no-definition answer for
+  the checkout then applies again, a note says so.
 
 ## 1.2.0 — 2026-10-12
 
