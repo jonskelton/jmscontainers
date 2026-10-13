@@ -15,6 +15,7 @@ uninstall:
 	rm -f "$(BINDIR)/jms"
 	rm -f "$(COMPLETIONDIR)/jms"
 	@echo "removed $(BINDIR)/jms and $(COMPLETIONDIR)/jms"
+	@echo "trust store, agent state and images remain; see README.md#uninstalling"
 
 test:
 	python3 -X pycache_prefix=$$(mktemp -d) -m py_compile bin/jms
