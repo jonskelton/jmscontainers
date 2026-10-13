@@ -515,7 +515,10 @@ class PodmanBackend:
 
     name = "podman"
     exe = "podman"
-    install_hint = ("install the qualified package set: sudo apt install "
+    # Distro-neutral first: the apt line is the qualified Debian contract
+    # (R4.7), not a command every Linux host can run (ADOPT-14).
+    install_hint = ("install Podman 5.4 or newer with your distribution's package manager; "
+                    "on Debian the qualified package set is: sudo apt install "
                     "podman uidmap passt dbus-user-session fuse-overlayfs coreutils")
     version_min = (5, 4, 0)              # Debian 13's packaged podman
     version_max = None                   # no ceiling: a newer podman warns, never refuses

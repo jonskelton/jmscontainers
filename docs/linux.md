@@ -6,6 +6,12 @@ is accepted; Podman majors newer than the qualified 5.x series produce a
 warning. Other distributions, arm64, and SELinux-enforcing hosts are
 **unqualified but allowed**.
 
+**Docker is not supported**, rootful or rootless. jms runs only the `podman`
+CLI, and file ownership on the project mount depends on Podman's explicit
+user-namespace mapping (`--userns=keep-id`), which jms passes on every
+launch. Podman installs alongside Docker; jms never talks to the Docker
+daemon, and it refuses to mount the socket a `unix://` `DOCKER_HOST` names.
+
 ## Install on Debian 13
 
 Run these commands as a regular user, using `sudo` only for package
@@ -90,6 +96,65 @@ The qualified Debian target has no AppArmor or SELinux confinement. See
 - **Concurrent image-store mutation is unsupported.** `jms clean` does not
   lock the entire Podman image store. A ref retagged between enumeration and
   removal can cause the wrong alias to be untagged.
+
+## Disk usage
+
+The shared base is roughly 3 GB, and each project image layers on top of
+it. After each successful project build, jms keeps that project's two
+newest images and deletes the rest. Two kinds of image escape that rule,
+and jms never sees them again:
+
+- **Old bases.** Rebuilding the base moves the `jmscontainers-base:latest`
+  tag to the new image and leaves the old one untagged ("dangling"). jms
+  works only with tagged images, and its own removals pass `--no-prune`, so
+  it never deletes a dangling image.
+- **Images of deleted projects.** Retention runs only when that project
+  builds, and `jms clean` and `jms trust revoke --purge-images` need the
+  project directory to exist.
+
+Before deleting a checkout, run `jms clean --images` in it, or
+`jms trust revoke --purge-images PATH` to drop its approval as well. For
+what is already left over, use Podman's own commands. jms does not run
+these for you:
+
+```sh
+podman system df                         # space used, and how much is reclaimable
+podman images --filter dangling=true     # untagged images, including old bases
+podman images --filter label=jms.project # project images built by jms
+jms trust list                           # "missing" marks a deleted checkout
+```
+
+A project image is named `jmscontainers-<directory>-<id>:<tag>`, where
+`<id>` is the first eight characters of the id `jms trust list` prints.
+Remove a deleted project's images by name with `podman image rm`, then drop
+its stale approval with `jms trust prune`. `podman image prune` removes
+every dangling image on your account, not only the ones jms left, so read
+the dangling list first.
+
+## Resource limits
+
+jms sets no CPU, memory, or process-count limit on a container, and
+`jmscontainer.toml` has no key for one. An agent running `make -j` or a
+runaway test competes with everything else on the host. Whatever your
+Podman configuration sets as a default still applies, because jms accepts
+`containers.conf` as trusted host input (see
+[Security boundary](#security-boundary)); that file, or systemd resource
+controls on your user session, is where to cap containers today.
+
+## Proxies
+
+jms has no proxy settings of its own, but it runs `podman` with your full
+environment. Podman's default (`--http-proxy`, which jms never overrides)
+copies `http_proxy`, `https_proxy`, `ftp_proxy`, `no_proxy`, and their
+upper-case forms from that environment into both builds and launched
+containers. Export them before `jms build` or `jms launch` and the base
+build, its package downloads, and the agents all use them. Two consequences:
+
+- **The agent can read them.** A proxy URL that embeds a username and
+  password is visible inside every container.
+- **Your Podman configuration applies.** A `http_proxy = false` setting in
+  `containers.conf` stops the copying; registry mirrors in
+  `registries.conf` apply to base and project image pulls.
 
 ## What jms refuses
 

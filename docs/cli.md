@@ -40,6 +40,8 @@ precedes every consent prompt or trust-store write, so a selection refusal
 platforms other than Linux and macOS, uid 0 on Linux, and remote Podman
 services (`host.serviceIsRemote`, checked at readiness). Any other local
 rootless Linux configuration is unqualified but allowed, with no warning.
+Docker is not a supported runtime on either platform; jms has no Docker
+backend.
 
 Both runtimes have a minimum version and no ceiling: nothing at or above
 the floor is ever refused, because each runtime arrives from a package

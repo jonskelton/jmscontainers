@@ -5,8 +5,10 @@ details intentionally kept out of the quick path.
 
 ## User guides
 
-- [macOS](macos.md): install, runtime version, and VM boundary
-- [Linux](linux.md): install, rootless prerequisites, boundary, and limitations
+- [macOS](macos.md): install, runtime version, VM boundary, disk usage,
+  resource limits, and proxies
+- [Linux](linux.md): install, rootless prerequisites, boundary, limitations,
+  disk usage, resource limits, and proxies
 - [CLI reference](cli.md): commands, flags, environment, and exit codes
 - [Project images](project-images.md): discovery, builds, and image ABI
 - [`jmscontainer.toml`](jmscontainer.toml.md): runtime configuration schema
