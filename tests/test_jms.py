@@ -1246,14 +1246,17 @@ class ConsentTests(unittest.TestCase):
                  mock.patch.object(sys, "stdin", stdin), mock.patch.object(sys, "stderr", stderr):
                 JMS.approve(root, "a" * 64, JMS.parse_cli(["build"]), action="build", config=config)
             lines = stderr.getvalue().splitlines()
-            header = [i for i, line in enumerate(lines) if "defines a custom container" in line]
             title = lines.index("Project container capabilities (! marks access beyond the default):")
-            self.assertEqual(header, [0])
-            self.assertLess(header[0], title)
+            # The header leads, however it wraps: a long quoted path (macOS
+            # temp dirs) is never split, so its sentence may start a line later.
+            self.assertTrue(lines[0].startswith(JMS.quote(root)), lines[0])
+            self.assertIn("defines a custom container", " ".join(lines[:title]))
+            self.assertEqual(sum("defines a custom container" in line for line in lines), 1)
             marked = [line[2:].split(":")[0] for line in lines if line.startswith("! ")]
             self.assertEqual(marked, ["project mount", "project .git", "extra mount"])
             for line in lines:
-                if not line.startswith(("- ", "! ")):  # capability lines are one fact per line
+                # Capability lines are one fact per line; a quoted path is never split.
+                if not line.startswith(("- ", "! ")) and JMS.quote(root) not in line:
                     self.assertLessEqual(len(line), JMS.CONSENT_WIDTH + len(" [y/N] "), line)
 
     def test_consent_text_wraps_without_splitting_paths_or_commands(self):

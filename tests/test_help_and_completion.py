@@ -87,7 +87,8 @@ class HelpTests(unittest.TestCase):
     def test_every_workdir_option_shows_a_path_metavar(self):
         for command in ("build", "launch", "inspect", "init", "clean"):
             with self.subTest(command=command):
-                self.assertIn("-w, --workdir PATH", help_text(command))
+                # Python < 3.13 repeats the metavar: "-w PATH, --workdir PATH".
+                self.assertRegex(help_text(command), r"-w( PATH)?, --workdir PATH")
                 self.assertIn("JMS_PROJECT_ROOTS", help_text(command))
 
 
