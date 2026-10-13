@@ -255,7 +255,8 @@ can produce; a definition added later at that root needs full consent.
 ## init
 
 `init` scaffolds `.jmscontainer/Containerfile` in the workdir, plus
-`jmscontainer.toml` beside it with `--with-manifest`. It fails rather than
+`jmscontainer.toml` beside it with `--with-manifest`, prints one `created`
+line per file on stdout, and suggests the next step on stderr. It fails rather than
 overwriting an existing `.jmscontainer`, and removes anything it created if a
 later step fails. It refuses to scaffold at `$HOME`, at `/`, or inside a
 protected jms host directory (the jms checkout, `~/.config/jmscontainers`,

@@ -2610,7 +2610,10 @@ def cmd_init(args):
         try: os.rmdir(target)
         except OSError: pass
         raise
-    print("created " + quote(str(target / "Containerfile")))
+    for path in created_files:
+        print("created " + quote(str(path)))
+    print("next: edit " + quote(str(target / "Containerfile")) + ", then run jms launch",
+          file=sys.stderr)
 
 
 def container_records() -> list[dict]:
