@@ -114,9 +114,13 @@ non-directory mount preflight landed:
   source failed after the build with "is not a directory". jms now refuses
   such a source before consent and build.
 
-TODO before merge: record integration tiers A and B on Linux, the macOS
-tier A rerun on this candidate, and how the fresh-account and clean-VM
-gates were handled.
+TODO before merge: record integration tiers A and B on Linux and the
+macOS tier A rerun on this candidate.
+
+The release checklist's fresh-account (non-1000 UID, ssh login) run and
+clean-VM install walkthrough were not performed: the project has one
+user, and the maintainer accepted own-account runs in their place for
+this release, as for 1.2.0.
 
 ## 1.2.0 — 2026-10-12
 
