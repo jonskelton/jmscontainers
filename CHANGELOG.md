@@ -114,13 +114,12 @@ non-directory mount preflight landed:
   source failed after the build with "is not a directory". jms now refuses
   such a source before consent and build.
 
-Integration tier A, including the read-only `.git` probe, passed on
+Integration tiers A and B, including tier A's read-only `.git` probe, passed on
 2026-10-12 on the release-preparation host above, on the developer's own
 account (UID 1000), without sudo; no integration-owned container or image
 remained afterwards.
 
-TODO before merge: record integration tier B on Linux and the macOS tier
-A rerun on this candidate.
+TODO before merge: record the macOS tier A rerun on this candidate.
 
 The release checklist's fresh-account (non-1000 UID, ssh login) run and
 clean-VM install walkthrough were not performed: the project has one
