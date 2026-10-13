@@ -242,9 +242,10 @@ or, for one launch, `jms launch --git-writable`. Launches with no definition
 have only the flag. Without the key, a definition's own read-write
 `[[mounts]]` entry whose source is `.git`, a path inside it, or a directory
 containing it (such as `.`) is refused, since it would hand the same
-directory back writable under another target; a read-only one is fine. The key is manifest content written by the repository
-author, so it is covered by the trust fingerprint, and the approval prompt
-says "container can write .git (hooks and config there run on your host)".
+directory back writable under another target; a read-only one is fine. The
+key is manifest content written by the repository author, so it is covered
+by the trust fingerprint, and the approval prompt says "container can write
+.git (hooks and config there run on your host)".
 Approve it only for a repository whose author you trust with your host.
 
 ## Mount targets

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import difflib
 import errno
 import fcntl
 import hashlib
@@ -1022,7 +1023,7 @@ def discover(workdir: bytes, *, consume_spec: bool = True):
         try:
             mode = os.lstat(containerfile).st_mode
         except FileNotFoundError:
-            fail("project spec requires a regular Containerfile: " + quote(containerfile))
+            fail("project definition requires a regular Containerfile: " + quote(containerfile))
         if not stat.S_ISREG(mode):
             fail("Containerfile must be a regular file: " + quote(containerfile))
         return current, marker
@@ -1753,7 +1754,7 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
     if getattr(args, "trust", False):
         env_pin = None
     if env_pin is not None and env_pin != tf:
-        fail("JMS_TRUST_FINGERPRINT does not match this project spec (pin " + quote(env_pin[:12])
+        fail("JMS_TRUST_FINGERPRINT does not match this project definition (pin " + quote(env_pin[:12])
              + ", current " + tf[:12] + ") -- review the definition, then get the full "
              "fingerprint with: jms inspect " + quote(root), 3)
     live = record if record and record.get("tf") == tf else None
@@ -1761,7 +1762,7 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
     wants_auth = getattr(args, "auth", False)
     no_auth = getattr(args, "no_auth", False)
     if getattr(args, "fingerprint", None) and args.fingerprint != tf:
-        fail("--fingerprint does not match this project spec (given " + quote(args.fingerprint[:12])
+        fail("--fingerprint does not match this project definition (given " + quote(args.fingerprint[:12])
              + ", current " + tf[:12] + ") -- review the definition, then get the full "
              "fingerprint with: jms inspect " + quote(root), 3)
     interactive_replacement = action == "trust" and getattr(args, "fingerprint", None) is None
@@ -2460,7 +2461,7 @@ def cmd_build(args):
 def cmd_launch(args):
     if args.auth and args.no_auth: fail("--auth and --no-auth cannot be combined", 2)
     if args.workdir is not None and args.name is not None:
-        fail("a positional project name cannot be combined with --workdir", 2)
+        fail("a positional PATH cannot be combined with --workdir", 2)
     validate_launch_cli_runtime_args(args)
     runtime()  # side-effect-free selection: refusals exit 2 before any consent prompt
     operand = args.workdir if args.workdir is not None else args.name
@@ -2612,7 +2613,7 @@ def cmd_trust(args):
 
 def cmd_inspect(args):
     if args.workdir is not None and args.name is not None:
-        fail("a positional project name cannot be combined with --workdir", 2)
+        fail("a positional PATH cannot be combined with --workdir", 2)
     workdir, _ = resolve_operand(args.workdir if args.workdir is not None else args.name)
     data = project_data(workdir)
     print("workdir: " + quote(workdir))
@@ -2684,7 +2685,10 @@ def cmd_init(args):
         try: os.rmdir(target)
         except OSError: pass
         raise
-    print("created " + quote(str(target / "Containerfile")))
+    for path in created_files:
+        print("created " + quote(str(path)))
+    print("next: edit " + quote(str(target / "Containerfile")) + ", then run jms launch",
+          file=sys.stderr)
 
 
 def container_records() -> list[dict]:
@@ -2793,50 +2797,122 @@ class SafeArgumentParser(argparse.ArgumentParser):
         self.exit(2, "%s: error: %s\n" % (self.prog, terminal_safe_text(message)))
 
 
+TOP_DESCRIPTION = """\
+Run AI coding agents (Claude Code, Codex, OpenCode, Pi) or a shell in a
+throwaway container, with your checkout mounted read-write at /work."""
+
+TOP_EPILOG = """\
+terms:
+  PATH          the project directory a command acts on (default: the
+                current directory)
+  definition    a project's .jmscontainer/ directory: its Containerfile and
+                optional jmscontainer.toml
+  fingerprint   SHA-256 of the definition; any change asks for approval again
+  grants        build/run approval and credential access, asked for separately
+  agent state   persistent agent credentials and configuration, mounted only
+                with consent
+  base          the shared image a launch uses when there is no definition
+
+examples:
+  jms build --base                  build the shared base image (once)
+  jms launch                        open a shell in the current checkout
+  jms launch -b yolo-claude         start Claude Code, permission prompts off
+  jms launch -b yolo-claude -- --continue
+                                    pass arguments to the agent after --
+
+environment:
+  JMS_PROJECT_ROOTS      colon-separated directories searched for a bare PATH
+                         name that matches nothing in the current directory
+  JMS_TRUST_FINGERPRINT  approve this exact fingerprint for one invocation
+
+exit status: 0 success (launch: the container's own status), 1 failure,
+2 usage error, 3 trust not granted, 130 interrupted. The full reference is
+docs/cli.md in the jms checkout. Run 'jms COMMAND --help' for a command."""
+
+LAUNCH_EPILOG = """\
+PATH is the project directory, given positionally or with -w, not both.
+-n NAME names the container, not the project. Everything after -- is
+appended to the entry program's arguments, so jms never parses it.
+
+examples:
+  jms launch ../sibling             launch another checkout
+  jms launch -b yolo-codex          start Codex directly
+  jms launch --no-auth --no-network review code you did not write, offline
+  jms launch -b yolo-claude -- --continue
+                                    pass arguments to the agent"""
+
+TRUST_EPILOG = """\
+trust takes PATH positionally only (no -w). list, revoke and prune are
+reserved words: pass a directory literally named one of them as ./list
+or an absolute path.
+
+examples:
+  jms trust                         review and approve the current project
+  jms trust . --fingerprint HEX64   approve non-interactively (automation)
+  jms trust list                    show durable grants
+  jms trust revoke .                forget this project's grants"""
+
+
 def parser():
-    p = SafeArgumentParser(prog="jms",
-                           description="Build and run trust-gated development containers.")
+    p = SafeArgumentParser(prog="jms", description=TOP_DESCRIPTION, epilog=TOP_EPILOG,
+                           formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version=__version__)
-    sub = p.add_subparsers(dest="command", required=True)
+    sub = p.add_subparsers(dest="command", required=True, metavar="COMMAND",
+                           title="commands")
+    def command(name, help, description, epilog=None):
+        return sub.add_parser(name, help=help, description=description, epilog=epilog,
+                              formatter_class=argparse.RawDescriptionHelpFormatter)
     def flags(sp, *pairs):
         for name, text in pairs:
             sp.add_argument(name, action="store_true", help=text)
-    WORKDIR_HELP = "project root: absolute or relative path (default: current directory)"
-    NAME_HELP = ("project root: absolute or relative path, or a bare name when "
-                 "JMS_PROJECT_ROOTS is set (default: current directory)")
+    # One help string for both operand forms: they share resolve_operand(),
+    # so JMS_PROJECT_ROOTS applies to -w exactly as it does to PATH.
+    PATH_HELP = ("project directory: absolute or relative path, or a bare name "
+                 "found via JMS_PROJECT_ROOTS (default: current directory)")
+    def workdir(sp, positional=False):
+        if positional:
+            sp.add_argument("name", nargs="?", metavar="PATH", help=PATH_HELP + "; or use -w")
+        sp.add_argument("-w", "--workdir", metavar="PATH", help=PATH_HELP)
     NO_AUTH_HELP = "do not mount agent state (credentials and configuration)"
     NO_CACHE_HELP = "build without reusable layers"
-    b = sub.add_parser("build", help="realize an image from current local inputs",
-                       description="Realize an image from current local inputs.")
-    b.add_argument("-w", "--workdir", help=WORKDIR_HELP)
+    b = command("build", help="build the project's image, or the shared base image",
+                description="Build the discovered project's image, or the shared base image\n"
+                            "with --base or when there is no definition.")
+    workdir(b)
     flags(b, ("--base", "build the shared base image instead of a project image"),
           ("--trust", "one-shot build/run approval for this invocation; never grants credentials"),
           ("--no-auth", NO_AUTH_HELP), ("--no-cache", NO_CACHE_HELP),
           ("--pull", "refresh FROM references from the registry (--base only)"))
     b.set_defaults(func=cmd_build)
-    l = sub.add_parser("launch", help="build or reuse the discovered image and run a container",
-                       description="Build (or reuse) the discovered image and run a container on it.")
-    l.add_argument("name", nargs="?", help=NAME_HELP)
-    l.add_argument("-w", "--workdir", help=WORKDIR_HELP)
+    l = command("launch", help="run an agent or a shell in a container for a project",
+                description="Build (or reuse) the project's image and run a container on it:\n"
+                            "a login shell by default, or an AI agent with -b.",
+                epilog=LAUNCH_EPILOG)
+    workdir(l, positional=True)
     flags(l, ("--trust", "one-shot build/run approval for this invocation; never grants credentials"),
           ("--auth", "mount agent state (with a definition, asks for the credential grant if not already given)"),
           ("--no-auth", NO_AUTH_HELP), ("--no-cache", NO_CACHE_HELP),
           ("--no-network", "run the container with no network; a project image build still uses it"),
           ("--git-writable", "mount the project's .git read-write (hooks and config there run on your host)"))
     l.add_argument("-r", "--root", action="store_true", help="run as root instead of the isolation user")
-    l.add_argument("-b", "--bin", help="entry program to run instead of the configured entry")
-    l.add_argument("-n", "--name", dest="container_name", metavar="NAME", help="container name")
+    l.add_argument("-b", "--bin", metavar="PROGRAM",
+                   help="entry program to run instead of the configured entry, "
+                        "e.g. yolo-claude, yolo-codex, yolo-opencode, yolo-pi")
+    l.add_argument("-n", "--name", dest="container_name", metavar="NAME",
+                   help="container name (not the project; see PATH)")
     l.set_defaults(func=cmd_launch)
-    i = sub.add_parser("inspect", help="report discovery, fingerprint, and trust status",
-                       description="Report discovery, fingerprint, and trust status.")
-    i.add_argument("name", nargs="?", help=NAME_HELP)
-    i.add_argument("-w", "--workdir", help=WORKDIR_HELP); i.set_defaults(func=cmd_inspect)
-    t = sub.add_parser("trust", help="approve a definition, or list/revoke/prune durable grants",
-                       description="Approve a project definition, or manage durable grants "
-                                   "with list, revoke, and prune.")
-    t.add_argument("trust_action", nargs="?", metavar="path|list|revoke|prune",
-                   help="project path to approve, or one of the reserved words")
-    t.add_argument("path", nargs="?", help="project path (revoke operand)")
+    i = command("inspect", help="report discovery, fingerprint, and trust status",
+                description="Report discovery, fingerprint, and trust status without\n"
+                            "prompting, writing, or contacting the runtime.")
+    workdir(i, positional=True); i.set_defaults(func=cmd_inspect)
+    t = command("trust", help="approve a definition, or list/revoke/prune durable grants",
+                description="Approve a project definition, or manage durable grants\n"
+                            "with list, revoke, and prune.",
+                epilog=TRUST_EPILOG)
+    t.add_argument("trust_action", nargs="?", metavar="PATH|list|revoke|prune",
+                   help="project directory to approve (default: current directory), "
+                        "or one of the reserved words")
+    t.add_argument("path", nargs="?", metavar="PATH", help="project directory (revoke operand)")
     t.add_argument("--fingerprint", metavar="HEX64",
                    help="record durable trust non-interactively when the value matches the current fingerprint")
     flags(t, ("--auth", "with --fingerprint, also record the credential grant; interactive approval asks regardless; "
@@ -2844,15 +2920,16 @@ def parser():
           ("--no-auth", "record the credential grant as declined without asking"),
           ("--purge-images", "with revoke: also delete the project's images"))
     t.set_defaults(func=cmd_trust)
-    n = sub.add_parser("init", help="scaffold .jmscontainer/Containerfile in a project",
-                       description="Scaffold .jmscontainer/Containerfile in a project.")
-    n.add_argument("-w", "--workdir", help=WORKDIR_HELP)
+    n = command("init", help="create a project definition (.jmscontainer/Containerfile)",
+                description="Create a project definition: .jmscontainer/Containerfile, and\n"
+                            "jmscontainer.toml with --with-manifest.")
+    workdir(n)
     n.add_argument("--with-manifest", action="store_true", help="also scaffold jmscontainer.toml")
     n.set_defaults(func=cmd_init)
-    c = sub.add_parser("clean", help="remove this project's jms containers",
-                       description="Remove this project's jms containers, or every jms "
-                                   "container with --all.")
-    c.add_argument("-w", "--workdir", help=WORKDIR_HELP)
+    c = command("clean", help="remove this project's jms containers",
+                description="Remove this project's jms containers, or every jms\n"
+                            "container with --all.")
+    workdir(c)
     flags(c, ("--all", "select all jms containers (and the shared base with --images)"),
           ("--images", "also remove the selection's images"),
           ("--dry-run", "report the selection without mutating"))
@@ -2870,7 +2947,23 @@ def parse_cli(argv=None):
         separator = values.index("--")
         extra = values[separator + 1:]
         values = values[:separator]
-    args = parser().parse_args(values)
+    top = parser()
+    args, unknown = top.parse_known_args(values)
+    if unknown:
+        # Report a mistyped option against the subcommand it was meant for,
+        # with its usage and the nearest real option, instead of the
+        # top-level usage argparse would print.
+        owner = top
+        if values and values[0] == args.command:
+            owner = next(a for a in top._actions
+                         if isinstance(a, argparse._SubParsersAction)).choices[args.command]
+        message = "unrecognized arguments: " + " ".join(unknown)
+        options = [o for a in owner._actions for o in a.option_strings]
+        close = unknown[0].startswith("-") and difflib.get_close_matches(
+            unknown[0].split("=", 1)[0], options, n=1)
+        if close:
+            message += " (did you mean " + close[0] + "?)"
+        owner.error(message)
     if args.command == "launch":
         args.extra = extra
     return args

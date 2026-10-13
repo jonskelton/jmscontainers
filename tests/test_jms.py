@@ -3155,6 +3155,19 @@ class InitTests(unittest.TestCase):
             with self.assertRaisesRegex(JMS.JMSException, "already exists"):
                 JMS.cmd_init(JMS.parse_cli(["init", "-w", str(workdir)]))
 
+    def test_init_reports_every_created_file_and_the_next_step(self):
+        with sandbox() as home:
+            workdir = home / "git" / "fresh"
+            workdir.mkdir()
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                JMS.cmd_init(JMS.parse_cli(["init", "-w", str(workdir), "--with-manifest"]))
+            lines = stdout.getvalue().splitlines()
+            self.assertEqual([line.rsplit("/", 1)[-1].strip('"') for line in lines],
+                             ["Containerfile", "jmscontainer.toml"])
+            self.assertTrue(all(line.startswith("created ") for line in lines))
+            self.assertIn("then run jms launch", stderr.getvalue())
+
     def test_init_rolls_back_on_failure(self):
         with sandbox() as home:
             workdir = home / "git" / "fresh"

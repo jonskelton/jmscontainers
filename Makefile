@@ -1,6 +1,7 @@
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 COMPLETIONDIR ?= $(PREFIX)/share/bash-completion/completions
+ZSH_COMPLETIONDIR ?= $(PREFIX)/share/zsh/site-functions
 
 .PHONY: install uninstall test integration
 
@@ -9,12 +10,15 @@ install:
 	ln -sfn "$(CURDIR)/bin/jms" "$(BINDIR)/jms"
 	mkdir -p "$(COMPLETIONDIR)"
 	ln -sfn "$(CURDIR)/completions/jms.bash" "$(COMPLETIONDIR)/jms"
+	mkdir -p "$(ZSH_COMPLETIONDIR)"
+	ln -sfn "$(CURDIR)/completions/_jms" "$(ZSH_COMPLETIONDIR)/_jms"
 	@echo "installed jms -> $(CURDIR)/bin/jms"
 
 uninstall:
 	rm -f "$(BINDIR)/jms"
 	rm -f "$(COMPLETIONDIR)/jms"
-	@echo "removed $(BINDIR)/jms and $(COMPLETIONDIR)/jms"
+	rm -f "$(ZSH_COMPLETIONDIR)/_jms"
+	@echo "removed $(BINDIR)/jms, $(COMPLETIONDIR)/jms and $(ZSH_COMPLETIONDIR)/_jms"
 	@echo "trust store, agent state and images remain; see README.md#uninstalling"
 
 test:
@@ -26,6 +30,7 @@ test:
 		sh -n scripts/integration.sh; \
 		bash -n completions/jms.bash; \
 	fi
+	@if command -v zsh >/dev/null 2>&1; then zsh -n completions/_jms; fi
 
 integration:
 	./scripts/integration.sh

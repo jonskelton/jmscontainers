@@ -65,6 +65,19 @@ normally receive the required subordinate ID ranges in `/etc/subuid` and
 **unqualified but allowed**. See the [Linux guide](docs/linux.md) for the
 support boundary, prerequisite checks, and known limitations.
 
+### Shell completion
+
+`make install` also links a bash completion into
+`~/.local/share/bash-completion/completions` and a zsh completion into
+`~/.local/share/zsh/site-functions`. bash-completion finds the first on its
+own. zsh, the macOS default shell, reads only directories on its `fpath`, so
+add the second to `~/.zshrc` before `compinit` runs:
+
+```sh
+fpath=(~/.local/share/zsh/site-functions $fpath)
+autoload -Uz compinit && compinit
+```
+
 ## Use
 
 From any checkout:
@@ -74,7 +87,8 @@ cd ~/path/to/project
 jms launch
 ```
 
-You land in a shell as `isolation` with passwordless sudo. The project is at
+You land in a shell as `isolation`, the container's unprivileged user, with
+passwordless sudo. The project is at
 `/work`; writes there appear on the host with your ownership. (A project that
 needs its container path to match its host path — so a path-keyed tool agrees
 on both sides — can set `run.preserve_host_path`; see
@@ -102,6 +116,12 @@ Your host's agent logins do not carry over: the container keeps its own
 agent state, so log in once inside the container (for example, `yolo-claude`
 opens Claude Code's login). Later launches that mount the credentials reuse
 that login.
+
+Terms used below: a **project definition** is a `.jmscontainer/` directory
+holding a Containerfile and an optional `jmscontainer.toml`; its
+**fingerprint** is a SHA-256 hash of that directory; a **grant** is an
+approval jms records, kept separately for build/run and for credential
+access. `jms --help` repeats these.
 
 ## Know these three things
 
