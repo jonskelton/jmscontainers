@@ -3917,8 +3917,8 @@ class MissingBaseHintTests(unittest.TestCase):
     def test_missing_base_hint_wording(self):
         self.assertEqual(JMS.MISSING_BASE_NOTE,
                          "note: the shared base image jmscontainers-base:latest is not "
-                         "present; if this project builds from it, run `jms build` in "
-                         "the base directory first")
+                         "present; if this project builds from it, run `jms build --base` "
+                         "first")
 
     def build_failure_stderr(self, images):
         with sandbox() as home:

@@ -47,8 +47,8 @@ ISOLATION_GID = 1000
 CONTEXT_NOTE = ("note: the build context is .jmscontainer/ only; "
                 "COPY/ADD sources must live inside it (see README)")
 MISSING_BASE_NOTE = ("note: the shared base image " + BASE + " is not present; "
-                     "if this project builds from it, run `jms build` in the "
-                     "base directory first")
+                     "if this project builds from it, run `jms build --base` "
+                     "first")
 
 
 class JMSException(Exception):
