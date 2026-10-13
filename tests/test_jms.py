@@ -1071,6 +1071,39 @@ class ConsentTests(unittest.TestCase):
                 self.approve(root, "a" * 64, ["build"], tty=False)
             self.assertEqual(caught.exception.exit_code, 3)
 
+    def test_trust_refusals_end_with_the_command_that_gets_past_them(self):
+        """C-05: each no-TTY or mismatch refusal names its next step; exit 3 is unchanged."""
+        with sandbox() as home:
+            root = JMS.canon(os.fsencode(make_project(home)))
+            shown, tf = JMS.quote(root), "a" * 64
+            with self.assertRaises(JMS.TrustError) as caught:
+                self.approve(root, tf, ["build"], tty=False)
+            self.assertEqual(caught.exception.exit_code, 3)
+            self.assertTrue(str(caught.exception).endswith(
+                "jms trust " + shown + " --fingerprint " + tf), str(caught.exception))
+            self.assertIn("on a terminal with: jms trust " + shown + ";", str(caught.exception))
+            # Credential refusal: the env pin is the one-shot route; --trust masks it.
+            self.approve(root, tf, ["build"], answers=["y", ""])
+            for argv, drop in ((["launch", "--auth"], False), (["launch", "--trust", "--auth"], True)):
+                with self.subTest(argv=argv):
+                    with self.assertRaises(JMS.TrustError) as caught:
+                        self.approve(root, tf, argv, action="launch", tty=False)
+                    message = str(caught.exception)
+                    self.assertEqual(caught.exception.exit_code, 3)
+                    self.assertIn("credential access is required", message)
+                    self.assertIn("set JMS_TRUST_FINGERPRINT=" + tf + " and keep --auth", message)
+                    self.assertEqual("drop --trust" in message, drop)
+            # Mismatches show both 12-character prefixes and where to get the value.
+            with self.assertRaises(JMS.TrustError) as caught:
+                self.approve(root, tf, ["trust", "--fingerprint", "b" * 64], action="trust")
+            self.assertIn('(given "' + "b" * 12 + '", current ' + "a" * 12 + ")", str(caught.exception))
+            self.assertTrue(str(caught.exception).endswith("jms inspect " + shown))
+            with mock.patch.dict(os.environ, {"JMS_TRUST_FINGERPRINT": "c" * 64}), \
+                    self.assertRaises(JMS.TrustError) as caught:
+                self.approve(root, tf, ["build"], tty=False)
+            self.assertIn('(pin "' + "c" * 12 + '", current ' + "a" * 12 + ")", str(caught.exception))
+            self.assertEqual(caught.exception.exit_code, 3)
+
     def test_interactive_grant_and_decline_matrix(self):
         with sandbox() as home:
             root = JMS.canon(os.fsencode(make_project(home)))

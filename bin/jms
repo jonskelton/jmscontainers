@@ -1686,13 +1686,17 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
     if getattr(args, "trust", False):
         env_pin = None
     if env_pin is not None and env_pin != tf:
-        fail("JMS_TRUST_FINGERPRINT does not match this project spec", 3)
+        fail("JMS_TRUST_FINGERPRINT does not match this project spec (pin " + quote(env_pin[:12])
+             + ", current " + tf[:12] + ") -- review the definition, then get the full "
+             "fingerprint with: jms inspect " + quote(root), 3)
     live = record if record and record.get("tf") == tf else None
     one_shot = getattr(args, "trust", False) or env_pin == tf or getattr(args, "fingerprint", None) == tf
     wants_auth = getattr(args, "auth", False)
     no_auth = getattr(args, "no_auth", False)
     if getattr(args, "fingerprint", None) and args.fingerprint != tf:
-        fail("--fingerprint does not match this project spec", 3)
+        fail("--fingerprint does not match this project spec (given " + quote(args.fingerprint[:12])
+             + ", current " + tf[:12] + ") -- review the definition, then get the full "
+             "fingerprint with: jms inspect " + quote(root), 3)
     interactive_replacement = action == "trust" and getattr(args, "fingerprint", None) is None
     build_ok = bool(live and live.get("grants", {}).get("build_run")) or one_shot
     # A one-shot credential grant requires the audited exact pin; the boolean
@@ -1725,7 +1729,9 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
         return True, wants_auth and not no_auth
     if not build_ok:
         if not (sys.stdin.isatty() and sys.stderr.isatty()):
-            fail("project trust is required but prompting is unavailable", 3)
+            fail("project trust is required but prompting is unavailable -- approve it on a "
+                 "terminal with: jms trust " + quote(root) + "; or, after reviewing the "
+                 "capabilities above: jms trust " + quote(root) + " --fingerprint " + tf, 3)
         print(quote(root) + " defines a custom container (trust fingerprint " + tf[:12] + ").",
               file=sys.stderr)
         print("Approving lets it run arbitrary commands at build and run time and mount the project read-write at "
@@ -1746,7 +1752,10 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
         record_approval(auth_ok)
     elif wants_auth and not auth_ok:
         if not (sys.stdin.isatty() and sys.stderr.isatty()):
-            fail("credential access is required but prompting is unavailable", 3)
+            fail("credential access is required but prompting is unavailable -- grant it on a "
+                 "terminal with: jms trust " + quote(root) + "; or, for one invocation, "
+                 + ("drop --trust and " if getattr(args, "trust", False) else "")
+                 + "set JMS_TRUST_FINGERPRINT=" + tf + " and keep --auth", 3)
         print(CREDENTIAL_SCOPE_NOTE, file=sys.stderr)
         auth_ok = consent_input(credential_question(config or default_config())).strip().lower() in ("y", "yes")
         # --trust is one-shot for both grants: an accepted escalation applies to
