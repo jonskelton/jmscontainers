@@ -109,5 +109,19 @@ RUN printf '%s\n' \
         'true' \
         >> /etc/zshrc
 
+# ssh never prompts. An agent's shell cannot answer a host-key or password
+# prompt, so `git push` to an unpinned host hung until the agent's own timeout
+# with nothing said; BatchMode turns any prompt into an immediate error.
+# accept-new trusts a host's first key without asking (home is discarded with
+# the container, so every launch is a first use) and still refuses a changed
+# key. ConnectTimeout bounds an unreachable host at 15s instead of the
+# kernel's ~2 minutes. 10- sorts before Fedora's 50-redhat.conf (first value
+# wins); ~/.ssh/config or `-o` overrides all three.
+RUN printf '%s\n' \
+        'BatchMode yes' \
+        'StrictHostKeyChecking accept-new' \
+        'ConnectTimeout 15' \
+        > /etc/ssh/ssh_config.d/10-jms.conf
+
 WORKDIR /work
 USER isolation
