@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **A manifest's `CLAUDE_CONFIG_DIR` now sticks.** The container's
+  shell startup no longer resets it to `~/.claude`, so Claude Code uses
+  the manifest's state directory and keeps its login across sessions.
+  `EDITOR` and `CLAUDE_CODE_DISABLE_MOUSE` set in `[env]` are kept too.
+  Rebuild the base image (`jms build --base`) to pick this up.
+- **jms passes a manifest `CLAUDE_CONFIG_DIR` once.** With auth mounted
+  it used to send its own value and the manifest's, leaving the runtime
+  to pick one.
+
 ## 2.1.0 — 2026-10-13
 
 - **A hung container runtime no longer hangs jms.** Readiness and query
