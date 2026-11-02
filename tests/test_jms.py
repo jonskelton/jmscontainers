@@ -2248,6 +2248,27 @@ class LaunchTests(unittest.TestCase):
             self.assertIn(self.MOUNT + agents + "/pi,target=/home/isolation/.pi/agent", mounts)
             self.assertIn("CLAUDE_CONFIG_DIR=/home/isolation/.claude", argv)
 
+    def test_manifest_config_dir_replaces_the_injected_one(self):
+        """With auth, a manifest CLAUDE_CONFIG_DIR is emitted once, before the project mount."""
+        with sandbox() as home:
+            root = make_project(home, manifest=b'[env]\nCLAUDE_CONFIG_DIR = "/work/.state"\n')
+            canonical = JMS.canon(os.fsencode(root))
+            data = JMS.project_data(canonical)
+            pid = hashlib.sha256(canonical).hexdigest()
+            def add(store):
+                store["projects"][pid] = {
+                    "root": canonical.decode(), "tf": data["tf"],
+                    "grants": {"build_run": True, "auth": True},
+                    "granted_at": "2026-01-01T00:00:00Z", "jms_version": JMS.__version__}
+                return True
+            JMS.update_store(add)
+            tag = data["tag_prefix"] + ":" + data["tf"][:12]
+            argv = self.launch_argv(home, ["launch", "-w", str(root)],
+                                    images={tag: image_record(tag)})
+            self.assertEqual([value for value in argv if value.startswith("CLAUDE_CONFIG_DIR=")],
+                             ["CLAUDE_CONFIG_DIR=/work/.state"])
+            self.assertLess(argv.index("CLAUDE_CONFIG_DIR=/work/.state"), argv.index("--mount"))
+
     def test_pi_state_mounts_follow_home_and_explicit_auth(self):
         with sandbox() as home:
             plain = home / "git" / "plain"

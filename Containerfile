@@ -88,10 +88,13 @@ RUN printf '%s\n' \
 # session rather than in an argument about a date three weeks later. JMS_BANNER
 # keeps it to once per session: a zsh login shell reads both /etc/profile.d and
 # /etc/zshrc, and unlike the exports around it, printing is not idempotent.
+# Each export keeps a value that is already set: jms passes the manifest's env,
+# and a login shell or interactive zsh re-sourcing this file must not reset it
+# (a reset CLAUDE_CONFIG_DIR points Claude Code at the wrong state).
 RUN printf '%s\n' \
-        'export EDITOR=nvim' \
-        'export CLAUDE_CONFIG_DIR="$HOME/.claude"' \
-        'export CLAUDE_CODE_DISABLE_MOUSE=1' \
+        'export EDITOR="${EDITOR:-nvim}"' \
+        'export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"' \
+        'export CLAUDE_CODE_DISABLE_MOUSE="${CLAUDE_CODE_DISABLE_MOUSE:-1}"' \
         'export HOSTNAME=container' \
         '[ -n "$PS1" ] && [ -z "$JMS_BANNER" ] && export JMS_BANNER=1 && date "+%a %Y-%m-%d %H:%M %Z"' \
         '[ -n "$PS1" ] && [ -n "$BASH_VERSION" ] && PS1="[\u@container \W]\\$ "' \

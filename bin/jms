@@ -2672,9 +2672,13 @@ def launch_plan(workdir: bytes, data, args, image: str, auth: bool) -> LaunchPla
     project_target = validate_mount_layout(mount, config, args.root)
     container_workdir = project_target if inner == "." else project_target + "/" + inner
     mount_auth = auth and (config["mount_auth"] or args.auth)
+    # A manifest value for a roster config variable (CLAUDE_CONFIG_DIR)
+    # replaces the injected one in place, for the same reason TZ is merged
+    # below: one --env per variable, never a runtime's last-flag-wins.
     env = []
     if mount_auth:
-        env += agent_config_env(effective_home)
+        env += [(key, config["env"].get(key, value))
+                for key, value in agent_config_env(effective_home)]
     # The host's zone is merged into the manifest's own environment before
     # sorting, not appended beside it: a manifest that pins TZ must replace
     # the inherited value outright.  Emitting both and relying on a runtime's
@@ -2686,7 +2690,8 @@ def launch_plan(workdir: bytes, data, args, image: str, auth: bool) -> LaunchPla
     if zone is not None:
         inherited["TZ"] = zone
     inherited.update(config["env"])
-    env += sorted(inherited.items())
+    injected = {key for key, _ in env}
+    env += sorted(item for item in inherited.items() if item[0] not in injected)
     mounts = [(mount, project_target, False)]
     # The project's own .git is bound read-only over the read-write project
     # mount, so the container cannot plant hooks or edit config (core.fsmonitor,
