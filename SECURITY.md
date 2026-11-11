@@ -249,6 +249,14 @@ renamed over `store.json`, and the directory is flushed in turn. A crash or
 power loss leaves either the old store or the new one, never a partial
 file, and a grant or revocation jms has reported is already on disk.
 
+A manifest mount source the container could re-point is refused. Approval
+records the manifest's text, and sources are resolved again on every
+launch, so a source reached through any entry inside the project, or
+inside a read-write extra mount, could be swapped for a symlink to another
+host path between launches. jms walks each source through every symlink
+and refuses it if any step lands in either place; the project root itself
+and a writable mount's own source stay mountable.
+
 Host sockets are refused too, because a read-only mount does not stop a
 container connecting to one. A manifest mount whose source is a socket,
 FIFO, or device node needs its own `allow_socket = true`, and a mount that

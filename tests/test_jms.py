@@ -543,12 +543,15 @@ class ManifestTests(unittest.TestCase):
                     b'[[mounts]]\nsource = "%s"\ntarget = "/opt/g"\nreadonly = %s\n%s'
                     % (source, b"true" if readonly else b"false", run))
                 return JMS.project_data(JMS.canon(os.fsencode(root)))
-            # .git itself, a path inside it, and the root that contains it.
-            for source in (b".git", b".git/hooks", b"."):
-                with self.assertRaisesRegex(JMS.JMSException, "would make the project .git writable"):
-                    load(source, readonly=False)
-            self.assertTrue(load(b".git", readonly=True))
-            self.assertTrue(load(b".git", readonly=False, run=b"[run]\ngit_writable = true\n"))
+            # The root that contains .git.  Sources inside the root, .git
+            # included, are refused earlier as container-rewritable.
+            with self.assertRaisesRegex(JMS.JMSException, "would make the project .git writable"):
+                load(b".", readonly=False)
+            self.assertTrue(load(b".", readonly=True))
+            self.assertTrue(load(b".", readonly=False, run=b"[run]\ngit_writable = true\n"))
+            for source in (b".git", b".git/hooks"):
+                with self.assertRaisesRegex(JMS.JMSException, "passes through the project"):
+                    load(source, readonly=True)
 
     def test_invalid_fields_are_reported_together(self):
         with self.assertRaisesRegex(JMS.JMSException, "invalid jmscontainer.toml fields"):
@@ -607,6 +610,47 @@ class ManifestTests(unittest.TestCase):
             for expression in ("relative/path", "$UNSET_VARIABLE_XYZ/x", "~user/x"):
                 with self.assertRaises(JMS.JMSException):
                     JMS.expand_mount_source(expression)
+
+    def test_sources_the_container_could_repoint_are_refused(self):
+        # A grant pins manifest text and sources resolve again on
+        # every launch, so a source reached through anything the container
+        # can write would let it swap in a symlink to any host path.
+        with sandbox() as home:
+            outside = home / "outside"
+            (outside / "inner").mkdir(parents=True)
+            def data(name, mounts, prepare=None):
+                raw = b"".join(b'[[mounts]]\nsource = "%s"\ntarget = "%s"\nreadonly = %s\n'
+                               % (source, target, readonly) for source, target, readonly in mounts)
+                root = make_project(home, name=name, manifest=raw)
+                if prepare:
+                    prepare(root)
+                return JMS.project_data(JMS.canon(os.fsencode(root)))
+            refused = {
+                "in-root": ([(b"cache", b"/opt/c", b"true")],
+                            lambda root: (root / "cache").mkdir()),
+                "committed-link": ([(b"cache", b"/opt/c", b"true")],
+                                   lambda root: (root / "cache").symlink_to("../../outside")),
+                "dotdot-after-entry": ([(b"sub/../../../outside", b"/opt/c", b"true")],
+                                       lambda root: (root / "sub").mkdir()),
+                "outside-link-into-root": ([(b"~/via", b"/opt/c", b"true")],
+                                           lambda root: ((root / "cache").mkdir(),
+                                                         (home / "via").unlink(missing_ok=True),
+                                                         (home / "via").symlink_to(root / "cache"))),
+            }
+            for name, (mounts, prepare) in refused.items():
+                with self.subTest(name), self.assertRaisesRegex(
+                        JMS.JMSException, r"mounts\[0\] source .* passes through the project"):
+                    data(name, mounts, prepare)
+            nested = [(b"~/outside", b"/opt/a", b"false"), (b"~/outside/inner", b"/opt/b", b"true")]
+            with self.assertRaisesRegex(JMS.JMSException,
+                                        r"mounts\[1\] source .* passes through a read-write mount"):
+                data("nested", nested)
+            # Read-only parent, the writable source itself, and the root itself stay mountable.
+            nested[0] = (b"~/outside", b"/opt/a", b"true")
+            self.assertEqual(len(data("nested-ro", nested)["config"]["mounts"]), 2)
+            self.assertEqual(len(data("writable", [(b"~/outside", b"/opt/a", b"false")])
+                                 ["config"]["mounts"]), 1)
+            self.assertEqual(len(data("root", [(b".", b"/opt/a", b"true")])["config"]["mounts"]), 1)
 
     def test_relative_mounts_resolve_from_project_not_cwd(self):
         with sandbox() as home:

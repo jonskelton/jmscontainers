@@ -1503,6 +1503,11 @@ def mark_credential_mounts(config: dict) -> None:
 
 
 def expand_mount_source(expression: str, root: bytes | None = None) -> bytes:
+    return canon(mount_source_path(expression, root))
+
+
+def mount_source_path(expression: str, root: bytes | None = None) -> bytes:
+    """Expand a manifest source to an absolute path that exists, symlinks unresolved."""
     raw = expression.encode("utf-8")
     if b"\0" in raw:
         fail("mount source contains NUL")
@@ -1538,7 +1543,63 @@ def expand_mount_source(expression: str, root: bytes | None = None) -> bytes:
     if not os.path.exists(result):
         fail("mount source does not exist: " + quote(result) + "; create it first: mkdir -p "
              + quote(result))
-    return canon(result)
+    return result
+
+
+def traversed_paths(path: bytes) -> list[bytes]:
+    """Every location whose contents decide where `path` resolves.
+
+    Walks the path the way the kernel does, following each symlink, and
+    returns each directory entry it looks up plus the final location.  A
+    container that can write any of them can re-point the path, whatever
+    it resolves to today.  Components are joined to an already resolved
+    prefix, so `..` is applied after the links before it, not lexically.
+    """
+    pending, current, seen, hops = list(path.split(b"/")), b"/", [], 0
+    while pending:
+        part = pending.pop(0)
+        if part in (b"", b"."):
+            continue
+        if part == b"..":
+            current = os.path.dirname(current)
+            continue
+        candidate = os.path.join(current, part)
+        seen.append(candidate)
+        if os.path.islink(candidate):
+            hops += 1
+            if hops > 40:
+                fail("too many symbolic links in mount source: " + quote(path))
+            target = os.readlink(candidate)
+            if target.startswith(b"/"):
+                current = b"/"
+            pending = target.split(b"/") + pending
+        else:
+            current = candidate
+    return seen + [current]
+
+
+def refuse_rewritable_mount_sources(root: bytes | None, config: dict, paths: list[bytes]) -> None:
+    """Refuse a mount source the container itself could re-point.
+
+    A grant pins the manifest text, not what a source resolves to, and
+    sources are resolved again on every launch.  So a source that passes
+    through the read-write project mount, or through a read-write extra
+    mount, could be swapped for a symlink by the container and mounted
+    somewhere else on the next launch with no prompt.  The root
+    itself and a writable source itself stay mountable: the container
+    cannot replace the directory it is given, only entries inside it.
+    """
+    writable = [] if root is None else [root]
+    writable += [mount["source"] for mount in config["mounts"] if not mount["readonly"]]
+    for index, (mount, path) in enumerate(zip(config["mounts"], paths)):
+        for location in traversed_paths(path):
+            for area in writable:
+                if location != area and ancestor(area, location):
+                    where = "the project" if area == root else "a read-write mount " + quote(area)
+                    fail("mounts[%d] source %s passes through %s, which the container can "
+                         "change between launches -- keep mount sources outside the project "
+                         "and outside read-write mounts, for example under ~/.cache"
+                         % (index, quote(path), where))
 
 
 def normalized_mount_target(value: str) -> bool:
@@ -1681,7 +1742,7 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
         data = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         fail("invalid jmscontainer.toml: " + quote(str(exc)))
-    errors, details = [], {}
+    errors, details, source_paths = [], {}, []
     def err(path, detail=None):
         errors.append(path)
         if detail: details.setdefault(path, detail)
@@ -1755,7 +1816,8 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
             source = None
             if source_valid:
                 try:
-                    source = expand_mount_source(mount["source"], root)
+                    source_path = mount_source_path(mount["source"], root)
+                    source = canon(source_path)
                 except JMSException as exc:
                     # Keep the reason ("does not exist: PATH"): the field name
                     # alone reads like a syntax error in the manifest.
@@ -1767,11 +1829,13 @@ def parse_manifest(raw: bytes | None, root: bytes | None = None) -> dict:
                 if relative_target:
                     parsed_mount["relative_target"] = True
                 config["mounts"].append(parsed_mount)
+                source_paths.append(source_path)
     targets = [mount["target"] for mount in config["mounts"]]
     if len(set(targets)) != len(targets) or any(a != b and (a.startswith(b + "/") or b.startswith(a + "/")) for a in targets for b in targets): err("mounts targets overlap")
     if errors: fail("invalid jmscontainer.toml fields: " + ", ".join(
         quote(value) + (" (" + details[value] + ")" if value in details else "")
         for value in sorted(set(errors))))
+    refuse_rewritable_mount_sources(root, config, source_paths)
     return config
 
 
