@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.1 — 2026-11-11
 
 - **Security: a container can no longer re-point an approved mount.**
   Approval records the manifest's text, and mount sources resolve again
@@ -32,6 +32,36 @@
 - **jms passes a manifest `CLAUDE_CONFIG_DIR` once.** With auth mounted
   it used to send its own value and the manifest's, leaving the runtime
   to pick one.
+
+### Qualification
+
+Linux, 2026-11-11, on the release-preparation host: `make test` passed
+(474 tests); integration tier A passed on `d514eb7` (the tree differed
+only in this CHANGELOG section, outside the build context); and
+`podman image inspect` of an absent ref exited 125 with `[]` on stdout
+and a stderr byte-identical to
+`tests/fixtures/podman-5.4.2-image-inspect-absent.stderr`.
+
+| Dimension | Tested value |
+| --- | --- |
+| Podman | 5.4.2 |
+| Architecture | amd64 (`x86_64`) |
+| Kernel | 6.12.115+deb13.1-amd64 |
+| Distribution | Debian GNU/Linux 13 (trixie) |
+| cgroup | v2, `systemd` manager |
+| OCI runtime | crun 1.21 |
+| Storage driver | `overlay` |
+| Network backend | netavark 1.14.0, aardvark-dns 1.14.0, pasta (passt 0.0~git20250503.587980c-2+deb13u1) |
+| Rootless | yes |
+| Python | 3.15.0 |
+
+Not run for this release: integration tier B (it needs a person at a
+terminal), the fresh-account run and the clean-host install walkthrough
+the release checklist asks for, and any macOS integration run. The
+changes since 2.1.0 do not touch how jms drives either runtime: #45
+refuses manifests before any runtime call, and #42 and #44 change the
+base image's shell and ssh configuration. CI ran the unit tests on
+macOS. `ContainerBackend._version_qualified` stays 1.5.0.
 
 ## 2.1.0 — 2026-10-13
 
