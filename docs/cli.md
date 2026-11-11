@@ -241,7 +241,7 @@ may add keys, so a script should look keys up by name, not by line.
 | `project_id` | SHA-256 of the root path; keys the trust store |
 | `trust_fingerprint` | SHA-256 of the definition (definition only) |
 | `trust_store` | `readable`, or `error: ...`; without a definition an error ends the output here |
-| `trust_source` | `trust store`, `stale trust-store record`, `JMS_TRUST_FINGERPRINT (one-shot)`, `JMS_TRUST_FINGERPRINT mismatch`, or `none` (definition only) |
+| `trust_source` | `trust store`, `stale trust-store record`, `trust-store record for other mount sources` (an extra mount now resolves to a different host path or file type), `JMS_TRUST_FINGERPRINT (one-shot)`, `JMS_TRUST_FINGERPRINT mismatch`, or `none` (definition only) |
 | `build_run_grant` | `held` or `required` (definition only) |
 | `credential_root` | where a no-definition credential answer is keyed: the enclosing checkout root, else the workdir (no definition only) |
 | `credential_grant` | with a definition, `held` or `required`; without one, `held`, `declined`, `unrecorded`, or `declined (definition at PATH vanished)` |
@@ -293,7 +293,11 @@ rejects `--fingerprint`. Plain `trust PATH` without a definition fails.
 `trust list` shows remembered answers alongside
 project grants, marking each remembered answer `no-definition`.
 
-The trust store is `~/.config/jmscontainers/store.json` (schema 2). A
+The trust store is `~/.config/jmscontainers/store.json` (schema 3). Each
+record holds the fingerprint, the grants, and where every extra mount
+resolved at approval. jms reads a schema-2 store and saves it as schema 3
+at the next change; an older jms then refuses it and asks to be
+upgraded. A
 remembered answer for a launch without a definition is an ordinary record
 whose fingerprint is that of an empty definition, which no real definition
 can produce; a definition added later at that root needs full consent.

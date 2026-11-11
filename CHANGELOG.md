@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- **Security: a grant now covers where extra mounts resolve, not only
+  the manifest text.** A mount source such as `~/links/cache` that is a
+  symlink outside the project could be re-pointed after approval -- by
+  a host process, or by another project's container that can write it
+  -- and the next launch mounted the new path with no prompt. Approval
+  now records each extra mount's resolved host path and file type; a
+  launch that resolves one differently shows the capabilities again,
+  names the old and new path, and asks. Off a terminal it fails with
+  exit 3. `jms inspect` reports such a record as `trust-store record
+  for other mount sources`.
+- **The trust store moves to schema 3.** jms reads an existing
+  schema-2 store; a project with extra mounts asks for approval once,
+  since its old grant never recorded where they resolved. After the
+  next store change, an older jms refuses the store with "written by a
+  newer jms; upgrade jms".
+
 ## 2.1.1 — 2026-11-11
 
 - **Security: a container can no longer re-point an approved mount.**

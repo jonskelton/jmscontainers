@@ -205,8 +205,9 @@ Two projects granted different profiles cannot see each other's state from
 inside their containers (asserted by a real-runtime test); migration of a
 pre-profile state tree is exercised; docs and `SECURITY.md` updated.
 
-- **Profile binding (R2, proposed).** The trust store is schema 3 with a `profile`
-  field on every record; schema-2 records read as `default`. Tests assert
+- **Profile binding (R2, proposed).** The trust store gains a schema
+  with a `profile` field on every record; records without one read as
+  `default`. Tests assert
   the resolution order (`--profile`, record, manifest request for a new
   profile only, `default`), the binding surviving a fingerprint change and
   re-approval, and a manifest request for an existing profile being
