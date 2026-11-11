@@ -1143,10 +1143,13 @@ def discover(workdir: bytes, *, consume_spec: bool = True):
 
 
 def framed(domain: bytes, fields: list[bytes]) -> str:
-    wire = b"jms-hash/2\0" + domain + b"\0"
+    # Feed the digest field by field: concatenating one wire image copies
+    # the whole buffer per field, which is quadratic in definition size.
+    digest = hashlib.sha256(b"jms-hash/2\0" + domain + b"\0")
     for item in fields:
-        wire += len(item).to_bytes(8, "big") + item
-    return hashlib.sha256(wire).hexdigest()
+        digest.update(len(item).to_bytes(8, "big"))
+        digest.update(item)
+    return digest.hexdigest()
 
 
 def count(n: int) -> bytes:

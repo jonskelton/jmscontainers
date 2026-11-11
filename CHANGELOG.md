@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Performance: the definition fingerprint is now linear in the size
+  of `.jmscontainer/`.** It was quadratic, so a definition with a few
+  hundred vendored files (40 MB) spent seconds hashing on every
+  `inspect`, `trust`, `build` and launch, and minutes at 150 MB.
+  Fingerprints are byte-for-byte unchanged: existing grants and image
+  tags stay valid.
+
 ## 2.2.0 — 2026-11-11
 
 - **Security: a grant now covers where extra mounts resolve, not only
