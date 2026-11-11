@@ -421,7 +421,7 @@ class TrustStoreDurabilityTests(unittest.TestCase):
              mock.patch.object(os, "replace", replace):
             JMS.update_store(lambda store: True)
             stored = json.loads((home / ".config" / "jmscontainers" / "store.json").read_text())
-        self.assertEqual(stored, {"schema": 2, "projects": {}})
+        self.assertEqual(stored, {"schema": 3, "projects": {}})
         self.assertEqual(events, ["fsync-file", "replace", "fsync-dir"])
 
     def test_failed_fsync_leaves_no_temporary_file(self):

@@ -249,13 +249,22 @@ renamed over `store.json`, and the directory is flushed in turn. A crash or
 power loss leaves either the old store or the new one, never a partial
 file, and a grant or revocation jms has reported is already on disk.
 
-A manifest mount source the container could re-point is refused. Approval
-records the manifest's text, and sources are resolved again on every
-launch, so a source reached through any entry inside the project, or
-inside a read-write extra mount, could be swapped for a symlink to another
-host path between launches. jms walks each source through every symlink
-and refuses it if any step lands in either place; the project root itself
-and a writable mount's own source stay mountable.
+A manifest mount source the container could re-point is refused. Sources
+are resolved again on every launch, so a source reached through any entry
+inside the project, or inside a read-write extra mount, could be swapped
+for a symlink to another host path between launches. jms walks each source
+through every symlink and refuses it if any step lands in either place;
+the project root itself and a writable mount's own source stay mountable.
+
+A grant also records where each extra mount resolved when it was approved:
+the host path, its file type, the target and the mode. A launch that
+resolves any of them differently -- a symlink outside the project
+re-pointed by a host process or by another project's container -- is not
+granted; it shows the capabilities again, names the old and new path, and
+asks. Off a terminal it is refused. A `JMS_TRUST_FINGERPRINT` pin names
+the definition only, so a pinned launch takes the mounts as they resolve
+at that launch. A link swapped during a launch, after jms resolves it and
+before the runtime binds it, is not detected.
 
 Host sockets are refused too, because a read-only mount does not stop a
 container connecting to one. A manifest mount whose source is a socket,

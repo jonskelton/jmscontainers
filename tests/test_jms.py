@@ -112,7 +112,7 @@ def remember_base_answer(root, auth):
     """Write a no-definition credential answer for a canonical root."""
     def add(store):
         store["projects"][hashlib.sha256(root).hexdigest()] = {
-            "root": root.decode(), "tf": JMS.BASE_CREDENTIAL_TF,
+            "root": root.decode(), "tf": JMS.BASE_CREDENTIAL_TF, "mounts": [],
             "grants": {"build_run": True, "auth": auth},
             "granted_at": "2026-01-01T00:00:00Z", "jms_version": JMS.__version__}
         return True
@@ -418,7 +418,7 @@ class FingerprintTests(unittest.TestCase):
 class TrustStoreTests(unittest.TestCase):
     def test_round_trip_and_disk_format(self):
         with sandbox() as home:
-            record = {"root": str(home / "git" / "demo"), "tf": "a" * 64,
+            record = {"root": str(home / "git" / "demo"), "tf": "a" * 64, "mounts": [],
                       "grants": {"build_run": True, "auth": False},
                       "granted_at": "2026-01-01T00:00:00Z", "jms_version": JMS.__version__}
             pid = hashlib.sha256(record["root"].encode()).hexdigest()
@@ -428,12 +428,12 @@ class TrustStoreTests(unittest.TestCase):
             JMS.update_store(add)
             raw = (home / ".config" / "jmscontainers" / "store.json").read_bytes()
             self.assertTrue(raw.endswith(b"\n"))
-            self.assertEqual(json.loads(raw)["schema"], 2)
+            self.assertEqual(json.loads(raw)["schema"], 3)
             self.assertEqual(JMS.read_store()["projects"], {pid: record})
 
     def test_missing_store_reads_empty_without_writing(self):
         with sandbox() as home:
-            self.assertEqual(JMS.read_store(), {"schema": 2, "projects": {}})
+            self.assertEqual(JMS.read_store(), {"schema": 3, "projects": {}})
             self.assertFalse((home / ".config").exists())
 
     def test_read_only_change_does_not_write(self):
@@ -446,7 +446,8 @@ class TrustStoreTests(unittest.TestCase):
             (b"{not json", "invalid JSON", True),
             (b"[]\n", "wrong schema", True),
             (b'{"schema": 2, "projects": {"zz": {}}}\n', "wrong schema", True),
-            (b'{"schema": 3, "projects": {}}\n', "newer jms", False),
+            (b'{"schema": 3, "projects": {"zz": {}}}\n', "wrong schema", True),
+            (b'{"schema": 4, "projects": {}}\n', "newer jms", False),
         )
         for raw, message, expects_reset_hint in cases:
             with self.subTest(raw=raw), sandbox() as home:
@@ -461,7 +462,8 @@ class TrustStoreTests(unittest.TestCase):
     def test_record_field_validation(self):
         root = "/tmp/project"
         pid = hashlib.sha256(root.encode()).hexdigest()
-        good = {"root": root, "tf": "a" * 64, "grants": {"build_run": True, "auth": False},
+        good = {"root": root, "tf": "a" * 64, "mounts": [["/src", "directory", "/dst", "read-only"]],
+                "grants": {"build_run": True, "auth": False},
                 "granted_at": "2026-01-01T00:00:00Z", "jms_version": "1.0.0"}
         mutations = {
             "wrong-pid": ("0" * 64, good),
@@ -469,11 +471,16 @@ class TrustStoreTests(unittest.TestCase):
             "extra-key": (pid, dict(good, categories={})),
             "build-run-false": (pid, dict(good, grants={"build_run": False, "auth": False})),
             "bad-date": (pid, dict(good, granted_at="yesterday")),
+            "bad-mount-kind": (pid, dict(good, mounts=[["/src", "link", "/dst", "read-only"]])),
+            "bad-mount-mode": (pid, dict(good, mounts=[["/src", "directory", "/dst", "rw"]])),
+            "short-mount": (pid, dict(good, mounts=[["/src", "directory", "/dst"]])),
+            "mounts-not-list": (pid, dict(good, mounts={})),
         }
         for name, (key, record) in mutations.items():
             with self.subTest(mutation=name):
-                self.assertFalse(JMS.valid_store({"schema": 2, "projects": {key: record}}))
-        self.assertTrue(JMS.valid_store({"schema": 2, "projects": {pid: good}}))
+                self.assertFalse(JMS.valid_store({"schema": 3, "projects": {key: record}}))
+        self.assertTrue(JMS.valid_store({"schema": 3, "projects": {pid: good}}))
+        self.assertTrue(JMS.valid_store({"schema": 3, "projects": {pid: dict(good, mounts=None)}}))
 
     def test_concurrent_mutations_serialize_under_flock(self):
         with sandbox() as home:
@@ -484,7 +491,7 @@ class TrustStoreTests(unittest.TestCase):
                 def change(store):
                     time.sleep(0.05)
                     store["projects"][pid] = {
-                        "root": root, "tf": "a" * 64,
+                        "root": root, "tf": "a" * 64, "mounts": [],
                         "grants": {"build_run": True, "auth": False},
                         "granted_at": "2026-01-01T00:00:00Z", "jms_version": "1.0.0"}
                     return True
@@ -1021,15 +1028,17 @@ class TrustDecisionTableTests(unittest.TestCase):
 
     def table(self):
         def rec(tf, build, auth):
-            return {"tf": tf, "grants": {"build_run": build, "auth": auth}}
+            return {"tf": tf, "mounts": [], "grants": {"build_run": build, "auth": auth}}
+        moved = dict(rec(self.TF, True, True), mounts=[["/elsewhere", "directory", "/t", "read-only"]])
         records = (None, rec(self.TF, True, False), rec(self.TF, True, True), rec(self.TF, False, True),
-                   rec("b" * 64, True, True), rec(JMS.BASE_CREDENTIAL_TF, True, True))
+                   rec("b" * 64, True, True), rec(JMS.BASE_CREDENTIAL_TF, True, True), moved,
+                   dict(rec(self.TF, True, True), mounts=None))
         for record, action, trust, wants_auth, no_auth, fingerprint, env_pin, tty in itertools.product(
                 records, ("build", "launch", "trust"), (False, True), (False, True), (False, True),
                 (None, "", self.TF, "c" * 64), (None, self.TF, "c" * 64), (False, True)):
             inputs = dict(action=action, trust=trust, fingerprint=fingerprint, env_pin=env_pin,
                           wants_auth=wants_auth, no_auth=no_auth, tty=tty)
-            yield record, inputs, JMS.trust_decision(b"/p", self.TF, record, **inputs)
+            yield record, inputs, JMS.trust_decision(b"/p", self.TF, record, mounts=[], **inputs)
 
     def test_boolean_trust_never_grants_credentials(self):
         for record, inputs, decision in self.table():
@@ -1045,6 +1054,14 @@ class TrustDecisionTableTests(unittest.TestCase):
                     and not inputs["fingerprint"]):
                 self.assertIn(decision.step, ("ask_build",), inputs)
                 self.assertFalse(decision.build_ok or decision.auth_ok, inputs)
+
+    def test_a_record_for_other_mounts_grants_nothing_itself(self):
+        for record, inputs, decision in self.table():
+            if record and record["mounts"] and not (inputs["trust"] or inputs["env_pin"] == self.TF
+                                                    or inputs["fingerprint"] == self.TF):
+                self.assertFalse(decision.build_ok or decision.auth_ok, inputs)
+                if decision.step != "refused":
+                    self.assertIn("extra mount sources changed", decision.notice, inputs)
 
     def test_a_question_without_a_terminal_is_a_refusal(self):
         for _, inputs, decision in self.table():
@@ -1091,7 +1108,7 @@ class ConsentTests(unittest.TestCase):
             self.assertEqual(record["tf"], GOLDEN_SINGLE_TF)
             self.assertEqual(record["grants"]["auth"], False)
 
-    def test_base_answer_sentinel_is_a_valid_schema_2_record(self):
+    def test_base_answer_sentinel_is_a_valid_store_record(self):
         with sandbox():
             self.assertEqual(JMS.BASE_CREDENTIAL_TF, JMS.trust_fingerprint([]))
             root = JMS.canon(os.fsencode(pathlib.Path(os.environ["HOME"]) / "git"))
@@ -1438,6 +1455,134 @@ class ConsentTests(unittest.TestCase):
             self.assertEqual(["HOST CREDENTIAL PATH" in line for line in summary], [True, False])
             # Without credential mounts the question is unchanged.
             self.assertNotIn("host credential", JMS.credential_question(JMS.default_config()))
+
+
+class MountBindingTests(unittest.TestCase):
+    """A grant covers the host paths extra mounts reach, not only the manifest text."""
+
+    MANIFEST = b'[[mounts]]\nsource = "~/links/cache"\ntarget = "/home/isolation/.cache/tool"\n'
+
+    def project(self, home):
+        """A project whose one mount reaches ~/a through a host symlink outside the project."""
+        (home / "a").mkdir()
+        (home / "b").mkdir()
+        (home / "links").mkdir()
+        os.symlink(home / "a", home / "links" / "cache")
+        root = make_project(home, manifest=self.MANIFEST)
+        return JMS.canon(os.fsencode(root))
+
+    def repoint(self, home, target):
+        os.unlink(home / "links" / "cache")
+        os.symlink(home / target, home / "links" / "cache")
+
+    def launch(self, root, answers=(), tty=True):
+        data = JMS.project_data(root)
+        stderr = TTYIO(tty)
+        replies = list(answers)
+        self.questions = []
+        def reply(question):
+            self.questions.append(question)
+            return replies.pop(0)
+        with mock.patch.object(JMS, "consent_input", side_effect=reply), \
+             mock.patch.object(sys, "stdin", TTYIO(tty)), \
+             mock.patch.object(sys, "stderr", stderr):
+            result = JMS.approve(data["root"], data["tf"], JMS.parse_cli(["launch"]), action="launch",
+                                 config=data["config"])
+        # Consent text wraps at 76 columns; compare it as one line.
+        return result, " ".join(stderr.getvalue().split())
+
+    def record(self, root):
+        return JMS.read_store()["projects"][hashlib.sha256(root).hexdigest()]
+
+    def test_approval_records_where_each_mount_resolves(self):
+        with sandbox() as home:
+            root = self.project(home)
+            self.launch(root, answers=["y", ""])
+            source = JMS.canon(os.fsencode(home / "a")).decode()
+            self.assertEqual(self.record(root)["mounts"],
+                             [[source, "directory", "/home/isolation/.cache/tool", "read-only"]])
+            # Unchanged, the next launch asks nothing.
+            self.assertEqual(self.launch(root)[0], (True, False))
+            self.assertEqual(self.questions, [])
+
+    def test_a_repointed_mount_asks_again_and_names_both_paths(self):
+        with sandbox() as home:
+            root = self.project(home)
+            self.launch(root, answers=["y", ""])
+            tf = self.record(root)["tf"]
+            self.repoint(home, "b")
+            self.assertEqual(JMS.project_data(root)["tf"], tf)
+            result, stderr = self.launch(root, answers=["y", ""])
+            self.assertEqual(result, (True, False))
+            self.assertEqual(len(self.questions), 2)
+            self.assertIn("extra mount sources changed", stderr)
+            self.assertIn(JMS.quote(JMS.canon(os.fsencode(home / "a"))), stderr)
+            self.assertIn(JMS.quote(JMS.canon(os.fsencode(home / "b"))), stderr)
+            self.assertIn("extra mount: " + JMS.quote(JMS.canon(os.fsencode(home / "b"))), stderr)
+            self.assertEqual(self.record(root)["mounts"][0][0], JMS.canon(os.fsencode(home / "b")).decode())
+
+    def test_a_repointed_mount_without_a_terminal_is_refused(self):
+        with sandbox() as home:
+            root = self.project(home)
+            self.launch(root, answers=["y", ""])
+            self.repoint(home, "b")
+            with self.assertRaises(JMS.JMSException) as caught:
+                self.launch(root, tty=False)
+            self.assertEqual(caught.exception.exit_code, 3)
+            self.assertEqual(self.record(root)["mounts"][0][0], JMS.canon(os.fsencode(home / "a")).decode())
+
+    def test_declining_a_repointed_mount_keeps_the_old_record(self):
+        with sandbox() as home:
+            root = self.project(home)
+            self.launch(root, answers=["y", ""])
+            before = self.record(root)
+            self.repoint(home, "b")
+            with self.assertRaises(JMS.JMSException):
+                self.launch(root, answers=[""])
+            self.assertEqual(self.record(root), before)
+
+    def test_a_mount_that_changes_kind_asks_again(self):
+        with sandbox() as home:
+            root = self.project(home)
+            self.launch(root, answers=["y", ""])
+            (home / "a").rmdir()
+            (home / "a").write_bytes(b"")
+            _, stderr = self.launch(root, answers=["y", ""])
+            self.assertIn("(directory), now", stderr)
+            self.assertEqual(self.record(root)["mounts"][0][1], "file")
+
+    def test_a_schema_2_store_upgrades_and_binds_on_the_next_approval(self):
+        with sandbox() as home:
+            root = self.project(home)
+            plain = JMS.canon(os.fsencode(make_project(home, name="plain")))
+            directory = home / ".config" / "jmscontainers"
+            directory.mkdir(parents=True)
+            def old(project):
+                return {"root": project.decode(), "tf": JMS.project_data(project)["tf"],
+                        "grants": {"build_run": True, "auth": False},
+                        "granted_at": "2026-01-01T00:00:00Z", "jms_version": "2.1.1"}
+            (directory / "store.json").write_text(json.dumps({"schema": 2, "projects": {
+                hashlib.sha256(project).hexdigest(): old(project) for project in (root, plain)}}))
+            self.assertEqual(self.record(root)["mounts"], None)
+            # Without extra mounts the old grant still holds.
+            self.assertEqual(self.launch(plain)[0], (True, False))
+            self.assertEqual(self.questions, [])
+            # With them, the grant never covered a host path: ask once.
+            _, stderr = self.launch(root, answers=["y", ""])
+            self.assertIn("approved before jms recorded them", stderr)
+            self.assertEqual(json.loads((directory / "store.json").read_text())["schema"], 3)
+            self.assertEqual(len(self.record(root)["mounts"]), 1)
+            self.assertIsNone(self.record(plain)["mounts"])
+
+    def test_a_pin_grants_once_without_rewriting_the_binding(self):
+        with sandbox() as home:
+            root = self.project(home)
+            self.launch(root, answers=["y", ""])
+            before = self.record(root)
+            self.repoint(home, "b")
+            with mock.patch.dict(os.environ, {"JMS_TRUST_FINGERPRINT": before["tf"]}):
+                self.assertEqual(self.launch(root, tty=False)[0], (True, False))
+            self.assertEqual(self.record(root), before)
 
 
 class SocketMountTests(unittest.TestCase):
@@ -2275,7 +2420,7 @@ class LaunchTests(unittest.TestCase):
             pid = hashlib.sha256(canonical).hexdigest()
             def add(store):
                 store["projects"][pid] = {
-                    "root": canonical.decode(), "tf": data["tf"],
+                    "root": canonical.decode(), "tf": data["tf"], "mounts": JMS.mount_binding(data["config"]),
                     "grants": {"build_run": True, "auth": True},
                     "granted_at": "2026-01-01T00:00:00Z", "jms_version": JMS.__version__}
                 return True
@@ -2301,7 +2446,7 @@ class LaunchTests(unittest.TestCase):
             pid = hashlib.sha256(canonical).hexdigest()
             def add(store):
                 store["projects"][pid] = {
-                    "root": canonical.decode(), "tf": data["tf"],
+                    "root": canonical.decode(), "tf": data["tf"], "mounts": JMS.mount_binding(data["config"]),
                     "grants": {"build_run": True, "auth": True},
                     "granted_at": "2026-01-01T00:00:00Z", "jms_version": JMS.__version__}
                 return True
@@ -2762,7 +2907,7 @@ class LaunchTests(unittest.TestCase):
         canonical = JMS.canon(os.fsencode(root))
         def add(store):
             store["projects"][hashlib.sha256(canonical).hexdigest()] = {
-                "root": canonical.decode(), "tf": data["tf"],
+                "root": canonical.decode(), "tf": data["tf"], "mounts": JMS.mount_binding(data["config"]),
                 "grants": {"build_run": True, "auth": auth},
                 "granted_at": "2026-01-01T00:00:00Z", "jms_version": JMS.__version__}
             return True
@@ -3279,6 +3424,20 @@ class InspectTests(unittest.TestCase):
             (root / ".jmscontainer" / "Containerfile").write_bytes(b"FROM changed\n")
             report = self.inspect(["inspect", "-w", str(root)])
             self.assertEqual(report["trust_source"], "stale trust-store record")
+            self.assertEqual(report["build_run_grant"], "required")
+
+    def test_a_repointed_mount_reads_as_needing_trust(self):
+        with sandbox() as home:
+            (home / "a").mkdir(); (home / "b").mkdir()
+            os.symlink(home / "a", home / "cache")
+            root = make_project(home, manifest=b'[[mounts]]\nsource = "~/cache"\n'
+                                               b'target = "/home/isolation/.cache/tool"\n')
+            with quiet(), contextlib.redirect_stdout(io.StringIO()):
+                JMS.cmd_trust(JMS.parse_cli(["trust", str(root), "--fingerprint", fingerprint_of(root)]))
+            self.assertEqual(self.inspect(["inspect", "-w", str(root)])["trust_source"], "trust store")
+            os.unlink(home / "cache"); os.symlink(home / "b", home / "cache")
+            report = self.inspect(["inspect", "-w", str(root)])
+            self.assertEqual(report["trust_source"], "trust-store record for other mount sources")
             self.assertEqual(report["build_run_grant"], "required")
             new_tf = fingerprint_of(root)
             with mock.patch.dict(os.environ, {"JMS_TRUST_FINGERPRINT": new_tf}):

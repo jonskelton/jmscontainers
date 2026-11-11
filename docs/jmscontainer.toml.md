@@ -51,11 +51,14 @@ trust fingerprint and requires fresh consent.
 
 `source` values are host-controlled capability requests. They are canonicalized
 before approval and again on every launch; mount sources that touch jms
-credential, configuration, or tool directories are rejected. Approval records
-the manifest text, not the resolved path, so jms refuses any source the
-container could change: one reached through an entry inside the project (a
-subdirectory, a committed symlink, `sub/..`) or inside a read-write extra
-mount. Keep shared caches outside the project, for example under `~/.cache`. For the complete security and trust behavior, see
+credential, configuration, or tool directories are rejected. jms refuses any
+source the container could change: one reached through an entry inside the
+project (a subdirectory, a committed symlink, `sub/..`) or inside a
+read-write extra mount. Keep shared caches outside the project, for example
+under `~/.cache`. Approval also records the host path each source resolves
+to, and its file type; if a launch resolves any source differently (a
+symlink re-pointed since), jms asks again and names the old and new path.
+For the complete security and trust behavior, see
 [SECURITY.md](../SECURITY.md).
 
 ### Credential-path mounts
