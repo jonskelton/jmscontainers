@@ -1,5 +1,6 @@
 import contextlib
 import datetime
+import errno
 import importlib.machinery
 import importlib.util
 import hashlib
@@ -3598,7 +3599,13 @@ class TrustCommandTests(unittest.TestCase):
     def test_trust_without_a_definition_refuses_a_non_utf8_root_cleanly(self):
         with sandbox() as home:
             plain = home / "git" / os.fsdecode(b"plain\xff")
-            (plain / ".git").mkdir(parents=True)
+            try:
+                (plain / ".git").mkdir(parents=True)
+            except OSError as error:
+                # APFS refuses names that are not valid UTF-8.
+                if error.errno != errno.EILSEQ:
+                    raise
+                self.skipTest("filesystem refuses non-UTF-8 names")
             with self.assertRaisesRegex(JMS.JMSException, "must be valid UTF-8") as caught:
                 self.run_trust(["trust", str(plain), "--auth"])
             self.assertEqual(caught.exception.exit_code, 1)
