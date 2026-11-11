@@ -17,6 +17,21 @@
   reaches neither a server the agent starts nor an agent login's
   browser callback. The Debian install command adds `git` and `python3`.
 
+- **Security: manifest errors no longer print host environment values.**
+  Since 2.0.2 a mount source such as `source = "$MY_API_TOKEN"` that did
+  not exist produced an error quoting the expanded path, so any command
+  run on an untrusted checkout -- `jms build`, `jms inspect`, before any
+  consent -- echoed the variable's value to stderr and into CI logs. A
+  source that names a variable is now reported as written in the
+  manifest. Sources using only `~` or a relative path still show the
+  full path and the `mkdir -p` hint.
+- **The consent summary bounds `[env]` entries.** Each entry is cut at
+  200 characters with a `(truncated: N of M characters shown)` note,
+  and wrapped at 76 columns with indented continuation lines, so a long
+  value cannot flood the summary or use a run of spaces to start a
+  terminal line that reads like a capability bullet. The container
+  still receives the full value.
+
 ## 2.2.0 — 2026-11-11
 
 - **Security: a grant now covers where extra mounts resolve, not only
