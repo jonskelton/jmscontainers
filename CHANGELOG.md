@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.1 — 2026-11-11
 
 - **Security: a container can no longer re-point an approved mount.**
   Approval records the manifest's text, and mount sources resolve again
