@@ -1062,11 +1062,13 @@ def mount_point(path: bytes) -> bytes:
 
 
 def containment_limit(workdir: bytes) -> bytes:
-    """Exclusive bound on how far any upward walk from workdir may climb.
+    """Bound on how far any upward walk from workdir may climb.
 
-    $HOME for anything inside it, the filesystem boundary otherwise.  Being
-    exclusive, it also keeps a git-managed $HOME from counting as a checkout
-    root -- one dotfiles repository must not swallow every project under it.
+    $HOME for anything inside it, the filesystem boundary otherwise.  $HOME
+    and / are exclusive, which keeps a git-managed $HOME (or /) from counting
+    as a checkout root -- one dotfiles repository must not swallow every
+    project under it.  Any other mount point is inclusive: a repository that
+    is the root of its own filesystem is a checkout like any other.
     """
     home = home_path()
     return home if ancestor(home, workdir) else mount_point(workdir)
@@ -1078,8 +1080,9 @@ VCS_MARKERS = (b".git", b".hg", b".jj", b".svn")
 def vcs_root(workdir: bytes) -> bytes | None:
     """Nearest enclosing checkout root, or None when workdir is not in one."""
     limit = containment_limit(workdir)
+    stop = limit if limit == home_path() else parent(limit)
     current = workdir
-    while current != limit and current != b"/":
+    while current != stop and current != b"/":
         # .git is a regular file in worktrees and submodules, so test for the
         # marker's presence rather than for a directory.
         if any(os.path.lexists(current + b"/" + marker) for marker in VCS_MARKERS):
@@ -1109,7 +1112,7 @@ def implicit_workdir_refusal(workdir: bytes) -> str | None:
     so a bare `jms launch` must not act on whatever directory the user happens
     to be standing in.  A checkout is the evidence that a directory is a
     project.  $HOME is covered without a special case: containment_limit() is
-    exclusive, so vcs_root($HOME) is None even for a dotfiles repository.
+    exclusive there, so vcs_root($HOME) is None even for a dotfiles repository.
     """
     if vcs_root(workdir) is None:
         return "the current directory is not inside a checkout"

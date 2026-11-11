@@ -926,6 +926,36 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(JMS.ceiling_for(workdir), JMS.parent(workdir))
             self.assertIsNotNone(JMS.implicit_workdir_refusal(workdir))
 
+    def test_checkout_at_a_mount_point_is_a_checkout_root(self):
+        """A repository that is its own filesystem's root is still a checkout."""
+        with sandbox() as home:
+            repo = home.parent / "volume"
+            (repo / "src").mkdir(parents=True)
+            (repo / ".git").mkdir()
+            marker = repo / ".jmscontainer"; marker.mkdir()
+            (marker / "Containerfile").write_bytes(DEFAULT_CONTAINERFILE)
+            root = JMS.canon(os.fsencode(repo))
+            src = JMS.canon(os.fsencode(repo / "src"))
+            with mock.patch.object(JMS, "mount_point", lambda path: root):
+                self.assertEqual(JMS.vcs_root(root), root)
+                self.assertEqual(JMS.vcs_root(src), root)
+                self.assertIsNone(JMS.implicit_workdir_refusal(root))
+                self.assertEqual(JMS.discover(src, consume_spec=False)[0], root)
+
+    def test_git_managed_filesystem_root_is_not_a_checkout_root(self):
+        """`/` stays exclusive for the same reason a dotfiles $HOME does."""
+        with sandbox() as home:
+            project = home.parent / "loose" / "demo"
+            project.mkdir(parents=True)
+            workdir = JMS.canon(os.fsencode(project))
+            real_lexists = os.path.lexists
+            # Pretend / carries a .git; no real path can be created there.
+            lexists = lambda path: path in (b"/.git", b"//.git") or real_lexists(path)
+            with mock.patch.object(JMS, "mount_point", lambda path: b"/"), \
+                 mock.patch.object(os.path, "lexists", lexists):
+                self.assertIsNone(JMS.vcs_root(workdir))
+                self.assertEqual(JMS.ceiling_for(workdir), JMS.parent(workdir))
+
     def test_workdir_operand_grammar(self):
         with sandbox() as home:
             project = home / "git" / "demo"

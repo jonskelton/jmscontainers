@@ -44,6 +44,15 @@
   without a definition prints a `note:` when the shared base already
   exists, since it rebuilds nothing; use `jms build --base --no-cache`.
 
+- **A repository at the root of its own filesystem is now a
+  checkout.** Outside `$HOME`, the search for the checkout root stopped
+  one directory short of a mount point, so a repository that was itself
+  a mount (a ZFS dataset, a btrfs subvolume, a bind-mounted
+  `/workspace`) was never found: a bare `jms launch` there was refused
+  as "not inside a checkout", and from a subdirectory its
+  `.jmscontainer` was silently ignored. `$HOME` and `/` still never
+  count as a checkout root.
+
 ## 2.2.0 — 2026-11-11
 
 - **Security: a grant now covers where extra mounts resolve, not only
