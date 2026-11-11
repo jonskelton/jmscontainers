@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.2.0 — 2026-11-11
 
 - **Security: a grant now covers where extra mounts resolve, not only
   the manifest text.** A mount source such as `~/links/cache` that is a
