@@ -1,5 +1,6 @@
 import contextlib
 import datetime
+import errno
 import importlib.machinery
 import importlib.util
 import hashlib
@@ -3594,6 +3595,33 @@ class TrustCommandTests(unittest.TestCase):
             projects = JMS.read_store()["projects"]
             self.assertEqual(list(projects), [pid])
             self.assertEqual(projects[pid]["grants"], {"build_run": True, "auth": False})
+
+    def test_trust_without_a_definition_refuses_a_non_utf8_root_cleanly(self):
+        with sandbox() as home:
+            plain = home / "git" / os.fsdecode(b"plain\xff")
+            try:
+                (plain / ".git").mkdir(parents=True)
+            except OSError as error:
+                # APFS refuses names that are not valid UTF-8.
+                if error.errno != errno.EILSEQ:
+                    raise
+                self.skipTest("filesystem refuses non-UTF-8 names")
+            with self.assertRaisesRegex(JMS.JMSException, "must be valid UTF-8") as caught:
+                self.run_trust(["trust", str(plain), "--auth"])
+            self.assertEqual(caught.exception.exit_code, 1)
+            self.assertEqual(JMS.read_store()["projects"], {})
+
+    def test_an_empty_fingerprint_is_a_usage_error_even_over_a_live_grant(self):
+        # `--fingerprint "$UNSET"` must not verify nothing and report "trusted".
+        with sandbox() as home:
+            root, _, _ = self.seed(home)
+            before = JMS.read_store()
+            for argv in (["trust", str(root), "--fingerprint", ""],
+                         ["trust", "list", "--fingerprint", ""]):
+                with self.subTest(argv=argv), \
+                     self.assertRaisesRegex(JMS.UsageError, "--fingerprint requires"):
+                    self.run_trust(argv)
+            self.assertEqual(JMS.read_store(), before)
 
     def test_trust_without_a_definition_rejects_fingerprint(self):
         with sandbox() as home:

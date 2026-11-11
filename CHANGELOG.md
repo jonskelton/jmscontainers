@@ -32,6 +32,18 @@
   terminal line that reads like a capability bullet. The container
   still receives the full value.
 
+- **Four CLI edge cases now end cleanly instead of in a traceback or
+  a silent success.** Output into a pipe the reader closed early
+  (`jms trust list | head -1`, `jms --help | true`) exits 141 with no
+  `BrokenPipeError` noise, where it used to exit 120. `jms trust PATH
+  --auth` on a checkout whose path is not valid UTF-8 fails with an
+  `error:` line and exit 1, as `launch` does there. `jms trust PATH
+  --fingerprint ""` is a usage error (exit 2); it used to verify
+  nothing and still print `trusted` over a live grant, so an unset
+  variable in automation reported success. `jms launch --no-cache`
+  without a definition prints a `note:` when the shared base already
+  exists, since it rebuilds nothing; use `jms build --base --no-cache`.
+
 ## 2.2.0 — 2026-11-11
 
 - **Security: a grant now covers where extra mounts resolve, not only

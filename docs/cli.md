@@ -172,6 +172,9 @@ at the workdir or an ancestor inside the checkout prints a warning and
 mounts nothing without `--auth`; it is never re-asked. `--no-auth` skips the
 trust store entirely. See
 [Launches without a definition](agent-state.md#launches-without-a-definition).
+There, `--no-cache` applies only when the shared base is missing and
+`launch` builds it; over an existing base it prints a `note:` naming
+`jms build --base --no-cache` and rebuilds nothing.
 Arguments after `--` are
 appended to the selected entry argv. `--root` runs as root instead of the
 `isolation` user, which moves the agent-state and shell-config mount targets
@@ -251,8 +254,8 @@ may add keys, so a script should look keys up by name, not by line.
 
 `jms trust PATH` interactively (re)approves a definition; with
 `--fingerprint HEX64` it records durable trust non-interactively when the
-value matches the current fingerprint. Combined with `--auth`, it also
-records the credential grant without asking — the strongest
+value matches the current fingerprint; an empty value is a usage error.
+Combined with `--auth`, it also records the credential grant without asking — the strongest
 non-interactive grant jms offers, so pin only a definition you have
 reviewed; without `--auth` it records the credential grant as declined,
 replacing any earlier answer. `list`, `revoke`, and `prune` are
@@ -408,6 +411,7 @@ runtime, so a signal sent during a session goes to the runtime itself.
 | 3 | trust error: consent declined, prompting unavailable, or a fingerprint mismatch |
 | 130 | interrupted (Ctrl-C) at any point before `launch` hands over to the runtime |
 | 129, 143 | terminated by SIGHUP or SIGTERM; jms forwards the signal to the running runtime command and waits for it first |
+| 141 | stdout was closed early (`jms trust list \| head -1`); jms stops quietly, as a process killed by SIGPIPE would |
 
 When jms itself exits 1, 2 or 3, it writes a line to stderr that starts
 with `error: ` (`jms <command>: error: ` for a flag error caught by the

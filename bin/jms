@@ -2456,6 +2456,10 @@ def ensure_base(args) -> None:
             # Re-check under the lock: a concurrent jms may have just built it.
             if not image_exists(BASE):
                 _build_base(args)
+                return
+    if getattr(args, "no_cache", False):
+        print("note: --no-cache does not rebuild an existing shared base on launch; "
+              "rebuild it with: jms build --base --no-cache", file=sys.stderr)
 
 
 def project_data(workdir: bytes):
@@ -2971,6 +2975,10 @@ def cmd_trust(args):
     """`jms trust`: check the flags each verb accepts, then hand off to it."""
     if args.auth and args.no_auth:
         fail("--auth and --no-auth cannot be combined", 2)
+    if args.fingerprint == "":
+        # An empty pin (`--fingerprint "$UNSET"`) would otherwise verify nothing
+        # yet still report a live grant as trusted.
+        fail("--fingerprint requires the definition's 64-hex fingerprint; get it with: jms inspect", 2)
     action = trust_verb(args)
     if action in ("list", "revoke", "prune"):
         if getattr(args, "fingerprint", None):
@@ -3081,6 +3089,7 @@ def trust_approve(args):
             # and overwriting it would discard a definition's grants unseen.
             fail(quote(vanished[0][0]) + " has a trust record for a project definition that is no "
                  "longer present; run jms trust revoke " + quote(workdir) + " first")
+        runtime_path(root)  # the record stores the root as text: refuse what launch would
         record_base_answer(root, args.auth)
         if args.auth:
             print(consent_text(BASE_CREDENTIAL_SCOPE_NOTE), file=sys.stderr)
@@ -3308,7 +3317,7 @@ environment:
 
 exit status: 0 success (launch: the container's own status), 1 failure,
 2 usage error, 3 trust not granted, 130 interrupted,
-129/143 hangup/terminated. The full reference is
+129/143 hangup/terminated, 141 output pipe closed. The full reference is
 docs/cli.md in the jms checkout. Run 'jms COMMAND --help' for a command."""
 
 LAUNCH_EPILOG = """\
@@ -3453,9 +3462,27 @@ def parse_cli(argv=None):
 
 def main():
     try:
+        try:
+            return _main()
+        finally:
+            # Flush here, not at interpreter exit, so a reader that closed
+            # the pipe early (`jms trust list | head -1`) is handled below.
+            sys.stdout.flush()
+    except BrokenPipeError:
+        # The reader went away: stop quietly with the shell's SIGPIPE
+        # status.  Point fd 1 at /dev/null so the interpreter's final
+        # flush cannot fail again (Python docs, "Note on SIGPIPE").
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 141
+
+
+def _main():
+    try:
         install_signal_forwarding()
         args = parse_cli()
         args.func(args)
+    except BrokenPipeError:
+        raise  # a closed stdout is not a host I/O failure; main() handles it
     except JMSException as exc:
         print("error: " + terminal_safe_text(str(exc)), file=sys.stderr)
         if exc.hint:
