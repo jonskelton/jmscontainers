@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Security: a container can no longer re-point an approved mount.**
+  Approval records the manifest's text, and mount sources resolve again
+  on every launch. A container could replace an in-project source such
+  as `source = "cache"` with a symlink, and the next launch mounted
+  whatever it named (another checkout, `~/.config/systemd`, or `~/.ssh`
+  under a credential grant) with no prompt. jms now refuses a source
+  whose resolution passes through the project or through a read-write
+  extra mount. **A manifest with an in-project source now fails** with
+  "passes through the project"; move the source outside the project,
+  for example under `~/.cache`.
 - **A manifest's `CLAUDE_CONFIG_DIR` now sticks.** The container's
   shell startup no longer resets it to `~/.claude`, so Claude Code uses
   the manifest's state directory and keeps its login across sessions.

@@ -36,7 +36,7 @@ coercion is performed, and floats and datetimes are accepted nowhere.
 | `name` | string | project-directory slug | Cosmetic slug for generated container names. Must match `^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`. It does not affect the project ID, but it is manifest content: changing it changes the trust fingerprint, and the image tag ends in that fingerprint. |
 | `env` | table | empty | Environment names match `^[A-Za-z_][A-Za-z0-9_]*$`; values are strings without NUL or newline. `TZ` is special only in that `launch` supplies a default from the host: see [Time zone](#time-zone). |
 | `mounts` | array of tables | empty | Each item has `source`, `target`, and optional `readonly` and `allow_socket` only. |
-| `mounts[].source` | string | — | Required, nonempty host path. `~`, `$VAR`, and `${VAR}` expand once from the host environment; unset or empty expansions fail. Relative paths resolve from the project root (not `.jmscontainer/` or the invoking working directory). The result must already exist: jms canonicalizes it (resolving symlinks) while parsing, so a missing source is a manifest error. |
+| `mounts[].source` | string | — | Required, nonempty host path. `~`, `$VAR`, and `${VAR}` expand once from the host environment; unset or empty expansions fail. Relative paths resolve from the project root (not `.jmscontainer/` or the invoking working directory). The result must already exist: jms canonicalizes it (resolving symlinks) while parsing, so a missing source is a manifest error. A source whose resolution passes through anything inside the project, or inside another read-write mount's source, is refused: the container could re-point it between launches. The project root itself is allowed. |
 | `mounts[].target` | string | — | Required container path. Absolute paths use the allowlist in [Mount targets](#mount-targets); relative paths resolve from the container project path and may leave that allowlist, subject to the system-state and reserved-path checks below. Targets may not overlap each other or any reserved path. |
 | `mounts[].readonly` | boolean | `true` | Set `false` only when the container must write the host path. A writable host toolchain cache (such as `~/.cargo/registry`, `~/go/pkg/mod` or `~/.cache/pip`) is code host builds of every project will later run, so give a container its own cache directory instead. Read-only does not restrict a socket, FIFO or device node: the container can still connect to or write it, which is why such sources need `allow_socket`. |
 | `mounts[].allow_socket` | boolean | `false` | Permit a source that is a socket, FIFO, or character/block device; without it such a source is refused. The consent summary then names the grant (`SOCKET (allow_socket = true)`) instead of `read-only`. An exact socket path is also exempt from the socket-directory refusal; a directory never is. See [Host sockets](#host-sockets). |
@@ -50,8 +50,12 @@ Any byte change under `.jmscontainer/` — including this manifest — changes t
 trust fingerprint and requires fresh consent.
 
 `source` values are host-controlled capability requests. They are canonicalized
-before approval; mount sources that touch jms credential, configuration, or tool
-directories are rejected. For the complete security and trust behavior, see
+before approval and again on every launch; mount sources that touch jms
+credential, configuration, or tool directories are rejected. Approval records
+the manifest text, not the resolved path, so jms refuses any source the
+container could change: one reached through an entry inside the project (a
+subdirectory, a committed symlink, `sub/..`) or inside a read-write extra
+mount. Keep shared caches outside the project, for example under `~/.cache`. For the complete security and trust behavior, see
 [SECURITY.md](../SECURITY.md).
 
 ### Credential-path mounts
