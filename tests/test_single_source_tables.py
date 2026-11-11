@@ -155,11 +155,11 @@ class TrustRecordTests(unittest.TestCase):
     """MAINT-08: one constructor writes the trust record valid_store() reads."""
 
     def store_with(self, record):
-        return {"schema": 2, "projects": {hashlib.sha256(b"/home/u/git/p").hexdigest(): record}}
+        return {"schema": 3, "projects": {hashlib.sha256(b"/home/u/git/p").hexdigest(): record}}
 
     def test_constructed_records_are_exactly_what_the_validator_accepts(self):
         for tf, auth in (("a" * 64, True), ("a" * 64, False), (JMS.BASE_CREDENTIAL_TF, False)):
-            record = JMS.make_trust_record(b"/home/u/git/p", tf, auth)
+            record = JMS.make_trust_record(b"/home/u/git/p", tf, auth, [])
             self.assertEqual(set(record), JMS.TRUST_RECORD_FIELDS)
             self.assertEqual(record["grants"], {"build_run": True, "auth": auth})
             self.assertEqual((record["root"], record["tf"], record["jms_version"]),
@@ -172,7 +172,7 @@ class TrustRecordTests(unittest.TestCase):
     def test_the_base_answer_writer_stores_the_constructed_record(self):
         written = []
         def capture(change):
-            store = {"schema": 2, "projects": {}}
+            store = {"schema": 3, "projects": {}}
             change(store)
             written.extend(store["projects"].values())
         with mock.patch.object(JMS, "update_store", capture), \

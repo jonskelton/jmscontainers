@@ -1192,28 +1192,41 @@ def store_directory() -> Path:
     return Path(os.fsdecode(home_path())) / ".config" / "jmscontainers"
 
 
-# The schema-2 trust-store record.  make_trust_record() is the only writer and
+# The schema-3 trust-store record.  make_trust_record() is the only writer and
 # valid_store() the only reader of its shape, so a schema change touches both
-# here and nowhere else (MAINT-08).
-TRUST_RECORD_FIELDS = frozenset({"root", "tf", "grants", "granted_at", "jms_version"})
+# here and nowhere else (MAINT-08).  Schema 3 added "mounts", the host paths
+# the grant covers (mount_binding()); read_store() upgrades a schema-2 record
+# with "mounts": None, which binds only a definition without extra mounts.
+STORE_SCHEMA = 3
+TRUST_RECORD_FIELDS = frozenset({"root", "tf", "mounts", "grants", "granted_at", "jms_version"})
 TRUST_GRANT_FIELDS = frozenset({"build_run", "auth"})
+MOUNT_BINDING_KINDS = frozenset({"directory", "file", "socket", "fifo", "device", "other"})
 
 
-def make_trust_record(root: bytes, tf: str, auth: bool) -> dict:
+def make_trust_record(root: bytes, tf: str, auth: bool, mounts: list) -> dict:
     """A fresh store record for a canonical root: build/run granted, auth as answered, stamped now."""
-    return {"root": root.decode("utf-8"), "tf": tf, "grants": {"build_run": True, "auth": auth},
+    return {"root": root.decode("utf-8"), "tf": tf, "mounts": mounts,
+            "grants": {"build_run": True, "auth": auth},
             "granted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "jms_version": __version__}
 
 
-def valid_store(data) -> bool:
-    if type(data) is not dict or set(data) != {"schema", "projects"} or data["schema"] != 2 or not isinstance(data["projects"], dict):
+def valid_mount_binding(value) -> bool:
+    return value is None or (isinstance(value, list) and all(
+        isinstance(item, list) and len(item) == 4 and all(isinstance(field, str) for field in item)
+        and item[1] in MOUNT_BINDING_KINDS and item[3] in ("read-only", "read-write") for item in value))
+
+
+def valid_store(data, schema: int = STORE_SCHEMA) -> bool:
+    fields = TRUST_RECORD_FIELDS if schema == STORE_SCHEMA else TRUST_RECORD_FIELDS - {"mounts"}
+    if type(data) is not dict or set(data) != {"schema", "projects"} or data["schema"] != schema or not isinstance(data["projects"], dict):
         return False
     for pid, record in data["projects"].items():
         if (not isinstance(pid, str) or not re.fullmatch(r"[0-9a-f]{64}", pid) or not isinstance(record, dict)
-                or set(record) != TRUST_RECORD_FIELDS
+                or set(record) != fields
                 or not isinstance(record["root"], str) or not isinstance(record["tf"], str)
                 or not re.fullmatch(r"[0-9a-f]{64}", record["tf"])
                 or hashlib.sha256(record["root"].encode()).hexdigest() != pid
+                or not valid_mount_binding(record.get("mounts"))
                 or not isinstance(record["grants"], dict) or set(record["grants"]) != TRUST_GRANT_FIELDS
                 or record["grants"].get("build_run") is not True or not isinstance(record["grants"].get("auth"), bool)
                 or not isinstance(record["granted_at"], str) or not re.fullmatch(UTC_SECONDS, record["granted_at"])
@@ -1227,15 +1240,21 @@ def read_store() -> dict:
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
-        return {"schema": 2, "projects": {}}
+        return {"schema": STORE_SCHEMA, "projects": {}}
     reset_hint = ("; move or delete " + quote(str(path)) +
                   " to reset all approvals (every project will ask for consent again)")
     try:
         data = json.loads(raw)
     except (UnicodeDecodeError, ValueError):
         fail("cannot read trust store " + quote(str(path)) + ": invalid JSON" + reset_hint)
-    if type(data) is dict and type(data.get("schema")) is int and data["schema"] > 2:
+    if type(data) is dict and type(data.get("schema")) is int and data["schema"] > STORE_SCHEMA:
         fail("trust store was written by a newer jms; upgrade jms")
+    if valid_store(data, schema=2):
+        # A schema-2 record predates mount binding; the next store write
+        # saves the whole store as schema 3.
+        for record in data["projects"].values():
+            record["mounts"] = None
+        data["schema"] = STORE_SCHEMA
     if not valid_store(data):
         fail("cannot read trust store " + quote(str(path)) + ": wrong schema" + reset_hint)
     return data
@@ -1860,6 +1879,47 @@ def extra_mount_mode(mount: dict) -> str:
     return "read-only" if mount["readonly"] else "read-write"
 
 
+def mount_binding(config: dict) -> list:
+    """The host side of every extra mount, as a grant records it.
+
+    The fingerprint hashes the manifest's text, but a source resolves again
+    on every launch: a symlink re-pointed on the host, or by another
+    project's container, would mount a different path under the same text.
+    A grant binds these [source, kind, target, mode] entries too, and a
+    launch whose entries differ asks again.
+    """
+    binding = []
+    for mount in config["mounts"]:
+        try:
+            mode = os.stat(mount["source"]).st_mode
+        except OSError:
+            mode = 0
+        kind = ("directory" if stat.S_ISDIR(mode) else "file" if stat.S_ISREG(mode)
+                else "socket" if stat.S_ISSOCK(mode) else "fifo" if stat.S_ISFIFO(mode)
+                else "device" if stat.S_ISCHR(mode) or stat.S_ISBLK(mode) else "other")
+        binding.append([mount["source"].decode("utf-8"), kind, mount["target"],
+                        "read-only" if mount["readonly"] else "read-write"])
+    return binding
+
+
+def mount_binding_matches(record: dict, binding: list) -> bool:
+    """Whether a record's grant covers these mounts; a schema-2 record covers none."""
+    return record.get("mounts") == binding or (record.get("mounts") is None and not binding)
+
+
+def mount_binding_notice(recorded: list | None, binding: list) -> str:
+    """Why a record with the current fingerprint no longer grants: what each mount now reaches."""
+    if recorded is None:
+        return ("extra mounts are now approved by the host paths they reach, and this "
+                "project was approved before jms recorded them")
+    changes = ["mounts[%d] at %s was %s (%s), now %s (%s)"
+               % (index, quote(new[2]), quote(old[0]), old[1], quote(new[0]), new[1])
+               for index, (old, new) in enumerate(zip(recorded, binding)) if old != new]
+    if len(recorded) != len(binding) or not changes:
+        changes = ["the recorded mounts no longer match the manifest"]
+    return "extra mount sources changed since the project was last trusted: " + "; ".join(changes)
+
+
 # The repository author writes run.git_writable, so approving a definition that
 # sets it must say plainly what it hands the container.
 GIT_WRITABLE_NOTE = "container can write .git (hooks and config there run on your host)"
@@ -2003,7 +2063,7 @@ class TrustDecision:
     persist_auth: bool = False           # "ask_auth": store an accepted credential grant
 
 
-def trust_decision(root: bytes, tf: str, record: dict | None, *, action: str, trust: bool,
+def trust_decision(root: bytes, tf: str, record: dict | None, *, mounts: list, action: str, trust: bool,
                    fingerprint: str | None, env_pin: str | None, wants_auth: bool, no_auth: bool,
                    tty: bool) -> TrustDecision:
     """The trust truth table: stored record, pins, flags and TTY -> what approve() does.
@@ -2011,6 +2071,10 @@ def trust_decision(root: bytes, tf: str, record: dict | None, *, action: str, tr
     The boolean --trust is a one-shot build/run grant that drops the env pin;
     it never grants credentials (SECURITY.md).  A one-shot credential grant
     needs the exact JMS_TRUST_FINGERPRINT pin together with --auth.
+
+    mounts is mount_binding() for this launch.  A record grants only while
+    both its fingerprint and its mounts match; a pin names a fingerprint
+    alone, so a one-shot grant takes the mounts as they resolve now.
     """
     if trust:
         env_pin = None
@@ -2024,7 +2088,7 @@ def trust_decision(root: bytes, tf: str, record: dict | None, *, action: str, tr
             "--fingerprint does not match this project definition (given " + quote(fingerprint[:12])
             + ", current " + tf[:12] + ") -- review the definition, then get the full "
             "fingerprint with: jms inspect " + quote(root), 3))
-    live = record if record and record.get("tf") == tf else None
+    live = record if record and record.get("tf") == tf and mount_binding_matches(record, mounts) else None
     one_shot = trust or env_pin == tf or fingerprint == tf
     build_ok = bool(live and live.get("grants", {}).get("build_run")) or one_shot
     # A one-shot credential grant requires the audited exact pin; the boolean
@@ -2041,6 +2105,8 @@ def trust_decision(root: bytes, tf: str, record: dict | None, *, action: str, tr
     elif record and record.get("tf") != tf:
         notice = ("project definition changed since it was last trusted (fingerprint " +
                   record["tf"][:12] + " -> " + tf[:12] + ")")
+    elif record and not mount_binding_matches(record, mounts):
+        notice = mount_binding_notice(record.get("mounts"), mounts)
     show_summary = action == "trust" or trust or not build_ok or (wants_auth and not auth_ok)
     common = dict(build_ok=build_ok, auth_ok=auth_ok, no_auth=no_auth, notice=notice,
                   show_summary=show_summary)
@@ -2071,8 +2137,9 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
     """Carry out trust_decision(): print, prompt and record; returns (build_ok, auth_ok)."""
     config = config or default_config()
     pid = hashlib.sha256(root).hexdigest()
+    mounts = mount_binding(config)
     decision = trust_decision(
-        root, tf, read_store()["projects"].get(pid), action=action,
+        root, tf, read_store()["projects"].get(pid), mounts=mounts, action=action,
         trust=getattr(args, "trust", False), fingerprint=getattr(args, "fingerprint", None),
         env_pin=os.environ.get("JMS_TRUST_FINGERPRINT"), wants_auth=getattr(args, "auth", False),
         no_auth=getattr(args, "no_auth", False), tty=sys.stdin.isatty() and sys.stderr.isatty())
@@ -2089,7 +2156,7 @@ def approve(root: bytes, tf: str, args, *, action: str, config: dict | None = No
     if decision.prompt_refusal:
         fail(*decision.prompt_refusal)
     def record_approval(auth):
-        new = make_trust_record(root, tf, auth)
+        new = make_trust_record(root, tf, auth, mounts)
         def replace(current):
             current["projects"][pid] = new
             return True
@@ -2205,7 +2272,7 @@ def base_launch_auth(workdir: bytes, args) -> bool:
 def record_base_answer(root: bytes, answer: bool):
     """Remember a no-definition credential answer for a base_credential_root()."""
     pid = hashlib.sha256(root).hexdigest()
-    new = make_trust_record(root, BASE_CREDENTIAL_TF, answer)
+    new = make_trust_record(root, BASE_CREDENTIAL_TF, answer, [])
     def remember(store):
         store["projects"][pid] = new
         return True
@@ -3019,11 +3086,13 @@ def cmd_inspect(args):
         record = read_store()["projects"].get(data["pid"])
     except JMSException as exc:
         record, error = None, str(exc)
-    live = record if record and record.get("tf") == data["tf"] else None
+    mounts_match = bool(record) and mount_binding_matches(record, mount_binding(data["config"]))
+    live = record if record and record.get("tf") == data["tf"] and mounts_match else None
     env_pin = os.environ.get("JMS_TRUST_FINGERPRINT")
     if env_pin is not None and env_pin != data["tf"]: source = "JMS_TRUST_FINGERPRINT mismatch"
     elif env_pin == data["tf"]: source = "JMS_TRUST_FINGERPRINT (one-shot)"
     elif live: source = "trust store"
+    elif record and record.get("tf") == data["tf"]: source = "trust-store record for other mount sources"
     elif record: source = "stale trust-store record"
     else: source = "none"
     print("trust_store: " + ("error: " + error if error else "readable"))
