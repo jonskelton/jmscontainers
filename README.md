@@ -50,7 +50,7 @@ and platform notes.
 ### Debian 13 (amd64)
 
 ```sh
-sudo apt install podman uidmap passt dbus-user-session fuse-overlayfs coreutils make
+sudo apt install podman uidmap passt dbus-user-session fuse-overlayfs coreutils make git python3
 git clone https://github.com/jonskelton/jmscontainers.git
 cd jmscontainers
 make install

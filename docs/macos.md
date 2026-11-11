@@ -71,6 +71,25 @@ jms passes no CPU or memory option to `container run`, and
 apple/container's default allocation (see `container run --help`). The VM
 caps what an agent can consume; the manifest cannot raise or lower it.
 
+## Networking
+
+Outbound network access is unrestricted unless you pass `--no-network`,
+which runs the container with `--network none`. **No ports are
+published**: jms passes no `--publish` option to `container run`, and
+`jmscontainer.toml` has no key for one, so `localhost:PORT` on the Mac
+does not reach a server the agent starts in the container's VM.
+apple/container gives each container its own network address, which
+`container list` shows; whether the Mac can reach a server at that
+address depends on apple/container and the server listening on all
+interfaces, not on jms.
+
+An agent login that finishes by redirecting your Mac's browser to a
+`localhost` callback cannot reach the container the same way, and the
+base image installs no browser. Use a login mode that does not need the
+callback if the agent offers one, such as pasting back a code it prints,
+a device code, or an API key. Which modes exist is up to each agent, not
+jms.
+
 ## Proxies
 
 jms has no proxy settings of its own and passes none to `container`, and

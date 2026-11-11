@@ -9,6 +9,14 @@
   Fingerprints are byte-for-byte unchanged: existing grants and image
   tags stay valid.
 
+- **Documentation corrections.** The Linux guide said jms refuses to
+  mount the socket a `unix://` `DOCKER_HOST` names; a manifest mount
+  that names that exact socket with `allow_socket = true` is mounted,
+  and the approval prompt marks it `SOCKET`. Both platform guides now
+  say jms publishes no container ports, so `localhost` on the host
+  reaches neither a server the agent starts nor an agent login's
+  browser callback. The Debian install command adds `git` and `python3`.
+
 ## 2.2.0 — 2026-11-11
 
 - **Security: a grant now covers where extra mounts resolve, not only
