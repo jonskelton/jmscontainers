@@ -11,7 +11,19 @@
   whose resolution passes through the project or through a read-write
   extra mount. **A manifest with an in-project source now fails** with
   "passes through the project"; move the source outside the project,
-  for example under `~/.cache`.
+  for example under `~/.cache`. This ships as a patch release, not a
+  major one: the refused form is the vulnerability itself, and no
+  example or doc used it.
+- **ssh in the base image fails instead of prompting.** An agent's
+  shell cannot answer ssh, so a `git push` to a host missing from
+  `known_hosts` used to hang silently. The base image now sets
+  `BatchMode yes`, `StrictHostKeyChecking accept-new` and
+  `ConnectTimeout 15`: a new host's key is recorded without asking, a
+  changed key is still refused, and an unreachable host fails in 15
+  seconds. Interactive ssh inside a container no longer asks for a
+  password or passphrase; pass `-o BatchMode=no` or use a
+  `~/.ssh/config` to get the prompt back. Rebuild the base image
+  (`jms build --base`) to pick this up.
 - **A manifest's `CLAUDE_CONFIG_DIR` now sticks.** The container's
   shell startup no longer resets it to `~/.claude`, so Claude Code uses
   the manifest's state directory and keeps its login across sessions.

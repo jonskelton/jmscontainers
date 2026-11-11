@@ -6,7 +6,10 @@
   the scope of the CHANGELOG entry below (a release that outgrew the patch
   version the marker guessed is renumbered here, not left as guessed).
 - Add a dated entry to [CHANGELOG.md](../CHANGELOG.md) describing user-visible
-  changes; breaking changes bump the major version.
+  changes; breaking changes bump the major version. One exception: a
+  security fix that refuses only the vulnerable form of a manifest or
+  invocation ships in the next patch release, and its entry says so, so
+  users get it without waiting for a major.
 - Run `make test` (the CI matrix covers the supported Python floor and current
   on Ubuntu, plus macOS).
 - Reconcile the docs with the behavior actually shipping: `README.md`,
