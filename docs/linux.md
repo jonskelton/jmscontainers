@@ -9,8 +9,11 @@ warning. Other distributions, arm64, and SELinux-enforcing hosts are
 **Docker is not supported**, rootful or rootless. jms runs only the `podman`
 CLI, and file ownership on the project mount depends on Podman's explicit
 user-namespace mapping (`--userns=keep-id`), which jms passes on every
-launch. Podman installs alongside Docker; jms never talks to the Docker
-daemon, and it refuses to mount the socket a `unix://` `DOCKER_HOST` names.
+launch. Podman installs alongside Docker, and jms never talks to the Docker
+daemon. A manifest can still mount the socket a `unix://` `DOCKER_HOST`
+names, but only by naming that exact socket with `allow_socket = true`,
+which the approval prompt shows as `SOCKET`; a mount of any directory
+containing it is refused.
 
 ## Install on Debian 13
 
@@ -18,7 +21,7 @@ Run these commands as a regular user, using `sudo` only for package
 installation:
 
 ```sh
-sudo apt install podman uidmap passt dbus-user-session fuse-overlayfs coreutils make
+sudo apt install podman uidmap passt dbus-user-session fuse-overlayfs coreutils make git python3
 git clone https://github.com/jonskelton/jmscontainers.git
 cd jmscontainers
 make install
@@ -28,8 +31,9 @@ jms build --base
 
 The full package list matters. `uidmap`, `passt`, and `dbus-user-session` are
 only recommended dependencies of Podman and may be absent on a minimal system.
-`make` is not part of a base Debian install. `coreutils` supplies the required
-GNU host tools.
+`make` is not part of a base Debian install, and a minimal system may lack
+`git` (for the clone) and `python3` (jms needs 3.11 or newer; Debian 13
+ships 3.13). `coreutils` supplies the required GNU host tools.
 
 The login-shell restart matters on a fresh account: Debian adds
 `~/.local/bin` to PATH at login only when the directory already exists, and
@@ -140,6 +144,23 @@ Podman configuration sets as a default still applies, because jms accepts
 `containers.conf` as trusted host input (see
 [Security boundary](#security-boundary)); that file, or systemd resource
 controls on your user session, is where to cap containers today.
+
+## Networking
+
+Outbound network access is unrestricted unless you pass `--no-network`,
+which runs the container with `--network none`. **No ports are
+published**: jms passes no `--publish` option to `podman run`, and
+`jmscontainer.toml` has no key for one. A server the agent starts inside
+the container listens in the container's own network namespace, so
+`localhost:PORT` on the host does not reach it, and jms offers no way to
+change that today.
+
+The same holds for an agent login that finishes by redirecting your host
+browser to a `localhost` callback: the callback cannot reach the
+container, and the base image installs no browser. Use a login mode that
+does not need the callback if the agent offers one, such as pasting back
+a code it prints, a device code, or an API key. Which modes exist is up
+to each agent, not jms.
 
 ## Proxies
 
