@@ -2245,6 +2245,17 @@ class BuildTests(unittest.TestCase):
             JMS.gc_project_images(pid, "p", keep=0)
         self.assertEqual(runtime.deleted, ["p:1"])
 
+    def test_gc_never_removes_a_prefixed_image_without_the_project_label(self):
+        # The inverse of the squatter case: the tag prefix alone is not proof
+        # either, so an unlabelled or other-project p:* image is left alone.
+        pid = "f" * 64
+        images = {"p:1": image_record("p:1", labels={"jms.project": pid}),
+                  "p:nolabel": image_record("p:nolabel"),
+                  "p:other": image_record("p:other", labels={"jms.project": "0" * 64})}
+        with self.fake(images=images) as runtime, contextlib.redirect_stdout(io.StringIO()):
+            JMS.gc_project_images(pid, "p", keep=0)
+        self.assertEqual(runtime.deleted, ["p:1"])
+
 
 class BuildTestsPodman(BuildTests):
     BACKEND = "podman"
@@ -3682,6 +3693,27 @@ class CleanTests(unittest.TestCase):
                              [JMS.BASE, "jmscontainers-mine-00000000:1"])
             self.assertFalse(any(call["argv"][2:3] == ["prune"] for call in runtime.calls
                                  if self.prefixed(call, self.IMAGE_PREFIX)))
+
+    def test_image_ownership_needs_both_the_label_and_the_name_prefix(self):
+        # (label?, prefix?) truth table for both clean scopes: only an image
+        # carrying both is jms's.  A hand-tagged jmscontainers-* image with no
+        # label must survive `clean --all --images`.
+        with sandbox() as home:
+            root = make_project(home)
+            canonical = JMS.canon(os.fsencode(root))
+            pid = hashlib.sha256(canonical).hexdigest()
+            prefix = JMS.tag_prefix_for(canonical, pid)
+            for argv, name in ((["clean", "--images", "-w", str(root)], prefix + ":"),
+                               (["clean", "--all", "--images"], "jmscontainers-scratch:")):
+                images = {
+                    name + "both": image_record(name + "both", labels={"jms.project": pid}),
+                    name + "nolabel": image_record(name + "nolabel"),
+                    "foreign:label": image_record("foreign:label", labels={"jms.project": pid}),
+                    "foreign:none": image_record("foreign:none"),
+                }
+                with self.subTest(argv=argv):
+                    runtime, _ = self.clean(argv, images=images)
+                    self.assertEqual(runtime.deleted, [name + "both"])
 
     def test_all_scope_ignores_unlabelled_containers_named_like_jms(self):
         with sandbox():
