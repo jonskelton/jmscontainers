@@ -1062,11 +1062,13 @@ def mount_point(path: bytes) -> bytes:
 
 
 def containment_limit(workdir: bytes) -> bytes:
-    """Exclusive bound on how far any upward walk from workdir may climb.
+    """Bound on how far any upward walk from workdir may climb.
 
-    $HOME for anything inside it, the filesystem boundary otherwise.  Being
-    exclusive, it also keeps a git-managed $HOME from counting as a checkout
-    root -- one dotfiles repository must not swallow every project under it.
+    $HOME for anything inside it, the filesystem boundary otherwise.  $HOME
+    and / are exclusive, which keeps a git-managed $HOME (or /) from counting
+    as a checkout root -- one dotfiles repository must not swallow every
+    project under it.  Any other mount point is inclusive: a repository that
+    is the root of its own filesystem is a checkout like any other.
     """
     home = home_path()
     return home if ancestor(home, workdir) else mount_point(workdir)
@@ -1078,8 +1080,9 @@ VCS_MARKERS = (b".git", b".hg", b".jj", b".svn")
 def vcs_root(workdir: bytes) -> bytes | None:
     """Nearest enclosing checkout root, or None when workdir is not in one."""
     limit = containment_limit(workdir)
+    stop = limit if limit == home_path() else parent(limit)
     current = workdir
-    while current != limit and current != b"/":
+    while current != stop and current != b"/":
         # .git is a regular file in worktrees and submodules, so test for the
         # marker's presence rather than for a directory.
         if any(os.path.lexists(current + b"/" + marker) for marker in VCS_MARKERS):
@@ -1109,7 +1112,7 @@ def implicit_workdir_refusal(workdir: bytes) -> str | None:
     so a bare `jms launch` must not act on whatever directory the user happens
     to be standing in.  A checkout is the evidence that a directory is a
     project.  $HOME is covered without a special case: containment_limit() is
-    exclusive, so vcs_root($HOME) is None even for a dotfiles repository.
+    exclusive there, so vcs_root($HOME) is None even for a dotfiles repository.
     """
     if vcs_root(workdir) is None:
         return "the current directory is not inside a checkout"
@@ -2654,26 +2657,40 @@ def _build_project(data, args):
     # no local base there is nothing to compare (or build from): the existing
     # image stands.  The rebuild needs no --no-cache -- a changed FROM image
     # invalidates the runtime's layer cache by itself.
-    base = shared_base_dependency(data["spec"])
+    #
     # --no-cache rebuilds unconditionally, so the project tag is never
     # inspected under it: the query only costs runtime invocations, and an
     # inspect failure must not abort an explicitly requested rebuild.  The
-    # shared_base_dependency() resolutions above stay either way; they feed
-    # the jms.base label.
-    if not getattr(args, "no_cache", False):
-        project = resolve_image(tag)
-        # The tag carries only a prefix of the project id and fingerprint, so
-        # it is a cache key, not proof of provenance: reuse requires the full
-        # labels the build stamped.  A label-less or foreign image at the tag
-        # is rebuilt over, never run.
-        if project is not None and (project.labels.get("jms.project") != data["pid"]
-                                    or project.labels.get("jms.fingerprint") != data["tf"]):
-            print("image labels do not match this project definition; rebuilding "
-                  + quote(tag), file=sys.stderr)
-        elif project is not None:
-            if base is None or project.labels.get("jms.base") == base.ident:
-                return tag, False
-            print("base image changed; rebuilding " + quote(tag), file=sys.stderr)
+    # shared_base_dependency() resolutions stay either way; they feed the
+    # jms.base label.
+    #
+    # Both resolutions only answer "can this image be reused?" and "which
+    # base id is stamped?" -- cache questions, not security decisions -- so
+    # a record the strict parsers reject (runtime output drift) degrades to
+    # a rebuild (without a jms.base label when the base record is the bad
+    # one) instead of refusing the launch.  Ownership decisions (clean,
+    # purge) keep failing closed.
+    base = project = None
+    try:
+        base = shared_base_dependency(data["spec"])
+        if not getattr(args, "no_cache", False):
+            project = resolve_image(tag)
+    except JMSException as exc:
+        project = None
+        print("warning: unreadable image record (" + terminal_safe_text(str(exc))
+              + "); rebuilding " + quote(tag), file=sys.stderr)
+    # The tag carries only a prefix of the project id and fingerprint, so it
+    # is a cache key, not proof of provenance: reuse requires the full labels
+    # the build stamped.  A label-less or foreign image at the tag is rebuilt
+    # over, never run.
+    if project is not None and (project.labels.get("jms.project") != data["pid"]
+                                or project.labels.get("jms.fingerprint") != data["tf"]):
+        print("image labels do not match this project definition; rebuilding "
+              + quote(tag), file=sys.stderr)
+    elif project is not None:
+        if base is None or project.labels.get("jms.base") == base.ident:
+            return tag, False
+        print("base image changed; rebuilding " + quote(tag), file=sys.stderr)
     # The consent decision was bound to a fingerprint; re-hash the definition
     # immediately before it reaches the runtime and fail closed on mismatch.
     if trust_fingerprint(spec_entries(data["spec"])) != data["tf"]:

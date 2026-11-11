@@ -80,9 +80,11 @@ there is no defensible project boundary above the workdir, so only the workdir
 itself is considered.
 
 The search for the checkout root never climbs past `$HOME` (for paths inside
-it) or past a filesystem boundary (for paths outside it), and that bound is
-exclusive: a git-managed `$HOME` is not itself a checkout root, so one
-dotfiles repository cannot make every directory beneath it one project.
+it) or past a filesystem boundary (for paths outside it). `$HOME` and `/`
+are excluded from that search: a git-managed `$HOME` is not itself a
+checkout root, so one dotfiles repository cannot make every directory
+beneath it one project. Any other mount point is included, so a
+repository that is the root of its own filesystem is a checkout.
 
 The practical consequence is that a `.jmscontainer/` above your checkout root
 is invisible from inside it, wherever you keep your code.
