@@ -5,6 +5,7 @@ import importlib.util
 import io
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -118,6 +119,40 @@ class ExitCodeConsistencyTests(unittest.TestCase):
         with sandbox(), mock.patch.object(JMS, "cmd_inspect", interrupted):
             code, out, err = run_main(["inspect"])
         self.assertEqual((code, out, err), (130, "", ""))
+
+    def test_a_closed_stdout_pipe_exits_141_without_a_traceback(self):
+        # `jms --help | head -1`, `jms inspect | true`: the reader closing
+        # early is not an error.  Cover the flush at exit (argparse's
+        # SystemExit and a normal return) in a real process.
+        jms = pathlib.Path(__file__).parents[1] / "bin" / "jms"
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(os.environ, HOME=tmp)
+            env.pop("JMS_TRUST_FINGERPRINT", None)
+            for argv in (["--help"], ["inspect", tmp]):
+                read, write = os.pipe()
+                os.close(read)
+                try:
+                    proc = subprocess.run([sys.executable, str(jms), *argv], stdout=write,
+                                          stderr=subprocess.PIPE, env=env, timeout=60)
+                finally:
+                    os.close(write)
+                with self.subTest(argv=argv):
+                    self.assertEqual((proc.returncode, proc.stderr), (141, b""))
+
+    def test_a_closed_stdout_mid_command_is_not_a_host_io_failure(self):
+        class ClosedStdout(io.StringIO):
+            def fileno(self):
+                return 1
+        def broken(args):
+            raise BrokenPipeError(32, "Broken pipe")
+        dup2 = []
+        with sandbox(), mock.patch.object(JMS, "cmd_inspect", broken), \
+             mock.patch.object(JMS.os, "dup2", lambda *fds: dup2.append(fds[1])), \
+             mock.patch.object(sys, "argv", ["jms", "inspect"]), \
+             contextlib.redirect_stdout(ClosedStdout()), \
+             contextlib.redirect_stderr(io.StringIO()) as stderr:
+            code = JMS.main()
+        self.assertEqual((code, stderr.getvalue(), dup2), (141, "", [1]))
 
 
 class CleanConfirmationTests(unittest.TestCase):

@@ -500,6 +500,25 @@ class BuildLockTests(unittest.TestCase):
             JMS.ensure_base(None)
         self.assertEqual(built, [])
 
+    def test_launch_no_cache_over_an_existing_base_says_it_rebuilt_nothing(self):
+        built, stderr = [], io.StringIO()
+        args = types.SimpleNamespace(no_cache=True)
+        with sandbox(), mock.patch.object(JMS, "image_exists", lambda image: True), \
+             mock.patch.object(JMS, "_build_base", built.append), \
+             contextlib.redirect_stderr(stderr):
+            JMS.ensure_base(args)
+        self.assertEqual(built, [])
+        self.assertIn("note: --no-cache does not rebuild an existing shared base", stderr.getvalue())
+        self.assertIn("jms build --base --no-cache", stderr.getvalue())
+        # A missing base is built with the flag honored: no note then.
+        stderr.truncate(0)
+        with sandbox(), mock.patch.object(JMS, "image_exists", lambda image: False), \
+             mock.patch.object(JMS, "_build_base", built.append), \
+             contextlib.redirect_stderr(stderr):
+            JMS.ensure_base(args)
+        self.assertEqual(built, [args])
+        self.assertEqual(stderr.getvalue(), "")
+
     def test_base_build_holds_the_base_lock(self):
         seen = []
         with sandbox(), mock.patch.object(JMS, "_build_base",
