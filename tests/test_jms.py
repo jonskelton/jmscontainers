@@ -355,6 +355,26 @@ class FingerprintTests(unittest.TestCase):
             with self.assertRaisesRegex(JMS.JMSException, "must be a regular file"):
                 JMS.project_data(JMS.canon(os.fsencode(root)))
 
+    def test_containerfile_symlink_is_refused(self):
+        # Followed, the fingerprint would hash only the link text: editing the
+        # target would change what is built without a fresh consent prompt.
+        with sandbox() as home:
+            root = make_project(home)
+            containerfile = root / ".jmscontainer" / "Containerfile"
+            (root / "build.df").write_bytes(containerfile.read_bytes())
+            containerfile.unlink()
+            os.symlink("../build.df", containerfile)
+            with self.assertRaisesRegex(JMS.JMSException, "Containerfile must be a regular file"):
+                JMS.project_data(JMS.canon(os.fsencode(root)))
+
+    def test_definition_directory_symlink_is_refused(self):
+        with sandbox() as home:
+            root = make_project(home)
+            os.rename(root / ".jmscontainer", root / "real-spec")
+            os.symlink("real-spec", root / ".jmscontainer")
+            with self.assertRaisesRegex(JMS.JMSException, ".jmscontainer must be a directory"):
+                JMS.project_data(JMS.canon(os.fsencode(root)))
+
     def test_fingerprint_is_reproducible_and_creation_order_insensitive(self):
         digests = []
         for order in (("a.txt", "b.txt", "z"), ("z", "b.txt", "a.txt")):
@@ -955,6 +975,41 @@ class DiscoveryTests(unittest.TestCase):
             root = make_project(home, manifest=manifest)
             with self.assertRaisesRegex(JMS.JMSException, "protected jms host directory"):
                 JMS.project_data(JMS.canon(os.fsencode(root)))
+
+    def test_manifest_mount_of_an_ancestor_of_a_protected_source_is_rejected(self):
+        # Mounting a parent exposes the protected directory just as surely:
+        # a writable ~/.config lets the container edit the trust store.
+        with sandbox() as home:
+            (home / ".config" / "jmscontainers").mkdir(parents=True)
+            (home / ".local" / "share" / "jmscontainers").mkdir(parents=True)
+            checkout_parent = os.fsdecode(JMS.parent(JMS.checkout_root()))
+            sources = ("~/.config", "~/.local/share", "~", checkout_parent)
+            for index, source in enumerate(sources):
+                with self.subTest(source=source):
+                    manifest = ('[[mounts]]\nsource = "%s"\ntarget = "/opt/steal"\n' % source).encode()
+                    root = make_project(home, name="p%d" % index, manifest=manifest)
+                    with self.assertRaisesRegex(JMS.JMSException,
+                                                "mount source overlaps a protected"):
+                        JMS.project_data(JMS.canon(os.fsencode(root)))
+
+    def test_defined_project_rooted_over_a_protected_source_is_rejected(self):
+        # The workdir check alone misses a root that is an ancestor of a
+        # protected directory: -w ~/.config/other is not inside the store,
+        # but its project root ~/.config would mount the store.
+        with sandbox() as home:
+            (home / ".config" / "jmscontainers").mkdir(parents=True)
+            checkout = pathlib.Path(os.fsdecode(JMS.checkout_root()))
+            cases = ((home / ".config", home / ".config" / "other"),
+                     (checkout / "sub", checkout / "sub"))
+            for root, workdir in cases:
+                with self.subTest(root=str(root)):
+                    workdir.mkdir(parents=True, exist_ok=True)
+                    (root / ".git").mkdir()
+                    (root / ".jmscontainer").mkdir()
+                    (root / ".jmscontainer" / "Containerfile").write_bytes(DEFAULT_CONTAINERFILE)
+                    with self.assertRaisesRegex(JMS.JMSException,
+                                                "project root overlaps a protected"):
+                        JMS.project_data(JMS.canon(os.fsencode(workdir)))
 
     def test_protected_sources_resolve_symlinked_dotfile_dirs(self):
         """HO-002 R5: a symlinked ~/.config or ~/.local/share still protects."""
@@ -3530,6 +3585,14 @@ class InitTests(unittest.TestCase):
         with sandbox() as home:
             with self.assertRaisesRegex(JMS.JMSException, r"at \$HOME"):
                 JMS.cmd_init(JMS.parse_cli(["init", "-w", str(home)]))
+            store = home / ".config" / "jmscontainers"
+            store.mkdir(parents=True)
+            checkout = pathlib.Path(os.fsdecode(JMS.checkout_root()))
+            for workdir in (store, home / ".config", checkout):
+                with self.subTest(workdir=str(workdir)):
+                    with self.assertRaisesRegex(JMS.JMSException, "inside a protected jms host"):
+                        JMS.cmd_init(JMS.parse_cli(["init", "-w", str(workdir)]))
+                    self.assertFalse((workdir / ".jmscontainer").exists())
             # An ordinary directory of checkouts is no longer special-cased.
             with contextlib.redirect_stdout(io.StringIO()):
                 JMS.cmd_init(JMS.parse_cli(["init", "-w", str(home / "git")]))
