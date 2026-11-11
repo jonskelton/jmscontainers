@@ -279,6 +279,20 @@ apple/container binds only directories). This list is
 under `$HOME`, is not detected. See
 [Host sockets](docs/jmscontainer.toml.md#host-sockets).
 
+Device and kernel filesystems are refused the same way: a mount that
+contains or sits inside `/dev`, `/dev/shm`, `/proc` or `/sys` is refused,
+since a read-only flag does not stop writes to a device node and those
+trees expose host terminals, processes and kernel state. Only an exact
+device node opted in with `allow_socket = true` is exempt.
+
+The project root, and the workdir of a launch without a definition, gets
+the same socket-directory and kernel-filesystem refusals, and is also
+refused when it overlaps a host credential path (`~/.ssh`, `~/.aws`, and
+the rest of the list under
+[Credential-path mounts](docs/jmscontainer.toml.md#credential-path-mounts)).
+It is mounted read-write with no consent line of its own, so `jms launch
+~/.ssh` exits 1 rather than handing over the keys.
+
 ## Reporting a vulnerability
 
 The supported version is the latest release; older releases receive no

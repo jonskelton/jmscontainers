@@ -183,6 +183,13 @@ they are re-checked against the effective home, so a manifest mount aimed at
 `/home/isolation/...` is rejected under `--root` rather than silently landing
 somewhere else.
 
+jms refuses (exit 1), before any consent prompt, a workdir without a
+definition, or a definition's project root (in `build`, `inspect` and
+`trust` too), that overlaps a protected jms host directory, a host socket
+directory, `/dev`, `/proc`, `/sys`, or a host credential path such as
+`~/.ssh`; see
+[Host sockets](jmscontainer.toml.md#host-sockets).
+
 `--no-network` runs the container with no network: only loopback exists
 inside it (`--network none` on both runtimes). It applies to the run only;
 a project image that needs building is still built with the network, so

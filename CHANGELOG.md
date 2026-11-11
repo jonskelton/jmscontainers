@@ -44,6 +44,18 @@
   without a definition prints a `note:` when the shared base already
   exists, since it rebuilds nothing; use `jms build --base --no-cache`.
 
+- **Security: `/dev`, `/proc`, `/sys` and the directories that hold
+  host sockets or credentials are refused in more places.** An extra
+  mount of `/dev`, `/dev/shm`, `/proc` or `/sys`, or of anything under
+  them, was accepted and labelled "read-only" at consent, although
+  mount flags do not restrict device nodes. It is now refused; an exact
+  device node with `allow_socket = true` is still allowed. The project
+  root, and the workdir of a launch without a definition, was checked
+  only against jms's own directories, so `jms launch ~/.ssh` mounted
+  keys read-write at `/work` with no question. A root that overlaps a
+  host socket directory, a kernel filesystem or a credential store is
+  now refused with exit 1.
+
 ## 2.2.0 — 2026-11-11
 
 - **Security: a grant now covers where extra mounts resolve, not only

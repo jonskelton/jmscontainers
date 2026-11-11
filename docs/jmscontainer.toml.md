@@ -120,11 +120,22 @@ mount whose canonical source:
   subtrees stay mountable;
 - is, or contains, the socket named by `$SSH_AUTH_SOCK` or by a `unix://`
   `$DOCKER_HOST`. Only that path and its ancestors are refused, so
-  `SSH_AUTH_SOCK=~/.agent.sock` does not make the rest of `~` unmountable.
+  `SSH_AUTH_SOCK=~/.agent.sock` does not make the rest of `~` unmountable;
+- contains or sits inside a host device or kernel filesystem: `/dev`,
+  `/dev/shm`, `/proc`, or `/sys`. Mount flags do not restrict the device
+  nodes there, so such a mount would never really be read-only.
 
 A mount with `allow_socket = true` whose source is exactly a socket skips
-the two directory rules; a directory never does, because it would carry
-every socket created in it later.
+the two socket-directory rules, and one whose source is exactly a device
+node (such as `/dev/null`) skips the kernel-filesystem rule; a directory
+or regular file never does, because a directory would carry every socket
+or node created in it later.
+
+The project root, and the workdir of a launch without a definition, is
+refused when it overlaps a socket directory or kernel filesystem the same
+way, and when it is, contains, or sits inside a
+[credential path](#credential-path-mounts): it is mounted read-write
+with no consent line of its own, so there is no grant to keep it under.
 
 A socket inside a credential path (`~/.ssh/agent.sock`,
 `~/.1password/agent.sock`, a gpg-agent socket under `~/.gnupg`) is also a
