@@ -2093,6 +2093,29 @@ class BuildTests(unittest.TestCase):
             self.assertNotIn(tag, [argv[-1] for argv in queries])
             self.assertIn(JMS.BASE, [argv[-1] for argv in queries])
 
+    def test_an_unreadable_image_record_degrades_to_a_rebuild(self):
+        # Whether an image can be reused is a cache question: runtime output
+        # the strict parsers reject must cost a rebuild, never the launch.
+        # The base record feeds only the jms.base label, so --no-cache must
+        # get past a bad one too, and that rebuild is left unstamped.
+        with sandbox() as home:
+            data, tag, images = self.base_project(home)
+            bad = dict(images[tag], ident="not-a-digest")
+            stamp = fake_hex_id(JMS.BASE)
+            for name, broken, extra, label in (
+                    ("project", {tag: bad}, (), stamp),
+                    ("base", {JMS.BASE: dict(bad)}, (), None),
+                    ("base", {JMS.BASE: dict(bad)}, ("--no-cache",), None)):
+                with self.subTest(record=name, args=extra), \
+                     self.fake(images=dict(images, **broken)) as runtime, \
+                     contextlib.redirect_stdout(io.StringIO()), \
+                     contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(JMS.build_project(data, self.build_args(*extra)),
+                                     (tag, True))
+                    self.assertEqual(runtime.build_count, 1)
+                    self.assertIn("warning: unreadable image record", err.getvalue())
+                    self.assertEqual(runtime.images[tag]["labels"].get("jms.base"), label)
+
     def base_project(self, home, stamp=..., with_base=True, containerfile=DEFAULT_CONTAINERFILE):
         """A trusted project whose current-fingerprint image already exists.
 

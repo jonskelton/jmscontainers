@@ -52,6 +52,12 @@
   as "not inside a checkout", and from a subdirectory its
   `.jmscontainer` was silently ignored. `$HOME` and `/` still never
   count as a checkout root.
+- **An unreadable image record no longer blocks a launch.** When the
+  runtime described the project image or the shared base image in a
+  shape jms did not expect, every launch of a definition failed, and
+  `--no-cache` did not help. jms now prints one `warning: unreadable
+  image record` line and rebuilds the project image instead. `jms
+  clean` still refuses records it cannot read.
 
 ## 2.2.0 — 2026-11-11
 
