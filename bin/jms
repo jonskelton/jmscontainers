@@ -1559,10 +1559,18 @@ def mount_source_path(expression: str, root: bytes | None = None) -> bytes:
         if not value: fail("mount source variable is unset or empty: " + quote(name))
         out.extend(value)
     result = bytes(out)
+    # These errors print before any consent, so a source that names a host
+    # variable is shown as written: its expansion would echo the variable's
+    # value (a token, say) to whoever reads the output of an untrusted build.
+    shown = quote(expression) if "$" in expression else None
     if not result.startswith(b"/"):
-        if root is None: fail("relative mount source requires a project root: " + quote(result))
+        if root is None:
+            fail("relative mount source requires a project root: " + (shown or quote(result)))
         result = os.path.join(root, result)
     if not os.path.exists(result):
+        if shown:
+            fail("mount source does not exist: " + shown + " (expanded value not shown); "
+                 "create it first")
         fail("mount source does not exist: " + quote(result) + "; create it first: mkdir -p "
              + quote(result))
     return result
@@ -1960,6 +1968,28 @@ def consent_text(text: str, keep: tuple = ()) -> str:
                          break_on_hyphens=False).replace("\xa0", " ")
 
 
+CONSENT_ENV_LIMIT = 200
+
+
+def consent_env_line(key: str, value: str) -> str:
+    """Render one manifest [env] entry for the consent summary.
+
+    The entry is project text: quote() escapes its control bytes, the shown
+    part is capped at CONSENT_ENV_LIMIT characters so one entry cannot flood
+    the summary, and the line is cut at CONSENT_WIDTH columns with indented
+    continuations, so no run of spaces can push text to the start of a
+    terminal line where it would read as a summary bullet of its own.
+    Display only: the container still gets the full value.
+    """
+    entry = key + "=" + value
+    text = "- environment: " + quote(entry[:CONSENT_ENV_LIMIT])
+    lines, width = [text[:CONSENT_WIDTH]], CONSENT_WIDTH - 2
+    lines += ["  " + text[start:start + width] for start in range(CONSENT_WIDTH, len(text), width)]
+    if len(entry) > CONSENT_ENV_LIMIT:
+        lines.append("  ... (truncated: %d of %d characters shown)" % (CONSENT_ENV_LIMIT, len(entry)))
+    return "\n".join(lines)
+
+
 def print_capability_summary(root: bytes, config: dict, git_writable_flag: bool = False) -> None:
     """Describe every project-controlled runtime capability before consent.
 
@@ -1986,7 +2016,7 @@ def print_capability_summary(root: bytes, config: dict, git_writable_flag: bool 
               + ("; HOST CREDENTIAL PATH: mounted only with the credential grant"
                  if mount.get("credential") else ""), file=sys.stderr)
     for key, value in sorted(config["env"].items()):
-        print("- environment: " + quote(key + "=" + value), file=sys.stderr)
+        print(consent_env_line(key, value), file=sys.stderr)
     print("- entry: " + " ".join(quote(value) for value in config["entry"]), file=sys.stderr)
     print("- agent state (credentials and configuration for " + agent_names_text() + "): " +
           ("read-write mount eligible with a separate grant" if config["mount_auth"] else

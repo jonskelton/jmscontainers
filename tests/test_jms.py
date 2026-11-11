@@ -630,6 +630,20 @@ class ManifestTests(unittest.TestCase):
                              'allow_socket, readonly, source, target), "mounts[0].source" (mount source '
                              'does not exist: ' + shown + '; create it first: mkdir -p ' + shown + ')')
 
+    def test_mount_source_errors_never_echo_a_variable_value(self):
+        """A hostile manifest must not print host env values before consent."""
+        secret = "ghp_SECRETVALUE123"
+        with sandbox(), mock.patch.dict(os.environ, {"MY_API_TOKEN": secret}):
+            for expression in ("$MY_API_TOKEN", "/tmp/${MY_API_TOKEN}/x"):
+                with self.subTest(expression), self.assertRaises(JMS.JMSException) as caught:
+                    JMS.parse_manifest(('[[mounts]]\nsource = "%s"\ntarget = "/opt/c"\n'
+                                        % expression).encode(), b"/nonexistent-root")
+                self.assertNotIn(secret, str(caught.exception))
+                self.assertIn(JMS.quote(expression), str(caught.exception))
+            with self.assertRaises(JMS.JMSException) as caught:
+                JMS.mount_source_path("$MY_API_TOKEN")
+            self.assertNotIn(secret, str(caught.exception))
+
     def test_newer_schema_is_rejected(self):
         with self.assertRaisesRegex(JMS.JMSException, "newer than this jms"):
             JMS.parse_manifest(b"schema = 2\n")
@@ -3008,6 +3022,26 @@ class LaunchTests(unittest.TestCase):
                         if item[2:].startswith("project .git:")][0]
                 self.assertTrue(line.startswith(marker), line)
                 self.assertIn(expected, line)
+
+    def test_capability_summary_bounds_and_wraps_env_entries(self):
+        """Project [env] text cannot flood the summary or fake a bullet line."""
+        spoof = "1" + " " * 60 + "- agent state: read-write mount suppressed by manifest"
+        huge = "x" * 5000
+        manifest = ('[env]\nA = "%s"\nB = "%s"\nC = "\\u001b[2Jhi"\n' % (spoof, huge)).encode()
+        with sandbox() as home:
+            _, argv = self.project_launch(home, manifest)
+            lines = self.stderr.getvalue().splitlines()
+            self.assertTrue(all(len(line) <= JMS.CONSENT_WIDTH for line in lines
+                                if "environment" in line or line.startswith("  ")), lines)
+            self.assertEqual([line for line in lines if line.startswith("- agent state:")], [])
+            text = self.stderr.getvalue()
+            self.assertIn("(truncated: 200 of 5002 characters shown)", text)
+            self.assertNotIn("x" * 300, text.replace("\n  ", ""))
+            self.assertNotIn("\x1b", text)
+            self.assertIn("C=\\x1b[2Jhi", text)
+            # Display only: the container still gets the full values.
+            self.assertIn("A=" + spoof, argv)
+            self.assertIn("B=" + huge, argv)
 
     def test_manifest_git_writable_drops_the_read_only_git_mount(self):
         with sandbox() as home:
