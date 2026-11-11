@@ -1867,6 +1867,37 @@ class SocketMountTests(unittest.TestCase):
                 with self.subTest(path=path):
                     JMS.refuse_socket_mounts(config(path))
 
+    def test_kernel_filesystems_refuse_ancestors_and_descendants(self):
+        # Mount flags do not restrict what sits there, so the consent line's
+        # "read-only" would be false.  allow_socket never rescues a directory
+        # or file there; only an exact device node is its own grant.
+        def config(path, allow_socket=False):
+            return {"mounts": [{"source": JMS.canon_lenient(os.fsencode(path)),
+                                "allow_socket": allow_socket}]}
+        with self.socket_env():
+            refused = ("/dev", "/dev/shm", "/dev/jms-test-absent", "/proc", "/proc/self",
+                       "/proc/cpuinfo", "/sys", "/sys/jms-test-absent")
+            for path in refused:
+                for allow_socket in (False, True):
+                    with self.subTest(path=path, allow_socket=allow_socket):
+                        with self.assertRaisesRegex(JMS.JMSException,
+                                                    "host device or kernel filesystem"):
+                            JMS.refuse_socket_mounts(config(path, allow_socket))
+            for path in ("/devjms-test-absent", "/srv/dev", "/srv/proc"):
+                with self.subTest(path=path):
+                    JMS.refuse_socket_mounts(config(path))
+            if os.path.exists("/dev/null"):
+                with self.assertRaisesRegex(JMS.JMSException, "is a character device"):
+                    JMS.refuse_socket_mounts(config("/dev/null"))
+                JMS.refuse_socket_mounts(config("/dev/null", allow_socket=True))
+
+    def test_a_kernel_directory_source_never_reaches_consent(self):
+        with self.socket_env() as home:
+            root = self.project(home, ("/dev", ""))
+            with self.assertRaisesRegex(JMS.JMSException,
+                                        r"mounts\[0\] source .* host device or kernel filesystem"):
+                JMS.project_data(root)
+
     def test_ssh_auth_sock_refuses_its_ancestors_but_not_their_other_children(self):
         with self.socket_env(SSH_AUTH_SOCK="~/agent/ssh.sock") as home:
             self.listen(home / "agent" / "ssh.sock")
@@ -2887,6 +2918,46 @@ class LaunchTests(unittest.TestCase):
                 with self.subTest(workdir=str(workdir)):
                     with self.assertRaisesRegex(JMS.JMSException, "protected jms host directory"):
                         JMS.cmd_launch(JMS.parse_cli(["launch", "-w", str(workdir)]))
+
+    def test_project_root_overlapping_a_socket_kernel_or_credential_dir_is_refused(self):
+        """The root is mounted read-write with no consent line of its own."""
+        with sandbox() as home:
+            runtime_dir = home / "run"
+            vault = home / "git" / "vault"
+            for path in (runtime_dir, home / ".ssh" / "keys", home / ".sshx", vault / "gnupg",
+                         home / "git" / "plain"):
+                path.mkdir(parents=True)
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ("SSH_AUTH_SOCK", "DOCKER_HOST")}
+            env.update(XDG_RUNTIME_DIR=str(runtime_dir), GNUPGHOME=str(vault / "gnupg"))
+            with mock.patch.dict(os.environ, env, clear=True):
+                refused = ((home / ".ssh", "credential store"),
+                           (home / ".ssh" / "keys", "credential store"),
+                           (vault, "credential store"),  # contains $GNUPGHOME
+                           (runtime_dir, "socket directory"),
+                           ("/proc", "device or kernel filesystem"),
+                           ("/dev/shm", "device or kernel filesystem"))
+                for path, reason in refused:
+                    with self.subTest(path=str(path)):
+                        with self.assertRaisesRegex(JMS.JMSException,
+                                                    "workdir overlaps a host " + reason):
+                            JMS.refuse_sensitive_project_root(
+                                JMS.canon_lenient(os.fsencode(path)), "workdir")
+                for path in (home / "git" / "plain", home / ".sshx"):
+                    with self.subTest(path=str(path)):
+                        JMS.refuse_sensitive_project_root(JMS.canon(os.fsencode(path)), "workdir")
+                # Both launch paths apply it, with the operational exit code (1).
+                with self.assertRaisesRegex(JMS.JMSException,
+                                            "workdir overlaps a host credential store") as caught:
+                    JMS.cmd_launch(JMS.parse_cli(["launch", "--no-auth", "-w", str(home / ".ssh")]))
+                self.assertIs(type(caught.exception), JMS.JMSException)
+                project = home / ".ssh" / "keys"
+                (project / ".git").mkdir()
+                (project / ".jmscontainer").mkdir()
+                (project / ".jmscontainer" / "Containerfile").write_bytes(DEFAULT_CONTAINERFILE)
+                with self.assertRaisesRegex(JMS.JMSException,
+                                            "project root overlaps a host credential store"):
+                    JMS.cmd_launch(JMS.parse_cli(["launch", "--no-auth", "-w", str(project)]))
 
     def test_launch_defaulted_to_cwd_inside_checkout_is_rejected(self):
         with sandbox():
