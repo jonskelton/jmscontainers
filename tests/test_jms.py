@@ -307,6 +307,34 @@ class TTYIO(io.StringIO):
         return self.tty
 
 
+class TypedStdin(io.StringIO):
+    """A stdin holding what the user typed; counts the reads made from it."""
+    def __init__(self, tty, typed):
+        super().__init__(typed)
+        self.tty, self.reads = tty, 0
+
+    def isatty(self):
+        return self.tty
+
+    def fileno(self):
+        return 0  # consent_input restores blocking mode; set_blocking is stubbed
+
+    def readline(self, *args):
+        self.reads += 1
+        return super().readline(*args)
+
+
+# What the user types at a [y/N] question, and whether it means yes.  An
+# empty string is EOF (Ctrl-D, or a closed stdin) before any answer.
+CONSENT_ANSWERS = (
+    ("\n", False), ("", False), ("   \n", False), ("n\n", False), ("N\n", False),
+    ("no\n", False), ("maybe\n", False), ("ye\n", False), ("yes please\n", False),
+    ("y\n", True), ("Y\n", True), ("yes\n", True), ("YES\n", True), (" y \n", True),
+    ("y", True))
+# (stdin is a terminal, stderr is a terminal): only the first may prompt.
+TTY_STATES = ((True, True), (True, False), (False, True), (False, False))
+
+
 class FingerprintTests(unittest.TestCase):
     def test_golden_vectors(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1131,6 +1159,103 @@ class ConsentTests(unittest.TestCase):
         finally:
             os.close(master)
             os.close(slave)
+
+    def typed(self, stdin_tty, stderr_tty, typed, call):
+        """Run call() with the real consent_input reading `typed`.
+
+        Returns (result or raised JMSException, stdin, stderr text).
+        """
+        stdin, stderr = TypedStdin(stdin_tty, typed), TTYIO(stderr_tty)
+        with mock.patch.object(sys, "stdin", stdin), mock.patch.object(sys, "stderr", stderr), \
+             mock.patch.object(JMS.os, "set_blocking", lambda *a: None):
+            try:
+                outcome = call()
+            except JMS.JMSException as exc:
+                outcome = exc
+        return outcome, stdin, stderr.getvalue()
+
+    def test_build_question_is_default_no_and_needs_both_terminals(self):
+        # Only an explicit yes with stdin and stderr both terminals approves;
+        # `yes | jms build` or `jms build 2>log` must never answer it.
+        for typed, approves in CONSENT_ANSWERS:
+            for stdin_tty, stderr_tty in TTY_STATES:
+                with self.subTest(typed=typed, stdin_tty=stdin_tty, stderr_tty=stderr_tty), \
+                        sandbox() as home:
+                    root = JMS.canon(os.fsencode(make_project(home)))
+                    outcome, stdin, err = self.typed(
+                        stdin_tty, stderr_tty, typed,
+                        lambda: JMS.approve(root, "a" * 64, JMS.parse_cli(["build"]), action="build"))
+                    projects = JMS.read_store()["projects"]
+                    if not (stdin_tty and stderr_tty):
+                        self.assertIsInstance(outcome, JMS.TrustError)
+                        self.assertIn("prompting is unavailable", str(outcome))
+                        self.assertEqual(stdin.reads, 0)
+                        self.assertNotIn("Allow build & run?", err)
+                        self.assertEqual(projects, {})
+                    elif approves:
+                        # The credential question that follows reads EOF: No.
+                        self.assertEqual(outcome, (True, False))
+                        self.assertEqual(projects[hashlib.sha256(root).hexdigest()]["grants"],
+                                         {"build_run": True, "auth": False})
+                    else:
+                        self.assertIsInstance(outcome, JMS.TrustError)
+                        self.assertEqual(outcome.exit_code, 3)
+                        self.assertEqual(str(outcome), "project trust declined")
+                        self.assertEqual(stdin.reads, 1)
+                        self.assertEqual(projects, {})
+
+    def test_credential_questions_are_default_no_and_need_both_terminals(self):
+        for typed, approves in CONSENT_ANSWERS:
+            with self.subTest(question="after build approval", typed=typed), sandbox() as home:
+                root = JMS.canon(os.fsencode(make_project(home)))
+                outcome, _, _ = self.typed(
+                    True, True, "y\n" + typed,
+                    lambda: JMS.approve(root, "a" * 64, JMS.parse_cli(["launch"]), action="launch"))
+                self.assertEqual(outcome, (True, approves))
+                record = JMS.read_store()["projects"][hashlib.sha256(root).hexdigest()]
+                self.assertEqual(record["grants"]["auth"], approves)
+            for stdin_tty, stderr_tty in TTY_STATES:
+                with self.subTest(question="--auth escalation", typed=typed,
+                                  stdin_tty=stdin_tty, stderr_tty=stderr_tty), sandbox() as home:
+                    root = JMS.canon(os.fsencode(make_project(home)))
+                    self.approve(root, "a" * 64, ["build"], answers=["y", ""])
+                    outcome, stdin, _ = self.typed(
+                        stdin_tty, stderr_tty, typed,
+                        lambda: JMS.approve(root, "a" * 64, JMS.parse_cli(["launch", "--auth"]),
+                                            action="launch"))
+                    record = JMS.read_store()["projects"][hashlib.sha256(root).hexdigest()]
+                    if stdin_tty and stderr_tty:
+                        self.assertEqual(outcome, (True, approves))
+                        self.assertEqual(record["grants"]["auth"], approves)
+                    else:
+                        self.assertIsInstance(outcome, JMS.TrustError)
+                        self.assertIn("prompting is unavailable", str(outcome))
+                        self.assertEqual(stdin.reads, 0)
+                        self.assertEqual(record["grants"]["auth"], False)
+
+    def test_base_credential_question_is_default_no_and_needs_both_terminals(self):
+        # No definition: off a terminal there is no question and no refusal,
+        # only a notice; nothing is mounted and nothing is remembered.
+        for typed, approves in CONSENT_ANSWERS:
+            for stdin_tty, stderr_tty in TTY_STATES:
+                with self.subTest(typed=typed, stdin_tty=stdin_tty, stderr_tty=stderr_tty), \
+                        sandbox() as home:
+                    plain = home / "git" / "plain"
+                    (plain / ".git").mkdir(parents=True)
+                    workdir = JMS.canon(os.fsencode(plain))
+                    outcome, stdin, err = self.typed(
+                        stdin_tty, stderr_tty, typed,
+                        lambda: JMS.base_launch_auth(workdir, JMS.parse_cli(["launch"])))
+                    projects = JMS.read_store()["projects"]
+                    if stdin_tty and stderr_tty:
+                        self.assertIs(outcome, approves)
+                        self.assertEqual(projects[hashlib.sha256(workdir).hexdigest()]["grants"]["auth"],
+                                         approves)
+                    else:
+                        self.assertIs(outcome, False)
+                        self.assertEqual(stdin.reads, 0)
+                        self.assertIn("no terminal to ask on", err)
+                        self.assertEqual(projects, {})
 
     def test_trust_flag_is_one_shot_and_never_writes(self):
         with sandbox() as home:
