@@ -87,13 +87,33 @@ to `tests/fixtures/podman-5.4.2-image-inspect-absent.stderr`.
 | Rootless | yes |
 | Python | 3.15.0 |
 
-Not run for this release: integration tier B (it needs a person at a
-terminal), the fresh-account run and the clean-host install walkthrough
-the release checklist asks for, and any macOS integration run. The new
+macOS, 2026-11-12, after tagging, on the tagged commit (`c41c586`)
+with apple/container 1.5.0 (macOS 27.0.1 build 26A434, Apple Silicon,
+Python 3.14.7), by `scripts/qualify-macos.sh` under expect(1) on an
+80-column pseudo-terminal:
+
+- `make test` passed (510 tests). Integration tiers A and B passed,
+  including the shared-base identity collision case, and no
+  integration-owned container or image remained afterwards.
+- A cold `container system start` showed no first-run prompt; `jms build
+  --base` from a stopped runtime finished in 14 s.
+- The base image carries `jms.version` 2.3.0 and `jms.commit`
+  `c41c586`.
+- SIGTERM to a `jms build` running a slow step exited 143 and left no
+  `container build` running.
+- Observed, unchanged from 2.1.0: `container image prune` exists; the
+  host's `HTTPS_PROXY` does not reach a container; apple/container
+  prints `missing signal in xpc message` when jms forwards SIGTERM to
+  `container run`.
+
+Not run for this release: the macOS terminal checks by hand (consent
+layout, the `clean` prompt, zsh completion), the fresh-account run and
+the clean-host install walkthrough the release checklist asks for, and
+integration tier B on Linux (it needs a person at a terminal). The new
 refusals and the consent-summary change act before any runtime call;
 the unreadable-image-record fallback was exercised with a fake runtime
-only. CI ran the unit tests on macOS.
-`ContainerBackend._version_qualified` stays 1.5.0.
+only. `ContainerBackend._version_qualified` stays 1.5.0, the version
+tested.
 
 ## 2.2.0 — 2026-11-11
 
