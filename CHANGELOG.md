@@ -1,21 +1,6 @@
 # Changelog
 
-## Unreleased
-
-- **Performance: the definition fingerprint is now linear in the size
-  of `.jmscontainer/`.** It was quadratic, so a definition with a few
-  hundred vendored files (40 MB) spent seconds hashing on every
-  `inspect`, `trust`, `build` and launch, and minutes at 150 MB.
-  Fingerprints are byte-for-byte unchanged: existing grants and image
-  tags stay valid.
-
-- **Documentation corrections.** The Linux guide said jms refuses to
-  mount the socket a `unix://` `DOCKER_HOST` names; a manifest mount
-  that names that exact socket with `allow_socket = true` is mounted,
-  and the approval prompt marks it `SOCKET`. Both platform guides now
-  say jms publishes no container ports, so `localhost` on the host
-  reaches neither a server the agent starts nor an agent login's
-  browser callback. The Debian install command adds `git` and `python3`.
+## 2.3.0 — 2026-11-12
 
 - **Security: manifest errors no longer print host environment values.**
   Since 2.0.2 a mount source such as `source = "$MY_API_TOKEN"` that did
@@ -25,13 +10,23 @@
   source that names a variable is now reported as written in the
   manifest. Sources using only `~` or a relative path still show the
   full path and the `mkdir -p` hint.
+- **Security: `/dev`, `/proc`, `/sys` and the directories that hold
+  host sockets or credentials are refused in more places.** An extra
+  mount of `/dev`, `/dev/shm`, `/proc` or `/sys`, or of anything under
+  them, was accepted and labelled "read-only" at consent, although
+  mount flags do not restrict device nodes. It is now refused; an exact
+  device node with `allow_socket = true` is still allowed. The project
+  root, and the workdir of a launch without a definition, was checked
+  only against jms's own directories, so `jms launch ~/.ssh` mounted
+  keys read-write at `/work` with no question. A root that overlaps a
+  host socket directory, a kernel filesystem or a credential store is
+  now refused with exit 1.
 - **The consent summary bounds `[env]` entries.** Each entry is cut at
   200 characters with a `(truncated: N of M characters shown)` note,
   and wrapped at 76 columns with indented continuation lines, so a long
   value cannot flood the summary or use a run of spaces to start a
   terminal line that reads like a capability bullet. The container
   still receives the full value.
-
 - **Four CLI edge cases now end cleanly instead of in a traceback or
   a silent success.** Output into a pipe the reader closed early
   (`jms trust list | head -1`, `jms --help | true`) exits 141 with no
@@ -43,7 +38,6 @@
   variable in automation reported success. `jms launch --no-cache`
   without a definition prints a `note:` when the shared base already
   exists, since it rebuilds nothing; use `jms build --base --no-cache`.
-
 - **A repository at the root of its own filesystem is now a
   checkout.** Outside `$HOME`, the search for the checkout root stopped
   one directory short of a mount point, so a repository that was itself
@@ -58,18 +52,48 @@
   `--no-cache` did not help. jms now prints one `warning: unreadable
   image record` line and rebuilds the project image instead. `jms
   clean` still refuses records it cannot read.
+- **Performance: the definition fingerprint is now linear in the size
+  of `.jmscontainer/`.** It was quadratic, so a definition with a few
+  hundred vendored files (40 MB) spent seconds hashing on every
+  `inspect`, `trust`, `build` and launch, and minutes at 150 MB.
+  Fingerprints are byte-for-byte unchanged: existing grants and image
+  tags stay valid.
+- **Documentation corrections.** The Linux guide said jms refuses to
+  mount the socket a `unix://` `DOCKER_HOST` names; a manifest mount
+  that names that exact socket with `allow_socket = true` is mounted,
+  and the approval prompt marks it `SOCKET`. Both platform guides now
+  say jms publishes no container ports, so `localhost` on the host
+  reaches neither a server the agent starts nor an agent login's
+  browser callback. The Debian install command adds `git` and `python3`.
 
-- **Security: `/dev`, `/proc`, `/sys` and the directories that hold
-  host sockets or credentials are refused in more places.** An extra
-  mount of `/dev`, `/dev/shm`, `/proc` or `/sys`, or of anything under
-  them, was accepted and labelled "read-only" at consent, although
-  mount flags do not restrict device nodes. It is now refused; an exact
-  device node with `allow_socket = true` is still allowed. The project
-  root, and the workdir of a launch without a definition, was checked
-  only against jms's own directories, so `jms launch ~/.ssh` mounted
-  keys read-write at `/work` with no question. A root that overlaps a
-  host socket directory, a kernel filesystem or a credential store is
-  now refused with exit 1.
+### Qualification
+
+Linux, 2026-11-12, on the release-preparation host: `make test` passed
+(510 tests); integration tier A passed on `c9821c4`, the release
+commit before this section was added; and `podman image inspect` of an
+absent ref exited 125 with `[]` on stdout and a stderr byte-identical
+to `tests/fixtures/podman-5.4.2-image-inspect-absent.stderr`.
+
+| Dimension | Tested value |
+| --- | --- |
+| Podman | 5.4.2 |
+| Architecture | amd64 (`x86_64`) |
+| Kernel | 6.12.115+deb13.1-amd64 |
+| Distribution | Debian GNU/Linux 13 (trixie) |
+| cgroup | v2, `systemd` manager |
+| OCI runtime | crun 1.21 |
+| Storage driver | `overlay` |
+| Network backend | netavark 1.14.0, aardvark-dns 1.14.0, pasta (passt 0.0~git20250503.587980c-2+deb13u1) |
+| Rootless | yes |
+| Python | 3.15.0 |
+
+Not run for this release: integration tier B (it needs a person at a
+terminal), the fresh-account run and the clean-host install walkthrough
+the release checklist asks for, and any macOS integration run. The new
+refusals and the consent-summary change act before any runtime call;
+the unreadable-image-record fallback was exercised with a fake runtime
+only. CI ran the unit tests on macOS.
+`ContainerBackend._version_qualified` stays 1.5.0.
 
 ## 2.2.0 — 2026-11-11
 
