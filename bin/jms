@@ -1423,6 +1423,17 @@ def socket_roots() -> list[bytes]:
     return [canon_lenient(os.path.normpath(path)) for path in roots]
 
 
+def kernel_roots() -> list[bytes]:
+    """Host device and kernel filesystems, refused whole as mount sources.
+
+    Mount flags do not restrict the device nodes under /dev (nor /dev/pts,
+    the user's own terminals), and /proc and /sys expose every host
+    process and kernel tunable, so "read-only" would misdescribe them.  An
+    exact device node with allow_socket = true is still its own grant.
+    """
+    return [canon_lenient(path) for path in (b"/dev", b"/dev/shm", b"/proc", b"/sys")]
+
+
 def environment_sockets() -> list[bytes]:
     """The socket paths named by $SSH_AUTH_SOCK and a unix:// $DOCKER_HOST.
 
@@ -1475,7 +1486,7 @@ def refuse_socket_mounts(config: dict) -> None:
     how ssh-agent forwarding works; a directory never does, since it would
     carry every socket created in it later.
     """
-    roots, named = socket_roots(), environment_sockets()
+    roots, named, kernel = socket_roots(), environment_sockets(), kernel_roots()
     for index, mount in enumerate(config["mounts"]):
         source = mount["source"]
         where = "mounts[%d] source %s" % (index, quote(source))
@@ -1488,6 +1499,28 @@ def refuse_socket_mounts(config: dict) -> None:
         if reserved_root(source, roots) or any(ancestor(source, path) for path in named):
             fail(where + " overlaps a host socket directory"
                  " -- mount the exact socket with allow_socket = true instead")
+        if kind is None and reserved_root(source, kernel):
+            fail(where + " overlaps a host device or kernel filesystem (/dev, /proc, /sys)"
+                 " -- mount the exact device node with allow_socket = true instead")
+
+
+def refuse_sensitive_project_root(root: bytes, label: str) -> None:
+    """Refuse a project root that a manifest mount of the same path could not get.
+
+    The root is mounted read-write at /work with no consent line of its
+    own, so it gets the extra-mount refusals for jms's own directories,
+    socket directories and kernel filesystems, and is refused outright
+    where a mount would only be kept under the credential grant.
+    """
+    if reserved_root(root):
+        fail(label + " overlaps a protected jms host directory: " + quote(root))
+    if (reserved_root(root, socket_roots())
+            or any(ancestor(root, path) for path in environment_sockets())):
+        fail(label + " overlaps a host socket directory: " + quote(root))
+    if reserved_root(root, kernel_roots()):
+        fail(label + " overlaps a host device or kernel filesystem: " + quote(root))
+    if overlaps_any(root, credential_sources()):
+        fail(label + " overlaps a host credential store: " + quote(root))
 
 
 # Host credential stores, relative to HOME.  A manifest mount that overlaps
@@ -2468,8 +2501,7 @@ def ensure_base(args) -> None:
 def project_data(workdir: bytes):
     root, spec = discover(workdir)
     if root is None: return None
-    if reserved_root(root):
-        fail("project root overlaps a protected jms host directory: " + quote(root))
+    refuse_sensitive_project_root(root, "project root")
     runtime_path(root)
     manifest_path = spec + b"/jmscontainer.toml"
     if os.path.lexists(manifest_path) and not stat.S_ISREG(os.lstat(manifest_path).st_mode):
@@ -2947,8 +2979,7 @@ def cmd_launch(args):
     workdir, explicit = resolve_operand(operand)
     data = project_data(workdir)
     if not data:
-        if reserved_root(workdir):
-            fail("workdir overlaps a protected jms host directory: " + quote(workdir))
+        refuse_sensitive_project_root(workdir, "workdir")
         runtime_path(workdir)
     if not data and not explicit:
         refusal = implicit_workdir_refusal(workdir)
