@@ -926,6 +926,36 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(JMS.ceiling_for(workdir), JMS.parent(workdir))
             self.assertIsNotNone(JMS.implicit_workdir_refusal(workdir))
 
+    def test_checkout_at_a_mount_point_is_a_checkout_root(self):
+        """A repository that is its own filesystem's root is still a checkout."""
+        with sandbox() as home:
+            repo = home.parent / "volume"
+            (repo / "src").mkdir(parents=True)
+            (repo / ".git").mkdir()
+            marker = repo / ".jmscontainer"; marker.mkdir()
+            (marker / "Containerfile").write_bytes(DEFAULT_CONTAINERFILE)
+            root = JMS.canon(os.fsencode(repo))
+            src = JMS.canon(os.fsencode(repo / "src"))
+            with mock.patch.object(JMS, "mount_point", lambda path: root):
+                self.assertEqual(JMS.vcs_root(root), root)
+                self.assertEqual(JMS.vcs_root(src), root)
+                self.assertIsNone(JMS.implicit_workdir_refusal(root))
+                self.assertEqual(JMS.discover(src, consume_spec=False)[0], root)
+
+    def test_git_managed_filesystem_root_is_not_a_checkout_root(self):
+        """`/` stays exclusive for the same reason a dotfiles $HOME does."""
+        with sandbox() as home:
+            project = home.parent / "loose" / "demo"
+            project.mkdir(parents=True)
+            workdir = JMS.canon(os.fsencode(project))
+            real_lexists = os.path.lexists
+            # Pretend / carries a .git; no real path can be created there.
+            lexists = lambda path: path in (b"/.git", b"//.git") or real_lexists(path)
+            with mock.patch.object(JMS, "mount_point", lambda path: b"/"), \
+                 mock.patch.object(os.path, "lexists", lexists):
+                self.assertIsNone(JMS.vcs_root(workdir))
+                self.assertEqual(JMS.ceiling_for(workdir), JMS.parent(workdir))
+
     def test_workdir_operand_grammar(self):
         with sandbox() as home:
             project = home / "git" / "demo"
@@ -2093,6 +2123,29 @@ class BuildTests(unittest.TestCase):
                        if call["argv"][1:3] in (["image", "inspect"], ["image", "exists"])]
             self.assertNotIn(tag, [argv[-1] for argv in queries])
             self.assertIn(JMS.BASE, [argv[-1] for argv in queries])
+
+    def test_an_unreadable_image_record_degrades_to_a_rebuild(self):
+        # Whether an image can be reused is a cache question: runtime output
+        # the strict parsers reject must cost a rebuild, never the launch.
+        # The base record feeds only the jms.base label, so --no-cache must
+        # get past a bad one too, and that rebuild is left unstamped.
+        with sandbox() as home:
+            data, tag, images = self.base_project(home)
+            bad = dict(images[tag], ident="not-a-digest")
+            stamp = fake_hex_id(JMS.BASE)
+            for name, broken, extra, label in (
+                    ("project", {tag: bad}, (), stamp),
+                    ("base", {JMS.BASE: dict(bad)}, (), None),
+                    ("base", {JMS.BASE: dict(bad)}, ("--no-cache",), None)):
+                with self.subTest(record=name, args=extra), \
+                     self.fake(images=dict(images, **broken)) as runtime, \
+                     contextlib.redirect_stdout(io.StringIO()), \
+                     contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(JMS.build_project(data, self.build_args(*extra)),
+                                     (tag, True))
+                    self.assertEqual(runtime.build_count, 1)
+                    self.assertIn("warning: unreadable image record", err.getvalue())
+                    self.assertEqual(runtime.images[tag]["labels"].get("jms.base"), label)
 
     def base_project(self, home, stamp=..., with_base=True, containerfile=DEFAULT_CONTAINERFILE):
         """A trusted project whose current-fingerprint image already exists.
