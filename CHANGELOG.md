@@ -66,6 +66,35 @@
   reaches neither a server the agent starts nor an agent login's
   browser callback. The Debian install command adds `git` and `python3`.
 
+### Qualification
+
+Linux, 2026-11-12, on the release-preparation host: `make test` passed
+(510 tests); integration tier A passed on `c9821c4`, the release
+commit before this section was added; and `podman image inspect` of an
+absent ref exited 125 with `[]` on stdout and a stderr byte-identical
+to `tests/fixtures/podman-5.4.2-image-inspect-absent.stderr`.
+
+| Dimension | Tested value |
+| --- | --- |
+| Podman | 5.4.2 |
+| Architecture | amd64 (`x86_64`) |
+| Kernel | 6.12.115+deb13.1-amd64 |
+| Distribution | Debian GNU/Linux 13 (trixie) |
+| cgroup | v2, `systemd` manager |
+| OCI runtime | crun 1.21 |
+| Storage driver | `overlay` |
+| Network backend | netavark 1.14.0, aardvark-dns 1.14.0, pasta (passt 0.0~git20250503.587980c-2+deb13u1) |
+| Rootless | yes |
+| Python | 3.15.0 |
+
+Not run for this release: integration tier B (it needs a person at a
+terminal), the fresh-account run and the clean-host install walkthrough
+the release checklist asks for, and any macOS integration run. The new
+refusals and the consent-summary change act before any runtime call;
+the unreadable-image-record fallback was exercised with a fake runtime
+only. CI ran the unit tests on macOS.
+`ContainerBackend._version_qualified` stays 1.5.0.
+
 ## 2.2.0 — 2026-11-11
 
 - **Security: a grant now covers where extra mounts resolve, not only
